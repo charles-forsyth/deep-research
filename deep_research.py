@@ -6,19 +6,50 @@ import sys
 from typing import Optional, List
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
+from pydantic import BaseModel, Field, ValidationError
 
 # Load environment variables
 load_dotenv()
 
-class DeepResearchAgent:
-    def __init__(self):
-        self.api_key = os.getenv("GEMINI_API_KEY")
+class DeepResearchConfig(BaseModel):
+    api_key: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
+    agent_name: str = "deep-research-pro-preview-12-2025"
+    followup_model: str = "gemini-3-pro-preview"
+
+    def __init__(self, **data):
+        super().__init__(**data)
         if not self.api_key:
-            raise ValueError("GEMINI_API_KEY not found in .env file")
-        
-        self.client = genai.Client(api_key=self.api_key)
-        self.agent_name = "deep-research-pro-preview-12-2025"
+            raise ValueError("GEMINI_API_KEY not found in environment variables")
+
+class ResearchRequest(BaseModel):
+    prompt: str
+    stores: Optional[List[str]] = None
+    stream: bool = False
+    output_format: Optional[str] = None
+
+    @property
+    def final_prompt(self) -> str:
+        if self.output_format:
+            return f"{self.prompt}\n\nFormat the output as follows: {self.output_format}"
+        return self.prompt
+
+    @property
+    def tools_config(self) -> Optional[List[dict]]:
+        if self.stores:
+            return [{
+                "type": "file_search",
+                "file_search_store_names": self.stores
+            }]
+        return None
+
+class FollowUpRequest(BaseModel):
+    interaction_id: str
+    prompt: str
+
+class DeepResearchAgent:
+    def __init__(self, config: Optional[DeepResearchConfig] = None):
+        self.config = config or DeepResearchConfig()
+        self.client = genai.Client(api_key=self.config.api_key)
 
     def _process_stream(self, event_stream, interaction_id_ref: list, last_event_id_ref: list, is_complete_ref: list):
         """Helper to process events from any stream source."""
@@ -43,17 +74,9 @@ class DeepResearchAgent:
             if event.event_type in ['interaction.complete', 'error']:
                 is_complete_ref[0] = True
 
-    def start_research_stream(self, prompt: str, stores: Optional[List[str]] = None):
+    def start_research_stream(self, request: ResearchRequest):
         """Starts research with streaming and reconnection logic."""
         
-        tools = []
-        if stores:
-            print(f"[INFO] Using File Search Stores: {stores}")
-            tools.append({
-                "type": "file_search",
-                "file_search_store_names": stores
-            })
-
         agent_config = {
             "type": "deep-research",
             "thinking_summaries": "auto"
@@ -65,14 +88,17 @@ class DeepResearchAgent:
         is_complete = [False]
 
         # 1. Attempt initial streaming request
+        if request.stores:
+            print(f"[INFO] Using File Search Stores: {request.stores}")
+
         try:
             print("[INFO] Starting Research Stream...")
             initial_stream = self.client.interactions.create(
-                input=prompt,
-                agent=self.agent_name,
+                input=request.final_prompt,
+                agent=self.config.agent_name,
                 background=True,
                 stream=True,
-                tools=tools if tools else None,
+                tools=request.tools_config,
                 agent_config=agent_config
             )
             self._process_stream(initial_stream, interaction_id, last_event_id, is_complete)
@@ -99,21 +125,18 @@ class DeepResearchAgent:
         
         return interaction_id[0]
 
-    def start_research_poll(self, prompt: str, stores: Optional[List[str]] = None):
+    def start_research_poll(self, request: ResearchRequest):
         """Starts research in background and polls for completion."""
-        tools = []
-        if stores:
-             tools.append({
-                "type": "file_search",
-                "file_search_store_names": stores
-            })
+        
+        if request.stores:
+            print(f"[INFO] Using File Search Stores: {request.stores}")
 
         print("[INFO] Starting Research (Polling Mode)...")
         interaction = self.client.interactions.create(
-            input=prompt,
-            agent=self.agent_name,
+            input=request.final_prompt,
+            agent=self.config.agent_name,
             background=True,
-            tools=tools if tools else None
+            tools=request.tools_config
         )
 
         print(f"[INFO] Research started: {interaction.id}")
@@ -134,18 +157,14 @@ class DeepResearchAgent:
         
         return interaction.id
 
-    def follow_up(self, prompt: str, previous_interaction_id: str):
+    def follow_up(self, request: FollowUpRequest):
         """Sends a follow-up question to a completed interaction."""
-        print(f"[INFO] Sending follow-up to interaction: {previous_interaction_id}")
-        
-        # Note: Follow-ups use the standard model, not the deep research agent explicitly
-        # according to the docs, but context implies we are chatting with the result.
-        # The docs say: model="gemini-3-pro-preview" for follow up.
+        print(f"[INFO] Sending follow-up to interaction: {request.interaction_id}")
         
         interaction = self.client.interactions.create(
-            input=prompt,
-            model="gemini-3-pro-preview", 
-            previous_interaction_id=previous_interaction_id
+            input=request.prompt,
+            model=self.config.followup_model, 
+            previous_interaction_id=request.interaction_id
         )
 
         print(interaction.outputs[-1].text)
@@ -169,24 +188,33 @@ def main():
     args = parser.parse_args()
 
     try:
-        agent = DeepResearchAgent()
-
         if args.command == "research":
-            final_prompt = args.prompt
-            if args.format:
-                final_prompt += f"\n\nFormat the output as follows: {args.format}"
+            request = ResearchRequest(
+                prompt=args.prompt,
+                stores=args.stores,
+                stream=args.stream,
+                output_format=args.format
+            )
+            agent = DeepResearchAgent()
             
-            if args.stream:
-                agent.start_research_stream(final_prompt, args.stores)
+            if request.stream:
+                agent.start_research_stream(request)
             else:
-                agent.start_research_poll(final_prompt, args.stores)
+                agent.start_research_poll(request)
 
         elif args.command == "followup":
-            agent.follow_up(args.prompt, args.id)
+            request = FollowUpRequest(
+                interaction_id=args.id,
+                prompt=args.prompt
+            )
+            agent = DeepResearchAgent()
+            agent.follow_up(request)
 
         else:
             parser.print_help()
 
+    except ValidationError as e:
+        print(f"[ERROR] Validation Failed:\n{e}")
     except Exception as e:
         print(f"[ERROR] {e}")
 
