@@ -40,7 +40,7 @@ user_config_path = os.path.join(xdg_config_home, "deepresearch", ".env")
 load_dotenv(user_config_path)
 
 # Fallback version if not installed as a package
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 def get_version():
     try:
