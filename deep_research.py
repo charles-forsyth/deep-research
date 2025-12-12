@@ -564,10 +564,16 @@ Examples:
    %(prog)s research "Compare GPU prices" --format "Markdown table" --output prices.md
    %(prog)s research "List top 5 cloud providers" --output market_data.json
 
-4. Follow-up Question:
-   %(prog)s followup v1_abc123... "Can you elaborate on point 2?"
+4. Headless Research (Fire & Forget):
+   %(prog)s start "Detailed analysis of quantum computing"
+   # ... process detaches ...
+   %(prog)s list
+   %(prog)s show 1
 
-5. Manage History:
+5. Follow-up Question:
+   %(prog)s followup 1 "Can you explain the error correction?"
+
+6. Manage History:
    %(prog)s list
    %(prog)s show 1
 

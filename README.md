@@ -13,6 +13,7 @@ This tool unlocks the power of Google's most advanced autonomous research model,
 *   **🚀 Autonomous Deep Research:** Powered by Gemini 3 Pro, it plans, searches, reads, and synthesizes complex topics.
 *   **📂 Smart Context Ingestion:** Instantly analyze local PDFs, text files, or folders. The tool handles cloud upload/cleanup automatically.
 *   **💾 Structured Data Export:** Save reports directly to JSON or CSV files with automatic schema enforcement (`--output`).
+*   **👻 Headless Mode:** Fire-and-forget research tasks (`start`) that run in the background. Perfect for long-running investigations.
 *   **🗄️ Session History:** Automatically saves your research history to a local database. List past tasks and retrieve old reports instantly.
 *   **⚡ Real-Time Streaming:** Watch the agent's "Thought Process" in real-time as it navigates the web.
 *   **🛡️ Robust & Resilient:** Auto-resumes sessions if the network drops. 
@@ -86,14 +87,29 @@ deep-research research "List top 5 cloud providers with market share" --output m
 deep-research research "Table of US Presidents and their terms" --output presidents.csv
 ```
 
-### 4. Follow-up Questions
-Don't just get a report—interact with it. Use the `Interaction ID` from the output.
+### 4. Headless Research (Fire & Forget)
+For long tasks, start the research in the background and check back later.
 
 ```bash
-deep-research followup v1_abc123... "Can you elaborate on the second point?"
+# Start a detached session
+deep-research start "Detailed analysis of quantum computing trends"
+
+# Check status
+deep-research list
+
+# View result when done
+deep-research show 1
 ```
 
-### 5. Manage History
+### 5. Follow-up Questions
+Interact with your research history. You can use the local **Session ID** (e.g., `1`) or the API Interaction ID.
+
+```bash
+# Resume session #1
+deep-research followup 1 "Can you explain the error correction part simply?"
+```
+
+### 6. Manage History
 Review your past research sessions.
 
 ```bash
