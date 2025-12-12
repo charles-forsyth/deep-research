@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
+import sys
 import os
+
+# Auto-switch to .venv if running with system python
+if sys.prefix == sys.base_prefix:
+    venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv", "bin", "python")
+    if os.path.exists(venv_python):
+        os.execv(venv_python, [venv_python] + sys.argv)
+
 import time
 import argparse
-import sys
 from typing import Optional, List
 from dotenv import load_dotenv
 from google import genai
@@ -93,6 +100,13 @@ class DeepResearchAgent:
 
         try:
             print("[INFO] Starting Research Stream...")
+            if not hasattr(self.client, 'interactions'):
+                import google.genai
+                raise RuntimeError(
+                    f"The installed 'google-genai' library (version {google.genai.__version__}) does not support 'interactions'. "
+                    "Please ensure you are running in the correct virtual environment with a recent version of the library."
+                )
+
             initial_stream = self.client.interactions.create(
                 input=request.final_prompt,
                 agent=self.config.agent_name,
