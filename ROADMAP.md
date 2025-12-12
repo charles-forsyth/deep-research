@@ -5,6 +5,7 @@ Future plans for the Gemini Deep Research CLI.
 ## ✅ Completed
 - [x] **Smart Context Ingestion:** Auto-upload local files/folders to temporary Cloud Stores for analysis (`--upload`).
 - [x] **Structured Data Export:** Save reports as JSON or CSV with schema enforcement (`--output`).
+- [x] **Session Management:** Local SQLite database to save research history, list past tasks, and show results.
 
 ## 🚧 Planned Features
 
@@ -14,7 +15,6 @@ Future plans for the Gemini Deep Research CLI.
 
 ### Data & Output
 - [ ] **Citation Validator:** Auto-verify URLs in the final report to flag dead links or hallucinations.
-- [ ] **Session Management:** Local SQLite database to save research history, list past tasks, and resume sessions days later.
 
 ### Advanced Capabilities
 - [ ] **Multi-Agent "Swarm":** Parallelize research by spawning sub-agents for different aspects of a broad topic.

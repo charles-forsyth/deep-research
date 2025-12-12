@@ -23,6 +23,8 @@ import time
 import argparse
 import json
 import re
+import sqlite3
+from datetime import datetime
 from typing import Optional, List
 from importlib.metadata import version, PackageNotFoundError
 from dotenv import load_dotenv
@@ -30,23 +32,79 @@ from google import genai
 from pydantic import BaseModel, Field, ValidationError
 
 # Load environment variables
-# 1. Try local .env first (standard behavior of load_dotenv without args)
 load_dotenv()
-
-# 2. Try User Config Directory (XDG Standard) as fallback
-# This allows running the tool from any directory without copying .env
 xdg_config_home = os.getenv("XDG_CONFIG_HOME", os.path.join(os.path.expanduser("~"), ".config"))
 user_config_path = os.path.join(xdg_config_home, "deepresearch", ".env")
+user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
 load_dotenv(user_config_path)
 
 # Fallback version if not installed as a package
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 def get_version():
     try:
         return version("deepresearch")
     except PackageNotFoundError:
         return __version__
+
+class SessionManager:
+    def __init__(self, db_path: str = user_db_path):
+        self.db_path = db_path
+        self._init_db()
+
+    def _init_db(self):
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    interaction_id TEXT,
+                    prompt TEXT,
+                    status TEXT,
+                    created_at TIMESTAMP,
+                    updated_at TIMESTAMP,
+                    result TEXT,
+                    files JSON
+                )
+            """)
+            conn.commit()
+
+    def create_session(self, interaction_id: str, prompt: str, files: List[str] = None) -> int:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "INSERT INTO sessions (interaction_id, prompt, status, created_at, updated_at, files) VALUES (?, ?, ?, ?, ?, ?)",
+                (interaction_id, prompt, "running", datetime.now().isoformat(), datetime.now().isoformat(), json.dumps(files or []))
+            )
+            conn.commit()
+            print(f"[DB] Session saved (ID: {cursor.lastrowid})")
+            return cursor.lastrowid
+
+    def update_session(self, interaction_id: str, status: str, result: str = None):
+        with sqlite3.connect(self.db_path) as conn:
+            query = "UPDATE sessions SET status = ?, updated_at = ?"
+            params = [status, datetime.now().isoformat()]
+            if result:
+                query += ", result = ?"
+                params.append(result)
+            query += " WHERE interaction_id = ?"
+            params.append(interaction_id)
+            
+            conn.execute(query, tuple(params))
+            conn.commit()
+
+    def list_sessions(self, limit: int = 10):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+
+    def get_session(self, session_id_or_interaction_id: str):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            # Try as ID first
+            if str(session_id_or_interaction_id).isdigit():
+                return conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id_or_interaction_id,)).fetchone()
+            # Try as interaction_id
+            return conn.execute("SELECT * FROM sessions WHERE interaction_id = ?", (session_id_or_interaction_id,)).fetchone()
 
 class DeepResearchConfig(BaseModel):
 
@@ -253,12 +311,16 @@ class DeepResearchAgent:
         self.config = config or DeepResearchConfig()
         self.client = genai.Client(api_key=self.config.api_key)
         self.file_manager = FileManager(self.client)
+        self.session_manager = SessionManager()
 
-    def _process_stream(self, event_stream, interaction_id_ref: list, last_event_id_ref: list, is_complete_ref: list):
+    def _process_stream(self, event_stream, interaction_id_ref: list, last_event_id_ref: list, is_complete_ref: list, request_prompt: str = None, upload_paths: list = None):
         for event in event_stream:
             if event.event_type == "interaction.start":
                 interaction_id_ref[0] = event.interaction.id
                 print(f"\n[INFO] Interaction started: {event.interaction.id}")
+                if request_prompt:
+                    self.session_manager.create_session(event.interaction.id, request_prompt, upload_paths)
+
             if event.event_id:
                 last_event_id_ref[0] = event.event_id
             if event.event_type == "content.delta":
@@ -275,12 +337,15 @@ class DeepResearchAgent:
             "thinking_summaries": "auto"
         }
         
+        # Handle Auto-Upload
         if request.upload_paths:
             try:
                 store_name = self.file_manager.create_store_from_paths(request.upload_paths)
                 if request.stores is None:
                     request.stores = []
                 request.stores.append(store_name)
+                
+                # FORCE PRIORITY
                 request.prompt = (
                     f"{request.prompt}\n\n"
                     "IMPORTANT: You have access to a File Search Store containing uploaded documents. "
@@ -313,8 +378,10 @@ class DeepResearchAgent:
                 tools=request.tools_config,
                 agent_config=agent_config
             )
-            self._process_stream(initial_stream, interaction_id, last_event_id, is_complete)
+            # Pass prompt for DB saving
+            self._process_stream(initial_stream, interaction_id, last_event_id, is_complete, request.prompt, request.upload_paths)
             
+            # Reconnection Loop
             while not is_complete[0] and interaction_id[0]:
                 print(f"\n[INFO] Connection lost. Resuming from {last_event_id[0]}...")
                 time.sleep(2)
@@ -325,18 +392,21 @@ class DeepResearchAgent:
                     self._process_stream(resume_stream, interaction_id, last_event_id, is_complete)
                 except Exception as e:
                     print(f"[ERROR] Reconnection failed: {e}")
-
+            
             if is_complete[0]:
                  print("\n[INFO] Research Complete.")
                  
-                 # Retrieve final text for export
-                 if request.output_file and interaction_id[0]:
+                 # Retrieve final text
+                 if interaction_id[0]:
                      try:
                          final_interaction = self.client.interactions.get(id=interaction_id[0])
                          if final_interaction.outputs:
-                             DataExporter.export(final_interaction.outputs[-1].text, request.output_file)
+                             final_text = final_interaction.outputs[-1].text
+                             self.session_manager.update_session(interaction_id[0], "completed", final_text)
+                             if request.output_file:
+                                 DataExporter.export(final_text, request.output_file)
                      except Exception as e:
-                         print(f"[WARN] Failed to export result: {e}")
+                         print(f"[WARN] Failed to retrieve/export result: {e}")
 
         except KeyboardInterrupt:
             print("\n[WARN] Research interrupted by user.")
@@ -371,18 +441,22 @@ class DeepResearchAgent:
                 tools=request.tools_config
             )
             print(f"[INFO] Started: {interaction.id}")
+            self.session_manager.create_session(interaction.id, request.prompt, request.upload_paths)
 
             while True:
                 interaction = self.client.interactions.get(interaction.id)
                 if interaction.status == "completed":
                     print("\n" + "="*40 + " REPORT " + "="*40)
-                    print(interaction.outputs[-1].text)
+                    final_text = interaction.outputs[-1].text
+                    print(final_text)
                     
+                    self.session_manager.update_session(interaction.id, "completed", final_text)
                     if request.output_file:
-                        DataExporter.export(interaction.outputs[-1].text, request.output_file)
+                        DataExporter.export(final_text, request.output_file)
                     break
                 elif interaction.status == "failed":
                     print(f"[ERROR] Failed: {interaction.error}")
+                    self.session_manager.update_session(interaction.id, "failed")
                     break
                 sys.stdout.write(".")
                 sys.stdout.flush()
@@ -458,11 +532,15 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     parser_followup.add_argument("id", help="The Interaction ID from a previous research task")
     parser_followup.add_argument("prompt", help="The follow-up question")
 
-    args = parser.parse_args()
+    # Command: list
+    parser_list = subparsers.add_parser("list", help="List recent research sessions")
+    parser_list.add_argument("--limit", type=int, default=10, help="Number of sessions to show")
 
-    if not args.command:
-        parser.print_help()
-        return
+    # Command: show
+    parser_show = subparsers.add_parser("show", help="Show details of a previous session")
+    parser_show.add_argument("id", help="Session ID (integer) or Interaction ID")
+
+    args = parser.parse_args()
 
     try:
         if args.command == "research":
@@ -488,14 +566,50 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
             )
             agent = DeepResearchAgent()
             agent.follow_up(request)
-            
+
+        elif args.command == "list":
+            mgr = SessionManager()
+            sessions = mgr.list_sessions(args.limit)
+            print(f"{'ID':<4} | {'Status':<10} | {'Date':<20} | {'Prompt'}")
+            print("-" * 80)
+            for s in sessions:
+                # Truncate prompt
+                prompt = s['prompt'].replace('\n', ' ')
+                if len(prompt) > 40: prompt = prompt[:37] + "..."
+                print(f"{s['id']:<4} | {s['status']:<10} | {s['created_at'][:19]:<20} | {prompt}")
+
+        elif args.command == "show":
+            mgr = SessionManager()
+            session = mgr.get_session(args.id)
+            if not session:
+                print(f"[ERROR] Session '{args.id}' not found.")
+            else:
+                print(f"Session ID: {session['id']}")
+                print(f"Interaction ID: {session['interaction_id']}")
+                print(f"Date: {session['created_at']}")
+                print(f"Status: {session['status']}")
+                print(f"Files: {session['files']}")
+                print("-" * 40)
+                print(f"Prompt:\n{session['prompt']}\n")
+                print("-" * 40)
+                print("Result:")
+                if session['result']:
+                    print(session['result'])
+                else:
+                    print("(No result stored)")
+
+        else:
+            parser.print_help()
+
     except ValidationError as e:
         print(f"[ERROR] Input Validation Failed:\n{e}")
     except ValueError as e:
-        # Handle configuration errors (missing API key) cleanly
         print(f"[CONFIG ERROR] {e}")
     except Exception as e:
         print(f"[CRITICAL ERROR] {e}")
 
 if __name__ == "__main__":
     main()
+                
+
+        
