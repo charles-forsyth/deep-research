@@ -39,7 +39,7 @@ user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
 load_dotenv(user_config_path)
 
 # Fallback version if not installed as a package
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 def get_version():
     try:
@@ -564,8 +564,21 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
                 agent.start_research_poll(request)
 
         elif args.command == "followup":
+            interaction_id = args.id
+            
+            # Smart Lookup: If ID is numeric, look it up in DB
+            if args.id.isdigit():
+                mgr = SessionManager()
+                session = mgr.get_session(args.id)
+                if session and session['interaction_id']:
+                    print(f"[INFO] Resuming Session #{args.id} (Interaction: {session['interaction_id']})")
+                    interaction_id = session['interaction_id']
+                else:
+                    print(f"[ERROR] Session #{args.id} not found or invalid.")
+                    return
+
             request = FollowUpRequest(
-                interaction_id=args.id,
+                interaction_id=interaction_id,
                 prompt=args.prompt
             )
             agent = DeepResearchAgent()

@@ -75,3 +75,22 @@ def test_process_stream_output(capsys):
     captured = capsys.readouterr()
     assert "Hello " in captured.out
     assert "[THOUGHT] Thinking..." in captured.out
+
+@patch("deep_research.SessionManager")
+def test_main_smart_followup(mock_mgr_cls, mock_agent_class):
+    """Test followup with numeric ID lookup."""
+    # Setup mock manager
+    mock_mgr = mock_mgr_cls.return_value
+    # Mock return value to simulate DB lookup (sqlite3.Row behaves like dict)
+    mock_mgr.get_session.return_value = {'interaction_id': 'v1_real_id'}
+    
+    test_args = ["deep_research.py", "followup", "5", "Question"]
+    with patch.object(sys, 'argv', test_args):
+        main()
+    
+    mock_mgr.get_session.assert_called_with("5")
+    
+    # Check that agent was called with the RESOLVED ID
+    mock_agent_class.return_value.follow_up.assert_called_once()
+    args = mock_agent_class.return_value.follow_up.call_args[0][0]
+    assert args.interaction_id == "v1_real_id"
