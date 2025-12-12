@@ -4,6 +4,7 @@ Future plans for the Gemini Deep Research CLI.
 
 ## ✅ Completed
 - [x] **Smart Context Ingestion:** Auto-upload local files/folders to temporary Cloud Stores for analysis (`--upload`).
+- [x] **Structured Data Export:** Save reports as JSON or CSV with schema enforcement (`--output`).
 
 ## 🚧 Planned Features
 
@@ -12,7 +13,6 @@ Future plans for the Gemini Deep Research CLI.
 - [ ] **Interactive Steerability:** Allow users to pause the agent and provide mid-stream feedback/direction without restarting.
 
 ### Data & Output
-- [ ] **Structured Export:** Enforce JSON/CSV output schemas for machine-readable reports.
 - [ ] **Citation Validator:** Auto-verify URLs in the final report to flag dead links or hallucinations.
 - [ ] **Session Management:** Local SQLite database to save research history, list past tasks, and resume sessions days later.
 

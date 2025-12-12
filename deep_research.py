@@ -21,6 +21,8 @@ if sys.prefix == sys.base_prefix and venv_python.exists():
 
 import time
 import argparse
+import json
+import re
 from typing import Optional, List
 from dotenv import load_dotenv
 from google import genai
@@ -42,18 +44,81 @@ class DeepResearchConfig(BaseModel):
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY not found. Please set it in .env or ~/.config/deepresearch/.env")
 
+class DataExporter:
+    @staticmethod
+    def extract_code_block(text: str, lang: str = "") -> str:
+        """Extracts content from a markdown code block."""
+        # Regex to find ```lang ... ``` blocks
+        pattern = rf"```{lang}\n(.*?)\n```"
+        match = re.search(pattern, text, re.DOTALL)
+        # Fallback: look for generic blocks if specific lang fails
+        if not match and lang:
+             pattern = r"```\n(.*?)\n```"
+             match = re.search(pattern, text, re.DOTALL)
+        return match.group(1) if match else text
+
+    @staticmethod
+    def save_json(content: str, filepath: str):
+        try:
+            # Try to extract JSON from code blocks first
+            clean_content = DataExporter.extract_code_block(content, "json")
+            # Attempt to parse to ensure validity
+            data = json.loads(clean_content)
+            
+            with open(filepath, 'w') as f:
+                json.dump(data, f, indent=2)
+            print(f"[INFO] JSON report saved to {filepath}")
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] Failed to parse JSON output: {e}")
+            # Save raw content as fallback
+            with open(filepath + ".raw", 'w') as f:
+                f.write(content)
+            print(f"[WARN] Raw content saved to {filepath}.raw")
+
+    @staticmethod
+    def save_csv(content: str, filepath: str):
+        try:
+            clean_content = DataExporter.extract_code_block(content, "csv")
+            with open(filepath, 'w') as f:
+                f.write(clean_content)
+            print(f"[INFO] CSV report saved to {filepath}")
+        except Exception as e:
+            print(f"[ERROR] Failed to save CSV: {e}")
+
+    @staticmethod
+    def export(content: str, filepath: str):
+        if filepath.lower().endswith('.json'):
+            DataExporter.save_json(content, filepath)
+        elif filepath.lower().endswith('.csv'):
+            DataExporter.save_csv(content, filepath)
+        else:
+            # Default text/markdown save
+            with open(filepath, 'w') as f:
+                f.write(content)
+            print(f"[INFO] Report saved to {filepath}")
+
 class ResearchRequest(BaseModel):
     prompt: str
     stores: Optional[List[str]] = None
     stream: bool = False
     output_format: Optional[str] = None
     upload_paths: Optional[List[str]] = None
+    output_file: Optional[str] = None
 
     @property
     def final_prompt(self) -> str:
+        base = self.prompt
         if self.output_format:
-            return f"{self.prompt}\n\nFormat the output as follows: {self.output_format}"
-        return self.prompt
+            base += f"\n\nFormat the output as follows: {self.output_format}"
+        
+        # Auto-append structural instructions based on filename extension
+        if self.output_file:
+            if self.output_file.lower().endswith('.json'):
+                base += "\n\nIMPORTANT: Output the final report as valid JSON inside a ```json code block."
+            elif self.output_file.lower().endswith('.csv'):
+                base += "\n\nIMPORTANT: Output the final report as valid CSV inside a ```csv code block."
+        
+        return base
 
     @property
     def tools_config(self) -> Optional[List[dict]]:
@@ -248,6 +313,15 @@ class DeepResearchAgent:
 
             if is_complete[0]:
                  print("\n[INFO] Research Complete.")
+                 
+                 # Retrieve final text for export
+                 if request.output_file and interaction_id[0]:
+                     try:
+                         final_interaction = self.client.interactions.get(id=interaction_id[0])
+                         if final_interaction.outputs:
+                             DataExporter.export(final_interaction.outputs[-1].text, request.output_file)
+                     except Exception as e:
+                         print(f"[WARN] Failed to export result: {e}")
 
         except KeyboardInterrupt:
             print("\n[WARN] Research interrupted by user.")
@@ -288,6 +362,9 @@ class DeepResearchAgent:
                 if interaction.status == "completed":
                     print("\n" + "="*40 + " REPORT " + "="*40)
                     print(interaction.outputs[-1].text)
+                    
+                    if request.output_file:
+                        DataExporter.export(interaction.outputs[-1].text, request.output_file)
                     break
                 elif interaction.status == "failed":
                     print(f"[ERROR] Failed: {interaction.error}")
@@ -355,6 +432,7 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     parser_research.add_argument("--stores", nargs="+", help="Existing Cloud File Search Store names (advanced)")
     parser_research.add_argument("--upload", nargs="+", help="Local file/folder paths to upload, analyze, and auto-delete")
     parser_research.add_argument("--format", help="Specific output instructions (e.g., 'Technical Report', 'CSV')")
+    parser_research.add_argument("--output", help="Save report to file (e.g., report.md, data.json)")
 
     # Command: followup
     parser_followup = subparsers.add_parser("followup", help="Ask a follow-up question to a previous session")
@@ -374,7 +452,8 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
                 stores=args.stores,
                 stream=args.stream,
                 output_format=args.format,
-                upload_paths=args.upload
+                upload_paths=args.upload,
+                output_file=args.output
             )
             agent = DeepResearchAgent()
             
