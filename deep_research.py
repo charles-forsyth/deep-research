@@ -503,6 +503,10 @@ Examples:
 4. Follow-up Question:
    %(prog)s followup v1_abc123... "Can you elaborate on point 2?"
 
+5. Manage History:
+   %(prog)s list
+   %(prog)s show 1
+
 Configuration:
 --------------
 Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env

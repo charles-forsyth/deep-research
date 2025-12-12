@@ -13,6 +13,7 @@ This tool unlocks the power of Google's most advanced autonomous research model,
 *   **🚀 Autonomous Deep Research:** Powered by Gemini 3 Pro, it plans, searches, reads, and synthesizes complex topics.
 *   **📂 Smart Context Ingestion:** Instantly analyze local PDFs, text files, or folders. The tool handles cloud upload/cleanup automatically.
 *   **💾 Structured Data Export:** Save reports directly to JSON or CSV files with automatic schema enforcement (`--output`).
+*   **🗄️ Session History:** Automatically saves your research history to a local database. List past tasks and retrieve old reports instantly.
 *   **⚡ Real-Time Streaming:** Watch the agent's "Thought Process" in real-time as it navigates the web.
 *   **🛡️ Robust & Resilient:** Auto-resumes sessions if the network drops. 
 *   **💬 Interactive Follow-ups:** Chat with the finished report to ask clarifying questions.
@@ -90,6 +91,17 @@ Don't just get a report—interact with it. Use the `Interaction ID` from the ou
 
 ```bash
 deep-research followup v1_abc123... "Can you elaborate on the second point?"
+```
+
+### 5. Manage History
+Review your past research sessions.
+
+```bash
+# List recent sessions
+deep-research list
+
+# Show the report from a specific session ID
+deep-research show 1
 ```
 
 ## 🛠️ Development
