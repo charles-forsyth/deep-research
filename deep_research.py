@@ -48,7 +48,7 @@ user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
 load_dotenv(user_config_path)
 
 # Fallback version if not installed as a package
-__version__ = "0.7.4"
+__version__ = "0.7.5"
 
 def get_version():
     try:
@@ -294,16 +294,30 @@ class FileManager:
     def _upload_file(self, path: str, store_name: str):
         console.print(f"[bold cyan][INFO][/] Uploading: {path}")
         try:
+            # Determine MIME type for source files that might fail auto-detection
+            mime_type = None
+            if path.endswith(('.py', '.toml', '.md', '.json', '.lock', '.yml', '.yaml', '.txt')):
+                mime_type = 'text/plain'
+
             if hasattr(self.client.file_search_stores, 'upload_to_file_search_store'):
-                 self.client.file_search_stores.upload_to_file_search_store(
-                     file_search_store_name=store_name,
-                     file=path
-                 )
-                 # Note: We can't easily track the resulting file resource name from this helper 
-                 # to delete it individually later. We rely on store deletion.
+                 # Helper doesn't seem to expose config/mime_type easily in args?
+                 # Let's check diagnostics... It had 'config'.
+                 # config={'mime_type': ...}
+                 
+                 kwargs = {'file_search_store_name': store_name, 'file': path}
+                 if mime_type:
+                     # Attempt to pass config if supported
+                     # Based on previous inspection: (*, file_search_store_name, file, config=...)
+                     kwargs['config'] = {'mime_type': mime_type}
+
+                 self.client.file_search_stores.upload_to_file_search_store(**kwargs)
             else:
-                 # Fallback path if helper missing
-                 file_obj = self.client.files.upload(path=path)
+                 # Fallback path
+                 upload_config = None
+                 if mime_type:
+                     upload_config = {'mime_type': mime_type}
+                     
+                 file_obj = self.client.files.upload(path=path, config=upload_config)
                  self.uploaded_files.append(file_obj.name)
                  
                  # Wait for processing with 5-minute timeout
