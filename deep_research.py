@@ -190,6 +190,15 @@ class SessionManager:
             # Try as interaction_id
             return conn.execute("SELECT * FROM sessions WHERE interaction_id = ?", (session_id_or_interaction_id,)).fetchone()
 
+    def delete_session(self, session_id_or_interaction_id: str) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            if str(session_id_or_interaction_id).isdigit():
+                cursor = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id_or_interaction_id,))
+            else:
+                cursor = conn.execute("DELETE FROM sessions WHERE interaction_id = ?", (session_id_or_interaction_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
 class DeepResearchConfig(BaseModel):
     api_key: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY"), validate_default=True)
     agent_name: str = "deep-research-pro-preview-12-2025"
@@ -700,6 +709,10 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     parser_show.add_argument("id", help="Session ID (integer) or Interaction ID")
     parser_show.add_argument("--save", help="Save the colorful report to HTML or Text file")
 
+    # Command: delete
+    parser_delete = subparsers.add_parser("delete", help="Delete a session from history")
+    parser_delete.add_argument("id", help="Session ID (integer) or Interaction ID")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -826,6 +839,14 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
                 else:
                     show_console.save_text(args.save)
                 console.print(f"[bold green][INFO][/] Report saved to {args.save}")
+
+        elif args.command == "delete":
+            mgr = SessionManager()
+            success = mgr.delete_session(args.id)
+            if success:
+                console.print(f"[bold green][INFO][/] Session '{args.id}' deleted.")
+            else:
+                console.print(f"[bold red][ERROR][/] Session '{args.id}' not found.")
 
         else:
             parser.print_help()
