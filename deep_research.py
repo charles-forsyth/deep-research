@@ -640,6 +640,9 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     parser_show = subparsers.add_parser("show", help="Show details of a previous session")
     parser_show.add_argument("id", help="Session ID (integer) or Interaction ID")
 
+    # Command: tui
+    parser_tui = subparsers.add_parser("tui", help="Launch the Mission Control TUI dashboard")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -647,6 +650,16 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
         return
 
     try:
+        if args.command == "tui":
+            try:
+                from tui.app import MissionControlApp
+                app = MissionControlApp()
+                app.run()
+            except ImportError as e:
+                print(f"[ERROR] TUI dependencies not found: {e}")
+                print("Please run 'uv sync' to install 'textual'.")
+            return
+
         if args.command == "start":
             # 1. Create Placeholder Session
             mgr = SessionManager()
