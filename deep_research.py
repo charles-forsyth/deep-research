@@ -122,15 +122,40 @@ class FileManager:
         print("\n[INFO] Cleaning up temporary resources...")
         for store_name in self.created_stores:
              try:
+                 # 1. Empty the store first
+                 if hasattr(self.client.file_search_stores, 'documents'):
+                     try:
+                         # List documents in the store
+                         pager = self.client.file_search_stores.documents.list(parent=store_name)
+                         for doc in pager:
+                             try:
+                                 print(f"[INFO] Deleting document: {doc.name}")
+                                 # Force delete to remove chunks/non-empty docs
+                                 self.client.file_search_stores.documents.delete(
+                                     name=doc.name,
+                                     config={'force': True}
+                                 )
+                             except Exception as e:
+                                 print(f"[WARN] Failed to delete document {doc.name}: {e}")
+                     except Exception as e:
+                         # If listing fails, we might just try deleting the store directly
+                         print(f"[WARN] Failed to list documents in {store_name}: {e}")
+
+                 # 2. Delete the store
                  self.client.file_search_stores.delete(name=store_name)
                  print(f"[INFO] Deleted store: {store_name}")
              except Exception as e:
-                 # Be quieter about non-empty errors since we can't easily force-delete yet
                  if "non-empty" in str(e):
                      print(f"[WARN] Could not delete store {store_name} (contains files). It will persist.")
                  else:
                      print(f"[WARN] Failed to delete store {store_name}: {e}")
 
+        # Note: We don't need to delete 'uploaded_files' via client.files.delete() 
+        # if they were uploaded via upload_to_file_search_store() as they are managed by the store?
+        # Actually, 'upload_to_file_search_store' creates a Document. 
+        # Does it create a File resource too? 
+        # Usually yes. But if we delete the Document, does it delete the File?
+        # Let's keep the file deletion logic just in case we used the fallback upload method.
         for file_name in self.uploaded_files:
             try:
                 self.client.files.delete(name=file_name)
