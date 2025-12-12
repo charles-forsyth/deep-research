@@ -325,20 +325,51 @@ class DeepResearchAgent:
         print(interaction.outputs[-1].text)
 
 def main():
-    parser = argparse.ArgumentParser(description="CLI for Gemini Deep Research Agent")
+    desc = """
+Gemini Deep Research Agent CLI
+==============================
+A powerful tool to conduct autonomous, multi-step research using Gemini 3 Pro.
+Support web search, local file ingestion, streaming thoughts, and follow-ups.
+    """
+    
+    epilog = """
+Examples:
+---------
+1. Basic Web Research (Streaming):
+   %(prog)s research "History of the internet" --stream
+
+2. Research with Local Files (Smart Context):
+   %(prog)s research "Summarize this contract" --upload ./contract.pdf --stream
+
+3. Formatted Output:
+   %(prog)s research "Compare GPU prices" --format "Markdown table with columns: Model, Price, VRAM"
+
+4. Follow-up Question:
+   %(prog)s followup v1_abc123... "Can you elaborate on point 2?"
+
+Configuration:
+--------------
+Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
+    """
+
+    parser = argparse.ArgumentParser(
+        description=desc,
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # Command: research
     parser_research = subparsers.add_parser("research", help="Start a new research task")
     parser_research.add_argument("prompt", help="The research prompt or question")
-    parser_research.add_argument("--stream", action="store_true", help="Stream the results (default: polling)")
-    parser_research.add_argument("--stores", nargs="+", help="Existing File Search Store names")
-    parser_research.add_argument("--upload", nargs="+", help="Local file/folder paths to upload temporarily")
-    parser_research.add_argument("--format", help="Formatting instructions")
+    parser_research.add_argument("--stream", action="store_true", help="Stream the agent's thought process (Recommended)")
+    parser_research.add_argument("--stores", nargs="+", help="Existing Cloud File Search Store names (advanced)")
+    parser_research.add_argument("--upload", nargs="+", help="Local file/folder paths to upload, analyze, and auto-delete")
+    parser_research.add_argument("--format", help="Specific output instructions (e.g., 'Technical Report', 'CSV')")
 
     # Command: followup
-    parser_followup = subparsers.add_parser("followup", help="Ask a follow-up question")
-    parser_followup.add_argument("id", help="The Previous Interaction ID")
+    parser_followup = subparsers.add_parser("followup", help="Ask a follow-up question to a previous session")
+    parser_followup.add_argument("id", help="The Interaction ID from a previous research task")
     parser_followup.add_argument("prompt", help="The follow-up question")
 
     args = parser.parse_args()
