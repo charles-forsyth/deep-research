@@ -10,3 +10,9 @@ dependencies = [
     "pytest>=9.0.2",
     "python-dotenv>=1.2.1",
 ]
+
+[project.scripts]
+deep-research = "deep_research:main"
+
+[tool.uv]
+package = true
