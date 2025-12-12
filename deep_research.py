@@ -24,17 +24,32 @@ import argparse
 import json
 import re
 from typing import Optional, List
+from importlib.metadata import version, PackageNotFoundError
 from dotenv import load_dotenv
 from google import genai
 from pydantic import BaseModel, Field, ValidationError
 
 # Load environment variables
+# 1. Try local .env first (standard behavior of load_dotenv without args)
 load_dotenv()
+
+# 2. Try User Config Directory (XDG Standard) as fallback
+# This allows running the tool from any directory without copying .env
 xdg_config_home = os.getenv("XDG_CONFIG_HOME", os.path.join(os.path.expanduser("~"), ".config"))
 user_config_path = os.path.join(xdg_config_home, "deepresearch", ".env")
 load_dotenv(user_config_path)
 
+# Fallback version if not installed as a package
+__version__ = "0.2.0"
+
+def get_version():
+    try:
+        return version("deepresearch")
+    except PackageNotFoundError:
+        return __version__
+
 class DeepResearchConfig(BaseModel):
+
     api_key: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
     agent_name: str = "deep-research-pro-preview-12-2025"
     followup_model: str = "gemini-3-pro-preview"
@@ -424,6 +439,9 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
         epilog=epilog,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    
+    parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {get_version()}")
+
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # Command: research
