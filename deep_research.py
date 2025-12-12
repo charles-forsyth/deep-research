@@ -92,6 +92,19 @@ class SessionManager:
             conn.execute(query, tuple(params))
             conn.commit()
 
+    def append_to_result(self, interaction_id: str, new_content: str):
+        with sqlite3.connect(self.db_path) as conn:
+            # Get current result
+            row = conn.execute("SELECT result FROM sessions WHERE interaction_id = ?", (interaction_id,)).fetchone()
+            if row:
+                current_result = row[0] or ""
+                updated_result = f"{current_result}\n\n{new_content}"
+                conn.execute(
+                    "UPDATE sessions SET result = ?, updated_at = ? WHERE interaction_id = ?",
+                    (updated_result, datetime.now().isoformat(), interaction_id)
+                )
+                conn.commit()
+
     def list_sessions(self, limit: int = 10):
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -472,12 +485,22 @@ class DeepResearchAgent:
 
     def follow_up(self, request: FollowUpRequest):
         print(f"[INFO] Sending follow-up to interaction: {request.interaction_id}")
-        interaction = self.client.interactions.create(
-            input=request.prompt,
-            model=self.config.followup_model, 
-            previous_interaction_id=request.interaction_id
-        )
-        print(interaction.outputs[-1].text)
+        try:
+            interaction = self.client.interactions.create(
+                input=request.prompt,
+                model=self.config.followup_model, 
+                previous_interaction_id=request.interaction_id
+            )
+            if interaction.outputs:
+                response_text = interaction.outputs[-1].text
+                print(response_text)
+                
+                # Save to DB
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                append_text = f"\n\n---\n### Follow-up ({timestamp})\n\n**Q: {request.prompt}**\n\n{response_text}"
+                self.session_manager.append_to_result(request.interaction_id, append_text)
+        except Exception as e:
+            print(f"[ERROR] Follow-up failed: {e}")
 
 def main():
     desc = """
