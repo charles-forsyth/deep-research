@@ -1,4 +1,6 @@
 import pytest
+import os
+from unittest.mock import patch
 from deep_research import SessionManager
 
 @pytest.fixture
@@ -15,9 +17,6 @@ def test_create_session(test_db):
     assert session['interaction_id'] == "v1_123"
     assert session['prompt'] == "Test prompt"
     assert session['status'] == "running"
-    # Check JSON deserialization if we were doing it, but here we check raw or string
-    # Our get_session returns row object which supports key access
-    # We stored json.dumps(["file1.txt"])
     assert "file1.txt" in session['files']
 
 def test_update_session(test_db):
@@ -34,11 +33,47 @@ def test_list_sessions(test_db):
     mgr = SessionManager(test_db)
     mgr.create_session("v1_A", "Test A")
     import time
-    time.sleep(0.1) # Ensure timestamp diff
+    time.sleep(0.1) 
     mgr.create_session("v1_B", "Test B")
     
     sessions = mgr.list_sessions(limit=5)
     assert len(sessions) == 2
-    # The list is ordered by updated_at DESC. 
-    # B was created last, so it should be first.
     assert sessions[0]['interaction_id'] == "v1_B"
+
+def test_pid_tracking_alive(test_db):
+
+    mgr = SessionManager(test_db)
+
+    pid = os.getpid()
+
+    mgr.create_session("v1_C", "Test PID", pid=pid)
+
+    
+
+    sessions = mgr.list_sessions()
+
+    assert sessions[0]['status'] == 'running'
+
+    assert sessions[0]['pid'] == pid
+
+
+
+def test_pid_tracking_dead(test_db):
+
+    mgr = SessionManager(test_db)
+
+    # Use a likely unused PID (max pid is usually 32k or higher, but let's just mock os.kill)
+
+    fake_pid = 99999
+
+    
+
+    with patch("os.kill", side_effect=OSError):
+
+        mgr.create_session("v1_D", "Test Dead PID", pid=fake_pid)
+
+        sessions = mgr.list_sessions()
+
+        
+
+    assert sessions[0]['status'] == 'crashed'

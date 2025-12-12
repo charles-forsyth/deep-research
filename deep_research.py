@@ -55,10 +55,11 @@ def get_version():
     except PackageNotFoundError:
         return __version__
 
-def detach_process(args_list: list[str], log_path: str):
+def detach_process(args_list: list[str], log_path: str) -> int:
     """
     Spawns a detached subprocess that survives terminal closure.
     Redirects stdout/stderr to the specified log file.
+    Returns the PID of the spawned process.
     """
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     
@@ -72,13 +73,14 @@ def detach_process(args_list: list[str], log_path: str):
         else:
             kwargs['start_new_session'] = True
             
-        subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             stdout=log_file,
             stderr=log_file,
             stdin=subprocess.DEVNULL,
             **kwargs
         )
+        return proc.pid
 
 class SessionManager:
     def __init__(self, db_path: str = user_db_path):
@@ -102,17 +104,28 @@ class SessionManager:
                     files JSON
                 )
             """)
+            # Migration: Add PID column if missing (v0.8.1)
+            cursor = conn.execute("PRAGMA table_info(sessions)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if "pid" not in columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN pid INTEGER")
+            
             conn.commit()
 
-    def create_session(self, interaction_id: str, prompt: str, files: list[str] | None = None) -> int:
+    def create_session(self, interaction_id: str, prompt: str, files: list[str] | None = None, pid: int | None = None) -> int:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                "INSERT INTO sessions (interaction_id, prompt, status, created_at, updated_at, files) VALUES (?, ?, ?, ?, ?, ?)",
-                (interaction_id, prompt, "running", datetime.now().isoformat(), datetime.now().isoformat(), json.dumps(files or []))
+                "INSERT INTO sessions (interaction_id, prompt, status, created_at, updated_at, files, pid) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (interaction_id, prompt, "running", datetime.now().isoformat(), datetime.now().isoformat(), json.dumps(files or []), pid)
             )
             conn.commit()
             print(f"[DB] Session saved (ID: {cursor.lastrowid})")
             return cursor.lastrowid
+
+    def update_session_pid(self, session_id: int, pid: int):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE sessions SET pid = ? WHERE id = ?", (pid, session_id))
+            conn.commit()
 
     def update_session_interaction_id(self, session_id: int, interaction_id: str):
         with sqlite3.connect(self.db_path) as conn:
@@ -151,7 +164,22 @@ class SessionManager:
     def list_sessions(self, limit: int = 10):
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            return conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+            sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+            
+            # Check for dead processes
+            result = []
+            for s in sessions:
+                s_dict = dict(s)
+                if s['status'] == 'running' and s['pid']:
+                    try:
+                        os.kill(s['pid'], 0) # Check if process exists
+                    except OSError:
+                        # Process died
+                        s_dict['status'] = 'crashed'
+                        conn.execute("UPDATE sessions SET status = 'crashed' WHERE id = ?", (s['id'],))
+                        conn.commit()
+                result.append(s_dict)
+            return result
 
     def get_session(self, session_id_or_interaction_id: str):
         with sqlite3.connect(self.db_path) as conn:
@@ -695,9 +723,10 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
             
             # 3. Detach
             log_file = os.path.join(xdg_config_home, "deepresearch", "logs", f"session_{sid}.log")
-            detach_process(child_args, log_file)
+            pid = detach_process(child_args, log_file)
+            mgr.update_session_pid(sid, pid)
             
-            print(f"[INFO] Research started in background! (Session ID: {sid})")
+            print(f"[INFO] Research started in background! (Session ID: {sid}, PID: {pid})")
             print(f"[INFO] Logs: {log_file}")
             print("[INFO] Check status with: deep-research list")
 
