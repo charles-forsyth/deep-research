@@ -84,8 +84,11 @@ Input {
     border: none;
     background: $panel-bg;
     color: $text-cyan;
+    width: 1fr;
 }
 
 Checkbox {
     color: $text-primary;
+    width: auto;
+    padding-left: 1;
 }
