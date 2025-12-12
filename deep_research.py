@@ -36,6 +36,7 @@ from rich.markdown import Markdown
 from rich.table import Table
 from rich.panel import Panel
 from rich.live import Live
+from rich.terminal_theme import MONOKAI
 
 # Load environment variables
 load_dotenv()
@@ -774,7 +775,8 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
             
             if args.save:
                 if args.save.lower().endswith('.html'):
-                    show_console.save_html(args.save)
+                    # Use Monokai (Dark) theme for HTML export
+                    show_console.save_html(args.save, theme=MONOKAI)
                 else:
                     show_console.save_text(args.save)
                 console.print(f"[bold green][INFO][/] Report saved to {args.save}")
