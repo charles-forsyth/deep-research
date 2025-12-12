@@ -21,7 +21,7 @@ def test_config_initialization(mock_env_api_key):
 def test_config_missing_key(monkeypatch):
     """Test that the config raises an error if the API key is missing."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    with pytest.raises(ValueError, match="GEMINI_API_KEY not found"):
+    with pytest.raises(ValidationError, match="GEMINI_API_KEY not found"):
         DeepResearchConfig()
 
 def test_research_request_validation():

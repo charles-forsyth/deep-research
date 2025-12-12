@@ -26,11 +26,10 @@ import re
 import sqlite3
 import subprocess
 from datetime import datetime
-from typing import Optional, List
 from importlib.metadata import version, PackageNotFoundError
 from dotenv import load_dotenv
 from google import genai
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
@@ -56,7 +55,7 @@ def get_version():
     except PackageNotFoundError:
         return __version__
 
-def detach_process(args_list: List[str], log_path: str):
+def detach_process(args_list: list[str], log_path: str):
     """
     Spawns a detached subprocess that survives terminal closure.
     Redirects stdout/stderr to the specified log file.
@@ -89,6 +88,8 @@ class SessionManager:
     def _init_db(self):
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         with sqlite3.connect(self.db_path) as conn:
+            # Enable Write-Ahead Logging for concurrency
+            conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,7 +104,7 @@ class SessionManager:
             """)
             conn.commit()
 
-    def create_session(self, interaction_id: str, prompt: str, files: List[str] = None) -> int:
+    def create_session(self, interaction_id: str, prompt: str, files: list[str] | None = None) -> int:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
                 "INSERT INTO sessions (interaction_id, prompt, status, created_at, updated_at, files) VALUES (?, ?, ?, ?, ?, ?)",
@@ -162,15 +163,16 @@ class SessionManager:
             return conn.execute("SELECT * FROM sessions WHERE interaction_id = ?", (session_id_or_interaction_id,)).fetchone()
 
 class DeepResearchConfig(BaseModel):
-
-    api_key: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
+    api_key: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY"), validate_default=True)
     agent_name: str = "deep-research-pro-preview-12-2025"
     followup_model: str = "gemini-3-pro-preview"
 
-    def __init__(self, **data):
-        super().__init__(**data)
-        if not self.api_key:
+    @field_validator('api_key', mode='before')
+    @classmethod
+    def check_api_key(cls, v: str) -> str:
+        if not v:
             raise ValueError("GEMINI_API_KEY not found. Please set it in .env or ~/.config/deepresearch/.env")
+        return v
 
 class DataExporter:
     @staticmethod
@@ -227,12 +229,12 @@ class DataExporter:
 
 class ResearchRequest(BaseModel):
     prompt: str
-    stores: Optional[List[str]] = None
+    stores: list[str] | None = None
     stream: bool = False
-    output_format: Optional[str] = None
-    upload_paths: Optional[List[str]] = None
-    output_file: Optional[str] = None
-    adopt_session_id: Optional[int] = None
+    output_format: str | None = None
+    upload_paths: list[str] | None = None
+    output_file: str | None = None
+    adopt_session_id: int | None = None
 
     @property
     def final_prompt(self) -> str:
@@ -250,7 +252,7 @@ class ResearchRequest(BaseModel):
         return base
 
     @property
-    def tools_config(self) -> Optional[List[dict]]:
+    def tools_config(self) -> list[dict] | None:
         if self.stores:
             return [
                 {
@@ -270,7 +272,7 @@ class FileManager:
         self.created_stores = []
         self.uploaded_files = []
 
-    def create_store_from_paths(self, paths: List[str]) -> str:
+    def create_store_from_paths(self, paths: list[str]) -> str:
         console.print(f"[bold cyan][INFO][/] Uploading {len(paths)} items to a new File Search Store...")
         store = self.client.file_search_stores.create()
         self.created_stores.append(store.name)
@@ -377,7 +379,7 @@ class FileManager:
                 pass
 
 class DeepResearchAgent:
-    def __init__(self, config: Optional[DeepResearchConfig] = None, logger=None):
+    def __init__(self, config: DeepResearchConfig | None = None, logger=None):
         self.config = config or DeepResearchConfig()
         self.client = genai.Client(api_key=self.config.api_key)
         self.file_manager = FileManager(self.client)
@@ -406,7 +408,7 @@ class DeepResearchAgent:
             kwargs.pop('flush', None)
             console.print(msg, end=end, highlight=False, **kwargs)
 
-    def _process_stream(self, event_stream, interaction_id_ref: list, last_event_id_ref: list, is_complete_ref: list, request_prompt: str = None, upload_paths: list = None, adopt_session_id: int = None):
+    def _process_stream(self, event_stream, interaction_id_ref: list, last_event_id_ref: list, is_complete_ref: list, request_prompt: str | None = None, upload_paths: list | None = None, adopt_session_id: int | None = None):
         for event in event_stream:
             if event.event_type == "interaction.start":
                 interaction_id_ref[0] = event.interaction.id
