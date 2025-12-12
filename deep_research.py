@@ -24,6 +24,7 @@ import argparse
 import json
 import re
 import sqlite3
+import subprocess
 from datetime import datetime
 from typing import Optional, List
 from importlib.metadata import version, PackageNotFoundError
@@ -46,6 +47,31 @@ def get_version():
         return version("deepresearch")
     except PackageNotFoundError:
         return __version__
+
+def detach_process(args_list: List[str], log_path: str):
+    """
+    Spawns a detached subprocess that survives terminal closure.
+    Redirects stdout/stderr to the specified log file.
+    """
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    
+    with open(log_path, 'a') as log_file:
+        script_file = str(pathlib.Path(__file__).resolve())
+        cmd = [sys.executable, script_file] + args_list
+        
+        kwargs = {}
+        if sys.platform == 'win32':
+            kwargs['creationflags'] = 0x00000008 # DETACHED_PROCESS
+        else:
+            kwargs['start_new_session'] = True
+            
+        subprocess.Popen(
+            cmd,
+            stdout=log_file,
+            stderr=log_file,
+            stdin=subprocess.DEVNULL,
+            **kwargs
+        )
 
 class SessionManager:
     def __init__(self, db_path: str = user_db_path):
@@ -78,6 +104,14 @@ class SessionManager:
             conn.commit()
             print(f"[DB] Session saved (ID: {cursor.lastrowid})")
             return cursor.lastrowid
+
+    def update_session_interaction_id(self, session_id: int, interaction_id: str):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE sessions SET interaction_id = ?, status = 'running', updated_at = ? WHERE id = ?",
+                (interaction_id, datetime.now().isoformat(), session_id)
+            )
+            conn.commit()
 
     def update_session(self, interaction_id: str, status: str, result: str = None):
         with sqlite3.connect(self.db_path) as conn:
@@ -190,6 +224,7 @@ class ResearchRequest(BaseModel):
     output_format: Optional[str] = None
     upload_paths: Optional[List[str]] = None
     output_file: Optional[str] = None
+    adopt_session_id: Optional[int] = None
 
     @property
     def final_prompt(self) -> str:
@@ -326,12 +361,14 @@ class DeepResearchAgent:
         self.file_manager = FileManager(self.client)
         self.session_manager = SessionManager()
 
-    def _process_stream(self, event_stream, interaction_id_ref: list, last_event_id_ref: list, is_complete_ref: list, request_prompt: str = None, upload_paths: list = None):
+    def _process_stream(self, event_stream, interaction_id_ref: list, last_event_id_ref: list, is_complete_ref: list, request_prompt: str = None, upload_paths: list = None, adopt_session_id: int = None):
         for event in event_stream:
             if event.event_type == "interaction.start":
                 interaction_id_ref[0] = event.interaction.id
                 print(f"\n[INFO] Interaction started: {event.interaction.id}")
-                if request_prompt:
+                if adopt_session_id:
+                    self.session_manager.update_session_interaction_id(adopt_session_id, event.interaction.id)
+                elif request_prompt:
                     self.session_manager.create_session(event.interaction.id, request_prompt, upload_paths)
 
             if event.event_id:
@@ -392,7 +429,7 @@ class DeepResearchAgent:
                 agent_config=agent_config
             )
             # Pass prompt for DB saving
-            self._process_stream(initial_stream, interaction_id, last_event_id, is_complete, request.prompt, request.upload_paths)
+            self._process_stream(initial_stream, interaction_id, last_event_id, is_complete, request.prompt, request.upload_paths, request.adopt_session_id)
             
             # Reconnection Loop
             while not is_complete[0] and interaction_id[0]:
@@ -402,7 +439,7 @@ class DeepResearchAgent:
                     resume_stream = self.client.interactions.get(
                         id=interaction_id[0], stream=True, last_event_id=last_event_id[0]
                     )
-                    self._process_stream(resume_stream, interaction_id, last_event_id, is_complete)
+                    self._process_stream(resume_stream, interaction_id, last_event_id, is_complete, adopt_session_id=request.adopt_session_id)
                 except Exception as e:
                     print(f"[ERROR] Reconnection failed: {e}")
             
@@ -454,7 +491,11 @@ class DeepResearchAgent:
                 tools=request.tools_config
             )
             print(f"[INFO] Started: {interaction.id}")
-            self.session_manager.create_session(interaction.id, request.prompt, request.upload_paths)
+            
+            if hasattr(request, 'adopt_session_id') and request.adopt_session_id:
+                self.session_manager.update_session_interaction_id(request.adopt_session_id, interaction.id)
+            else:
+                self.session_manager.create_session(interaction.id, request.prompt, request.upload_paths)
 
             while True:
                 interaction = self.client.interactions.get(interaction.id)
@@ -553,6 +594,14 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     parser_research.add_argument("--upload", nargs="+", help="Local file/folder paths to upload, analyze, and auto-delete")
     parser_research.add_argument("--format", help="Specific output instructions (e.g., 'Technical Report', 'CSV')")
     parser_research.add_argument("--output", help="Save report to file (e.g., report.md, data.json)")
+    parser_research.add_argument("--adopt-session", type=int, help=argparse.SUPPRESS)
+
+    # Command: start (Headless)
+    parser_start = subparsers.add_parser("start", help="Start a research task in the background (Headless)")
+    parser_start.add_argument("prompt", help="The research prompt or question")
+    parser_start.add_argument("--upload", nargs="+", help="Local file/folder paths to upload")
+    parser_start.add_argument("--format", help="Specific output instructions")
+    parser_start.add_argument("--output", help="Save report to file")
 
     # Command: followup
     parser_followup = subparsers.add_parser("followup", help="Ask a follow-up question to a previous session")
@@ -569,15 +618,42 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
 
     args = parser.parse_args()
 
+    if not args.command:
+        parser.print_help()
+        return
+
     try:
-        if args.command == "research":
+        if args.command == "start":
+            # 1. Create Placeholder Session
+            mgr = SessionManager()
+            sid = mgr.create_session("pending_start", args.prompt, args.upload)
+            
+            # 2. Construct Child Arguments
+            child_args = ["research", args.prompt, "--adopt-session", str(sid)]
+            if args.upload:
+                 child_args += ["--upload"] + args.upload
+            if args.format:
+                 child_args += ["--format", args.format]
+            if args.output:
+                 child_args += ["--output", args.output]
+            
+            # 3. Detach
+            log_file = os.path.join(xdg_config_home, "deepresearch", "logs", f"session_{sid}.log")
+            detach_process(child_args, log_file)
+            
+            print(f"[INFO] Research started in background! (Session ID: {sid})")
+            print(f"[INFO] Logs: {log_file}")
+            print(f"[INFO] Check status with: deep-research list")
+
+        elif args.command == "research":
             request = ResearchRequest(
                 prompt=args.prompt,
                 stores=args.stores,
                 stream=args.stream,
                 output_format=args.format,
                 upload_paths=args.upload,
-                output_file=args.output
+                output_file=args.output,
+                adopt_session_id=args.adopt_session
             )
             agent = DeepResearchAgent()
             
