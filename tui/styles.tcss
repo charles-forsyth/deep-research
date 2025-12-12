@@ -1,0 +1,91 @@
+/* Mission Control TCSS */
+
+/* --- Aether-Punk Palette --- */
+$surface-bg: #1d1f21;
+$panel-bg: #2b211e;
+$accent-gold: #ded398;
+$text-primary: #c5c8c6;
+$text-amber: #ffb000;
+$text-cyan: #78cce2;
+$border-dim: #6f636d;
+
+Screen {
+    layout: grid;
+    grid-size: 2 2;
+    grid-columns: 40 1fr; /* Fixed sidebar, flexible main */
+    grid-rows: 2fr 1fr;   /* Report taller than Log */
+    background: $surface-bg;
+    color: $text-primary;
+}
+
+/* --- The Grid Areas --- */
+
+/* Sidebar (History) spans both rows */
+#history-pane {
+    row-span: 2;
+    background: $panel-bg;
+    border: double $accent-gold;
+    border-title-color: $accent-gold;
+    margin: 1;
+}
+
+/* Report Pane (Top Right) */
+#report-pane {
+    /* naturally flows to col 2, row 1 */
+    background: $panel-bg;
+    border: double $accent-gold;
+    border-title-color: $accent-gold;
+    margin: 1;
+}
+
+/* Log Pane (Bottom Right) */
+#log-pane {
+    /* naturally flows to col 2, row 2 */
+    background: #000000; /* Pure black for high contrast logs */
+    border: heavy $border-dim;
+    border-title-color: $text-amber;
+    color: $text-amber;
+    margin: 1;
+}
+
+/* Footer (Input) - Actually we dock this at bottom, outside grid */
+#input-dock {
+    dock: bottom;
+    height: 3;
+    background: $panel-bg;
+    border-top: solid $accent-gold;
+    padding: 0 1;
+}
+
+/* --- Widget Styling --- */
+
+DataTable {
+    background: $panel-bg;
+    color: $text-primary;
+}
+
+DataTable > .datatable--header {
+    background: $accent-gold;
+    color: $surface-bg;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: $accent-gold;
+    color: $surface-bg;
+}
+
+Log {
+    background: transparent;
+    overflow-x: hidden;
+}
+
+Input {
+    border: none;
+    background: $panel-bg;
+    color: $text-cyan;
+}
+
+Checkbox {
+    color: $text-primary;
+}
