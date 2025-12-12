@@ -1,7 +1,5 @@
 import sys
 import os
-# Add parent dir to path to import deep_research
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Checkbox, DataTable, Input
