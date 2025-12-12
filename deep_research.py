@@ -48,7 +48,7 @@ user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
 load_dotenv(user_config_path)
 
 # Fallback version if not installed as a package
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 
 def get_version():
     try:
@@ -653,6 +653,7 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     # Command: show
     parser_show = subparsers.add_parser("show", help="Show details of a previous session")
     parser_show.add_argument("id", help="Session ID (integer) or Interaction ID")
+    parser_show.add_argument("--save", help="Save the colorful report to HTML or Text file")
 
     args = parser.parse_args()
 
@@ -746,10 +747,14 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
         elif args.command == "show":
             mgr = SessionManager()
             session = mgr.get_session(args.id)
+            
+            # Use recording console if saving
+            show_console = Console(record=True) if args.save else console
+
             if not session:
-                console.print(f"[bold red][ERROR] Session '{args.id}' not found.[/]")
+                show_console.print(f"[bold red][ERROR] Session '{args.id}' not found.[/]")
             else:
-                console.print(Panel(
+                show_console.print(Panel(
                     f"[bold]Interaction ID:[/bold] {session['interaction_id']}\n"
                     f"[bold]Date:[/bold] {session['created_at']}\n"
                     f"[bold]Status:[/bold] {session['status']}\n"
@@ -758,14 +763,21 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
                     subtitle="Metadata"
                 ))
                 
-                console.rule("[bold cyan]Prompt[/]")
-                console.print(f"[bold]{session['prompt']}[/]\n")
+                show_console.rule("[bold cyan]Prompt[/]")
+                show_console.print(f"[bold]{session['prompt']}[/]\n")
                 
-                console.rule("[bold green]Result[/]")
+                show_console.rule("[bold green]Result[/]")
                 if session['result']:
-                    console.print(Markdown(session['result']))
+                    show_console.print(Markdown(session['result']))
                 else:
-                    console.print("[italic dim](No result stored)[/]")
+                    show_console.print("[italic dim](No result stored)[/]")
+            
+            if args.save:
+                if args.save.lower().endswith('.html'):
+                    show_console.save_html(args.save)
+                else:
+                    show_console.save_text(args.save)
+                console.print(f"[bold green][INFO][/] Report saved to {args.save}")
 
         else:
             parser.print_help()
