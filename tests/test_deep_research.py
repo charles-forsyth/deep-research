@@ -1,6 +1,5 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 import pytest
-import os
 from deep_research import DeepResearchAgent, DeepResearchConfig, ResearchRequest, FollowUpRequest
 from pydantic import ValidationError
 

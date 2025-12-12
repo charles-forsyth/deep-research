@@ -35,7 +35,6 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
 from rich.panel import Panel
-from rich.live import Live
 from rich.terminal_theme import MONOKAI
 
 # Load environment variables
@@ -360,7 +359,7 @@ class FileManager:
             try:
                 self.client.files.delete(name=file_name)
                 console.print(f"[bold cyan][INFO][/] Deleted file resource: {file_name}")
-            except Exception as e:
+            except Exception:
                 pass
 
 class DeepResearchAgent:
@@ -683,7 +682,7 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
             
             print(f"[INFO] Research started in background! (Session ID: {sid})")
             print(f"[INFO] Logs: {log_file}")
-            print(f"[INFO] Check status with: deep-research list")
+            print("[INFO] Check status with: deep-research list")
 
         elif args.command == "research":
             request = ResearchRequest(

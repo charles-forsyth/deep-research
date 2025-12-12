@@ -1,7 +1,4 @@
 import pytest
-import sqlite3
-import os
-import json
 from deep_research import SessionManager
 
 @pytest.fixture
