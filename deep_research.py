@@ -257,16 +257,23 @@ class FollowUpRequest(BaseModel):
     prompt: str
 
 class FileManager:
-    def __init__(self, client):
+    def __init__(self, client, logger=None):
         self.client = client
         self.created_stores = []
         self.uploaded_files = []
+        self.logger = logger
+
+    def _log(self, message: str):
+        if self.logger:
+            self.logger(message)
+        else:
+            print(message)
 
     def create_store_from_paths(self, paths: List[str]) -> str:
-        print(f"[INFO] Uploading {len(paths)} items to a new File Search Store...")
+        self._log(f"[INFO] Uploading {len(paths)} items to a new File Search Store...")
         store = self.client.file_search_stores.create()
         self.created_stores.append(store.name)
-        print(f"[INFO] Created temporary store: {store.name}")
+        self._log(f"[INFO] Created temporary store: {store.name}")
 
         for path in paths:
             if os.path.isdir(path):
@@ -277,22 +284,20 @@ class FileManager:
             elif os.path.isfile(path):
                 self._upload_file(path, store.name)
             else:
-                print(f"[WARN] Skipped invalid path: {path}")
+                self._log(f"[WARN] Skipped invalid path: {path}")
 
-        print("[INFO] Waiting 5s for file ingestion...")
+        self._log("[INFO] Waiting 5s for file ingestion...")
         time.sleep(5)
         return store.name
 
     def _upload_file(self, path: str, store_name: str):
-        print(f"[INFO] Uploading: {path}")
+        self._log(f"[INFO] Uploading: {path}")
         try:
             if hasattr(self.client.file_search_stores, 'upload_to_file_search_store'):
                  self.client.file_search_stores.upload_to_file_search_store(
                      file_search_store_name=store_name,
                      file=path
                  )
-                 # Note: We can't easily track the resulting file resource name from this helper 
-                 # to delete it individually later. We rely on store deletion.
             else:
                  # Fallback path if helper missing
                  file_obj = self.client.files.upload(path=path)
@@ -306,11 +311,11 @@ class FileManager:
                      time.sleep(2)
                      file_obj = self.client.files.get(name=file_obj.name)
         except Exception as e:
-            print(f"[ERROR] Failed to upload {path}: {e}")
+            self._log(f"[ERROR] Failed to upload {path}: {e}")
             raise
 
     def cleanup(self):
-        print("\n[INFO] Cleaning up temporary resources...")
+        self._log("\n[INFO] Cleaning up temporary resources...")
         for store_name in self.created_stores:
              try:
                  # 1. Empty the store first
@@ -320,52 +325,65 @@ class FileManager:
                          pager = self.client.file_search_stores.documents.list(parent=store_name)
                          for doc in pager:
                              try:
-                                 print(f"[INFO] Deleting document: {doc.name}")
+                                 self._log(f"[INFO] Deleting document: {doc.name}")
                                  # Force delete to remove chunks/non-empty docs
                                  self.client.file_search_stores.documents.delete(
                                      name=doc.name,
                                      config={'force': True}
                                  )
                              except Exception as e:
-                                 print(f"[WARN] Failed to delete document {doc.name}: {e}")
+                                 self._log(f"[WARN] Failed to delete document {doc.name}: {e}")
                      except Exception as e:
                          # If listing fails, we might just try deleting the store directly
-                         print(f"[WARN] Failed to list documents in {store_name}: {e}")
+                         self._log(f"[WARN] Failed to list documents in {store_name}: {e}")
 
                  # 2. Delete the store
                  self.client.file_search_stores.delete(name=store_name)
-                 print(f"[INFO] Deleted store: {store_name}")
+                 self._log(f"[INFO] Deleted store: {store_name}")
              except Exception as e:
                  if "non-empty" in str(e):
-                     print(f"[WARN] Could not delete store {store_name} (contains files). It will persist.")
+                     self._log(f"[WARN] Could not delete store {store_name} (contains files). It will persist.")
                  else:
-                     print(f"[WARN] Failed to delete store {store_name}: {e}")
+                     self._log(f"[WARN] Failed to delete store {store_name}: {e}")
 
-        # Note: We don't need to delete 'uploaded_files' via client.files.delete() 
-        # if they were uploaded via upload_to_file_search_store() as they are managed by the store?
-        # Actually, 'upload_to_file_search_store' creates a Document. 
-        # Does it create a File resource too? 
-        # Usually yes. But if we delete the Document, does it delete the File?
-        # Let's keep the file deletion logic just in case we used the fallback upload method.
         for file_name in self.uploaded_files:
             try:
                 self.client.files.delete(name=file_name)
-                print(f"[INFO] Deleted file resource: {file_name}")
+                self._log(f"[INFO] Deleted file resource: {file_name}")
             except Exception as e:
                 pass
 
 class DeepResearchAgent:
-    def __init__(self, config: Optional[DeepResearchConfig] = None):
+    def __init__(self, config: Optional[DeepResearchConfig] = None, logger=None):
         self.config = config or DeepResearchConfig()
         self.client = genai.Client(api_key=self.config.api_key)
-        self.file_manager = FileManager(self.client)
+        self.logger = logger
+        self.file_manager = FileManager(self.client, logger)
         self.session_manager = SessionManager()
+
+    def _log(self, message: str, end: str = "\n"):
+        """Internal logging helper that respects the custom logger."""
+        if self.logger:
+            # If a custom logger is provided, pass the message directly.
+            # The custom logger is responsible for handling 'end' (newlines) if needed,
+            # or we assume it handles chunks.
+            # For simplicity, we pass the chunk. 
+            # If the logger expects full lines, the caller must buffer.
+            # But for CLI print compatibility, we need to handle 'end'.
+            
+            # Note: TUI Log widgets usually need full lines. 
+            # But we want to support streaming.
+            # Let's standardize: we pass the raw chunk.
+            self.logger(message)
+        else:
+            # Default CLI behavior
+            print(message, end=end, flush=True)
 
     def _process_stream(self, event_stream, interaction_id_ref: list, last_event_id_ref: list, is_complete_ref: list, request_prompt: str = None, upload_paths: list = None, adopt_session_id: int = None):
         for event in event_stream:
             if event.event_type == "interaction.start":
                 interaction_id_ref[0] = event.interaction.id
-                print(f"\n[INFO] Interaction started: {event.interaction.id}")
+                self._log(f"\n[INFO] Interaction started: {event.interaction.id}")
                 if adopt_session_id:
                     self.session_manager.update_session_interaction_id(adopt_session_id, event.interaction.id)
                 elif request_prompt:
@@ -375,9 +393,9 @@ class DeepResearchAgent:
                 last_event_id_ref[0] = event.event_id
             if event.event_type == "content.delta":
                 if event.delta.type == "text":
-                    print(event.delta.text, end="", flush=True)
+                    self._log(event.delta.text, end="")
                 elif event.delta.type == "thought_summary":
-                    print(f"\n[THOUGHT] {event.delta.content.text}", flush=True)
+                    self._log(f"\n[THOUGHT] {event.delta.content.text}")
             if event.event_type in ['interaction.complete', 'error']:
                 is_complete_ref[0] = True
 
@@ -403,7 +421,7 @@ class DeepResearchAgent:
                     "If the answer is found in the uploaded files, cite them explicitly."
                 )
             except Exception as e:
-                print(f"[ERROR] File upload failed: {e}")
+                self._log(f"[ERROR] File upload failed: {e}")
                 self.file_manager.cleanup()
                 return None
 
@@ -412,10 +430,10 @@ class DeepResearchAgent:
         is_complete = [False]
 
         if request.stores:
-            print(f"[INFO] Using File Search Stores: {request.stores}")
+            self._log(f"[INFO] Using File Search Stores: {request.stores}")
 
         try:
-            print("[INFO] Starting Research Stream...")
+            self._log("[INFO] Starting Research Stream...")
             if not hasattr(self.client, 'interactions'):
                 import google.genai
                 raise RuntimeError(f"google-genai version {google.genai.__version__} too old.")
@@ -433,7 +451,7 @@ class DeepResearchAgent:
             
             # Reconnection Loop
             while not is_complete[0] and interaction_id[0]:
-                print(f"\n[INFO] Connection lost. Resuming from {last_event_id[0]}...")
+                self._log(f"\n[INFO] Connection lost. Resuming from {last_event_id[0]}...")
                 time.sleep(2)
                 try:
                     resume_stream = self.client.interactions.get(
@@ -441,10 +459,10 @@ class DeepResearchAgent:
                     )
                     self._process_stream(resume_stream, interaction_id, last_event_id, is_complete, adopt_session_id=request.adopt_session_id)
                 except Exception as e:
-                    print(f"[ERROR] Reconnection failed: {e}")
+                    self._log(f"[ERROR] Reconnection failed: {e}")
             
             if is_complete[0]:
-                 print("\n[INFO] Research Complete.")
+                 self._log("\n[INFO] Research Complete.")
                  
                  # Retrieve final text
                  if interaction_id[0]:
@@ -456,12 +474,12 @@ class DeepResearchAgent:
                              if request.output_file:
                                  DataExporter.export(final_text, request.output_file)
                      except Exception as e:
-                         print(f"[WARN] Failed to retrieve/export result: {e}")
+                         self._log(f"[WARN] Failed to retrieve/export result: {e}")
 
         except KeyboardInterrupt:
-            print("\n[WARN] Research interrupted by user.")
+            self._log("\n[WARN] Research interrupted by user.")
         except Exception as e:
-            print(f"\n[ERROR] Research failed: {e}")
+            self._log(f"\n[ERROR] Research failed: {e}")
         finally:
             if request.upload_paths:
                 self.file_manager.cleanup()
