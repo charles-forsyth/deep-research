@@ -9,6 +9,7 @@ dependencies = [
     "pydantic>=2.12.5",
     "pytest>=9.0.2",
     "python-dotenv>=1.2.1",
+    "rich>=14.2.0",
 ]
 
 [project.scripts]

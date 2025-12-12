@@ -31,9 +31,17 @@ from importlib.metadata import version, PackageNotFoundError
 from dotenv import load_dotenv
 from google import genai
 from pydantic import BaseModel, Field, ValidationError
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.table import Table
+from rich.panel import Panel
+from rich.live import Live
 
 # Load environment variables
 load_dotenv()
+
+# Initialize Rich Console
+console = Console()
 xdg_config_home = os.getenv("XDG_CONFIG_HOME", os.path.join(os.path.expanduser("~"), ".config"))
 user_config_path = os.path.join(xdg_config_home, "deepresearch", ".env")
 user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
@@ -263,10 +271,10 @@ class FileManager:
         self.uploaded_files = []
 
     def create_store_from_paths(self, paths: List[str]) -> str:
-        print(f"[INFO] Uploading {len(paths)} items to a new File Search Store...")
+        console.print(f"[bold cyan][INFO][/] Uploading {len(paths)} items to a new File Search Store...")
         store = self.client.file_search_stores.create()
         self.created_stores.append(store.name)
-        print(f"[INFO] Created temporary store: {store.name}")
+        console.print(f"[bold cyan][INFO][/] Created temporary store: {store.name}")
 
         for path in paths:
             if os.path.isdir(path):
@@ -277,14 +285,14 @@ class FileManager:
             elif os.path.isfile(path):
                 self._upload_file(path, store.name)
             else:
-                print(f"[WARN] Skipped invalid path: {path}")
+                console.print(f"[bold yellow][WARN][/] Skipped invalid path: {path}")
 
-        print("[INFO] Waiting 5s for file ingestion...")
+        console.print("[bold cyan][INFO][/] Waiting 5s for file ingestion...")
         time.sleep(5)
         return store.name
 
     def _upload_file(self, path: str, store_name: str):
-        print(f"[INFO] Uploading: {path}")
+        console.print(f"[bold cyan][INFO][/] Uploading: {path}")
         try:
             if hasattr(self.client.file_search_stores, 'upload_to_file_search_store'):
                  self.client.file_search_stores.upload_to_file_search_store(
@@ -306,11 +314,11 @@ class FileManager:
                      time.sleep(2)
                      file_obj = self.client.files.get(name=file_obj.name)
         except Exception as e:
-            print(f"[ERROR] Failed to upload {path}: {e}")
+            console.print(f"[bold red][ERROR][/] Failed to upload {path}: {e}")
             raise
 
     def cleanup(self):
-        print("\n[INFO] Cleaning up temporary resources...")
+        console.print("\n[bold cyan][INFO][/] Cleaning up temporary resources...")
         for store_name in self.created_stores:
              try:
                  # 1. Empty the store first
@@ -320,26 +328,26 @@ class FileManager:
                          pager = self.client.file_search_stores.documents.list(parent=store_name)
                          for doc in pager:
                              try:
-                                 print(f"[INFO] Deleting document: {doc.name}")
+                                 console.print(f"[bold cyan][INFO][/] Deleting document: {doc.name}")
                                  # Force delete to remove chunks/non-empty docs
                                  self.client.file_search_stores.documents.delete(
                                      name=doc.name,
                                      config={'force': True}
                                  )
                              except Exception as e:
-                                 print(f"[WARN] Failed to delete document {doc.name}: {e}")
+                                 console.print(f"[bold yellow][WARN][/] Failed to delete document {doc.name}: {e}")
                      except Exception as e:
                          # If listing fails, we might just try deleting the store directly
-                         print(f"[WARN] Failed to list documents in {store_name}: {e}")
+                         console.print(f"[bold yellow][WARN][/] Failed to list documents in {store_name}: {e}")
 
                  # 2. Delete the store
                  self.client.file_search_stores.delete(name=store_name)
-                 print(f"[INFO] Deleted store: {store_name}")
+                 console.print(f"[bold cyan][INFO][/] Deleted store: {store_name}")
              except Exception as e:
                  if "non-empty" in str(e):
-                     print(f"[WARN] Could not delete store {store_name} (contains files). It will persist.")
+                     console.print(f"[bold yellow][WARN][/] Could not delete store {store_name} (contains files). It will persist.")
                  else:
-                     print(f"[WARN] Failed to delete store {store_name}: {e}")
+                     console.print(f"[bold yellow][WARN][/] Failed to delete store {store_name}: {e}")
 
         # Note: We don't need to delete 'uploaded_files' via client.files.delete() 
         # if they were uploaded via upload_to_file_search_store() as they are managed by the store?
@@ -350,22 +358,45 @@ class FileManager:
         for file_name in self.uploaded_files:
             try:
                 self.client.files.delete(name=file_name)
-                print(f"[INFO] Deleted file resource: {file_name}")
+                console.print(f"[bold cyan][INFO][/] Deleted file resource: {file_name}")
             except Exception as e:
                 pass
 
 class DeepResearchAgent:
-    def __init__(self, config: Optional[DeepResearchConfig] = None):
+    def __init__(self, config: Optional[DeepResearchConfig] = None, logger=None):
         self.config = config or DeepResearchConfig()
         self.client = genai.Client(api_key=self.config.api_key)
         self.file_manager = FileManager(self.client)
         self.session_manager = SessionManager()
+        self.logger = logger
+
+    def _log(self, message: str, end: str = "\n", **kwargs):
+        """Internal logging helper that respects the custom logger."""
+        if self.logger:
+            self.logger(message)
+        else:
+            # Rich styling
+            msg = message
+            if "[INFO]" in message:
+                msg = message.replace("[INFO]", "[bold cyan][INFO][/]")
+            elif "[THOUGHT]" in message:
+                msg = message.replace("[THOUGHT]", "[bold magenta][THOUGHT][/]")
+            elif "[ERROR]" in message:
+                msg = message.replace("[ERROR]", "[bold red][ERROR][/]")
+            elif "[WARN]" in message:
+                msg = message.replace("[WARN]", "[bold yellow][WARN][/]")
+            elif "[DB]" in message:
+                msg = message.replace("[DB]", "[bold green][DB][/]")
+            
+            # Rich print doesn't support 'flush', so we pop it
+            kwargs.pop('flush', None)
+            console.print(msg, end=end, highlight=False, **kwargs)
 
     def _process_stream(self, event_stream, interaction_id_ref: list, last_event_id_ref: list, is_complete_ref: list, request_prompt: str = None, upload_paths: list = None, adopt_session_id: int = None):
         for event in event_stream:
             if event.event_type == "interaction.start":
                 interaction_id_ref[0] = event.interaction.id
-                print(f"\n[INFO] Interaction started: {event.interaction.id}")
+                self._log(f"\n[INFO] Interaction started: {event.interaction.id}")
                 if adopt_session_id:
                     self.session_manager.update_session_interaction_id(adopt_session_id, event.interaction.id)
                 elif request_prompt:
@@ -375,9 +406,9 @@ class DeepResearchAgent:
                 last_event_id_ref[0] = event.event_id
             if event.event_type == "content.delta":
                 if event.delta.type == "text":
-                    print(event.delta.text, end="", flush=True)
+                    self._log(event.delta.text, end="")
                 elif event.delta.type == "thought_summary":
-                    print(f"\n[THOUGHT] {event.delta.content.text}", flush=True)
+                    self._log(f"\n[THOUGHT] {event.delta.content.text}", flush=True)
             if event.event_type in ['interaction.complete', 'error']:
                 is_complete_ref[0] = True
 
@@ -403,7 +434,7 @@ class DeepResearchAgent:
                     "If the answer is found in the uploaded files, cite them explicitly."
                 )
             except Exception as e:
-                print(f"[ERROR] File upload failed: {e}")
+                self._log(f"[ERROR] File upload failed: {e}")
                 self.file_manager.cleanup()
                 return None
 
@@ -412,10 +443,10 @@ class DeepResearchAgent:
         is_complete = [False]
 
         if request.stores:
-            print(f"[INFO] Using File Search Stores: {request.stores}")
+            self._log(f"[INFO] Using File Search Stores: {request.stores}")
 
         try:
-            print("[INFO] Starting Research Stream...")
+            self._log("[INFO] Starting Research Stream...")
             if not hasattr(self.client, 'interactions'):
                 import google.genai
                 raise RuntimeError(f"google-genai version {google.genai.__version__} too old.")
@@ -433,7 +464,7 @@ class DeepResearchAgent:
             
             # Reconnection Loop
             while not is_complete[0] and interaction_id[0]:
-                print(f"\n[INFO] Connection lost. Resuming from {last_event_id[0]}...")
+                self._log(f"\n[INFO] Connection lost. Resuming from {last_event_id[0]}...")
                 time.sleep(2)
                 try:
                     resume_stream = self.client.interactions.get(
@@ -441,10 +472,10 @@ class DeepResearchAgent:
                     )
                     self._process_stream(resume_stream, interaction_id, last_event_id, is_complete, adopt_session_id=request.adopt_session_id)
                 except Exception as e:
-                    print(f"[ERROR] Reconnection failed: {e}")
+                    self._log(f"[ERROR] Reconnection failed: {e}")
             
             if is_complete[0]:
-                 print("\n[INFO] Research Complete.")
+                 self._log("\n[INFO] Research Complete.")
                  
                  # Retrieve final text
                  if interaction_id[0]:
@@ -456,12 +487,12 @@ class DeepResearchAgent:
                              if request.output_file:
                                  DataExporter.export(final_text, request.output_file)
                      except Exception as e:
-                         print(f"[WARN] Failed to retrieve/export result: {e}")
+                         self._log(f"[WARN] Failed to retrieve/export result: {e}")
 
         except KeyboardInterrupt:
-            print("\n[WARN] Research interrupted by user.")
+            self._log("\n[WARN] Research interrupted by user.")
         except Exception as e:
-            print(f"\n[ERROR] Research failed: {e}")
+            self._log(f"\n[ERROR] Research failed: {e}")
         finally:
             if request.upload_paths:
                 self.file_manager.cleanup()
@@ -475,14 +506,14 @@ class DeepResearchAgent:
                 if request.stores is None: request.stores = []
                 request.stores.append(store_name)
              except Exception as e:
-                print(f"[ERROR] Upload failed: {e}")
+                self._log(f"[ERROR] Upload failed: {e}")
                 self.file_manager.cleanup()
                 return
 
         if request.stores:
-             print(f"[INFO] Using Stores: {request.stores}")
+             self._log(f"[INFO] Using Stores: {request.stores}")
 
-        print("[INFO] Starting Research (Polling)...")
+        self._log("[INFO] Starting Research (Polling)...")
         try:
             interaction = self.client.interactions.create(
                 input=request.final_prompt,
@@ -490,7 +521,7 @@ class DeepResearchAgent:
                 background=True,
                 tools=request.tools_config
             )
-            print(f"[INFO] Started: {interaction.id}")
+            self._log(f"[INFO] Started: {interaction.id}")
             
             if hasattr(request, 'adopt_session_id') and request.adopt_session_id:
                 self.session_manager.update_session_interaction_id(request.adopt_session_id, interaction.id)
@@ -500,32 +531,33 @@ class DeepResearchAgent:
             while True:
                 interaction = self.client.interactions.get(interaction.id)
                 if interaction.status == "completed":
-                    print("\n" + "="*40 + " REPORT " + "="*40)
+                    self._log("\n" + "="*40 + " REPORT " + "="*40)
                     final_text = interaction.outputs[-1].text
-                    print(final_text)
+                    self._log(final_text)
                     
                     self.session_manager.update_session(interaction.id, "completed", final_text)
                     if request.output_file:
                         DataExporter.export(final_text, request.output_file)
                     break
                 elif interaction.status == "failed":
-                    print(f"[ERROR] Failed: {interaction.error}")
+                    self._log(f"[ERROR] Failed: {interaction.error}")
                     self.session_manager.update_session(interaction.id, "failed")
                     break
-                sys.stdout.write(".")
-                sys.stdout.flush()
+                if not self.logger:
+                    sys.stdout.write(".")
+                    sys.stdout.flush()
                 time.sleep(10)
         except KeyboardInterrupt:
-            print("\n[WARN] Polling interrupted by user.")
+            self._log("\n[WARN] Polling interrupted by user.")
         except Exception as e:
-            print(f"[ERROR] Unexpected error: {e}")
+            self._log(f"[ERROR] Unexpected error: {e}")
         finally:
             if request.upload_paths:
                 self.file_manager.cleanup()
         return interaction.id
 
     def follow_up(self, request: FollowUpRequest):
-        print(f"[INFO] Sending follow-up to interaction: {request.interaction_id}")
+        self._log(f"[INFO] Sending follow-up to interaction: {request.interaction_id}")
         try:
             interaction = self.client.interactions.create(
                 input=request.prompt,
@@ -534,14 +566,14 @@ class DeepResearchAgent:
             )
             if interaction.outputs:
                 response_text = interaction.outputs[-1].text
-                print(response_text)
+                self._log(response_text)
                 
                 # Save to DB
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
                 append_text = f"\n\n---\n### Follow-up ({timestamp})\n\n**Q: {request.prompt}**\n\n{response_text}"
                 self.session_manager.append_to_result(request.interaction_id, append_text)
         except Exception as e:
-            print(f"[ERROR] Follow-up failed: {e}")
+            self._log(f"[ERROR] Follow-up failed: {e}")
 
 def main():
     desc = """
@@ -692,33 +724,48 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
         elif args.command == "list":
             mgr = SessionManager()
             sessions = mgr.list_sessions(args.limit)
-            print(f"{'ID':<4} | {'Status':<10} | {'Date':<20} | {'Prompt'}")
-            print("-" * 80)
+            
+            table = Table(title="Recent Research Sessions", box=None)
+            table.add_column("ID", style="cyan", no_wrap=True)
+            table.add_column("Status")
+            table.add_column("Date", style="dim")
+            table.add_column("Prompt", style="bold")
+
             for s in sessions:
                 # Truncate prompt
                 prompt = s['prompt'].replace('\n', ' ')
-                if len(prompt) > 40: prompt = prompt[:37] + "..."
-                print(f"{s['id']:<4} | {s['status']:<10} | {s['created_at'][:19]:<20} | {prompt}")
+                if len(prompt) > 60: prompt = prompt[:57] + "..."
+                
+                status_style = "green" if s['status'] == "completed" else "yellow" if s['status'] == "running" else "red"
+                status_text = f"[{status_style}]{s['status']}[/{status_style}]"
+                
+                table.add_row(str(s['id']), status_text, s['created_at'][:19], prompt)
+            
+            console.print(table)
 
         elif args.command == "show":
             mgr = SessionManager()
             session = mgr.get_session(args.id)
             if not session:
-                print(f"[ERROR] Session '{args.id}' not found.")
+                console.print(f"[bold red][ERROR] Session '{args.id}' not found.[/]")
             else:
-                print(f"Session ID: {session['id']}")
-                print(f"Interaction ID: {session['interaction_id']}")
-                print(f"Date: {session['created_at']}")
-                print(f"Status: {session['status']}")
-                print(f"Files: {session['files']}")
-                print("-" * 40)
-                print(f"Prompt:\n{session['prompt']}\n")
-                print("-" * 40)
-                print("Result:")
+                console.print(Panel(
+                    f"[bold]Interaction ID:[/bold] {session['interaction_id']}\n"
+                    f"[bold]Date:[/bold] {session['created_at']}\n"
+                    f"[bold]Status:[/bold] {session['status']}\n"
+                    f"[bold]Files:[/bold] {session['files']}",
+                    title=f"Session #{session['id']}",
+                    subtitle="Metadata"
+                ))
+                
+                console.rule("[bold cyan]Prompt[/]")
+                console.print(f"[bold]{session['prompt']}[/]\n")
+                
+                console.rule("[bold green]Result[/]")
                 if session['result']:
-                    print(session['result'])
+                    console.print(Markdown(session['result']))
                 else:
-                    print("(No result stored)")
+                    console.print("[italic dim](No result stored)[/]")
 
         else:
             parser.print_help()
