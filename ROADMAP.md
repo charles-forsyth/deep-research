@@ -7,11 +7,11 @@ Future plans for the Gemini Deep Research CLI.
 - [x] **Structured Data Export:** Save reports as JSON or CSV with schema enforcement (`--output`).
 - [x] **Session Management:** Local SQLite database to save research history, list past tasks, and resume sessions days later.
 - [x] **Headless Mode:** Run as a detached background service (`start` command).
+- [x] **Mission Control TUI:** Rich terminal dashboard with split panes and live streaming (`tui` command).
 
 ## 🚧 Planned Features
 
 ### User Experience
-- [ ] **Mission Control TUI:** Replace streaming text with a rich terminal dashboard (Textual/Rich) showing split panes for "Thinking", "Results", and "Progress".
 - [ ] **Interactive Steerability:** Allow users to pause the agent and provide mid-stream feedback/direction without restarting.
 
 ### Data & Output
