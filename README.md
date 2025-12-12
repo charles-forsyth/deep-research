@@ -32,11 +32,22 @@ A command-line interface (CLI) for the Gemini Deep Research Agent, powered by Go
     uv sync
     ```
 
-3.  **Configure Environment:**
-    Create a `.env` file in the root directory and add your API key:
-    ```bash
-    echo "GEMINI_API_KEY=your_api_key_here" > .env
-    ```
+### 3. Configure Environment
+
+You can configure the API key in one of two ways:
+
+**Option A: Global Configuration (Recommended)**
+Create a config directory and add your key. This allows you to run the tool from anywhere.
+```bash
+mkdir -p ~/.config/deepresearch
+echo "GEMINI_API_KEY=your_api_key_here" > ~/.config/deepresearch/.env
+```
+
+**Option B: Local Configuration**
+Create a `.env` file in the directory where you run the script.
+```bash
+echo "GEMINI_API_KEY=your_api_key_here" > .env
+```
 
 ## Usage
 
