@@ -1,96 +1,101 @@
-# Gemini Deep Research Agent
+# 🧠 Gemini Deep Research CLI
 
-A command-line interface (CLI) for the Gemini Deep Research Agent, powered by Google's GenAI. This tool allows you to conduct deep, multi-step research tasks, optionally using your own documents, and receive comprehensive reports.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![Powered by Gemini](https://img.shields.io/badge/Powered%20by-Gemini%203%20Pro-4285F4.svg)](https://deepmind.google/technologies/gemini/)
 
-## Features
+A production-ready command-line interface for the **Gemini Deep Research Agent**. 
 
-*   **Deep Research:** Autonomously plans and executes multi-step research using web search.
-*   **Streaming Support:** Receive real-time updates and "thinking summaries" as the agent works.
-*   **Auto-Resume:** Robustly handles network interruptions by automatically reconnecting to the stream.
-*   **File Search:** (Optional) Integrate with your own data stores (`fileSearchStores`).
-*   **Follow-up Questions:** Ask clarifying questions about the generated report.
-*   **Portable Execution:** Automatically switches to the project's virtual environment for seamless execution.
+This tool unlocks the power of Google's most advanced autonomous research model, allowing you to conduct deep, multi-step investigations, analyze local documents, and generate comprehensive reports—all from your terminal.
 
-## Prerequisites
+## ✨ Key Features
 
-*   Python 3.12+
-*   [uv](https://github.com/astral-sh/uv) (for dependency management)
-*   A Google Cloud Project with the Gemini API enabled.
-*   A valid API Key.
+*   **🚀 Autonomous Deep Research:** Powered by Gemini 3 Pro, it plans, searches, reads, and synthesizes complex topics.
+*   **📂 Smart Context Ingestion:** Instantly analyze local PDFs, text files, or folders. The tool handles cloud upload/cleanup automatically.
+*   **⚡ Real-Time Streaming:** Watch the agent's "Thought Process" in real-time as it navigates the web.
+*   **🛡️ Robust & Resilient:** Auto-resumes sessions if the network drops. 
+*   **💬 Interactive Follow-ups:** Chat with the finished report to ask clarifying questions.
+*   **📦 Portable:** Auto-detects its environment. Install globally via `uv` or run locally.
 
-## Installation
+## 🚀 Installation
 
-1.  **Clone the repository:**
-    ```bash
-    git clone git@github.com:charles-forsyth/deep-research.git
-    cd deep-research
-    ```
+The recommended way to install is using `uv` (a modern Python package manager).
 
-2.  **Install dependencies:**
-    This project uses `uv` to manage dependencies.
-    ```bash
-    uv sync
-    ```
-
-### 3. Configure Environment
-
-You can configure the API key in one of two ways:
-
-**Option A: Global Configuration (Recommended)**
-Create a config directory and add your key. This allows you to run the tool from anywhere.
-```bash
-mkdir -p ~/.config/deepresearch
-echo "GEMINI_API_KEY=your_api_key_here" > ~/.config/deepresearch/.env
-```
-
-**Option B: Local Configuration**
-Create a `.env` file in the directory where you run the script.
-```bash
-echo "GEMINI_API_KEY=your_api_key_here" > .env
-```
-
-## Usage
-
-You can run the script directly. It will automatically detect if it needs to switch to the project's virtual environment.
-
-### 1. Conduct Research
-
-**Basic Stream (Recommended):**
-```bash
-./deep_research.py research "Research the history of Google TPUs" --stream
-```
-
-**Polling Mode (Background):**
-```bash
-./deep_research.py research "Research the competitive landscape of EV batteries"
-```
-
-**With Formatting Instructions:**
-```bash
-./deep_research.py research "Compare Go and Rust" --stream --format "Technical Report with a table"
-```
-
-**With File Search (User Data):**
-```bash
-./deep_research.py research "Analyze Q3 financial results" --stores "projects/123/locations/us-central1/collections/default/dataStores/my-store" --stream
-```
-
-### 2. Follow-up Questions
-
-After a research task completes, you will get an `Interaction ID` (e.g., `v1_abc123...`). You can use this to ask follow-up questions.
+### Option 1: Global Installation (Recommended)
+This makes the `deep-research` command available anywhere on your system.
 
 ```bash
-./deep_research.py followup <INTERACTION_ID> "Can you elaborate on the second point?"
+uv tool install git+https://github.com/charles-forsyth/deep-research.git
 ```
 
-## Development
+### Option 2: Developer Setup (Clone & Run)
 
-*   **Run Tests:**
-    ```bash
-    uv run pytest
-    ```
-    (Tests are also run automatically via a pre-commit hook).
+```bash
+git clone https://github.com/charles-forsyth/deep-research.git
+cd deep-research
+uv sync
+```
 
-## License
+## ⚙️ Configuration
 
-[MIT](LICENSE)
+You need a Google GenAI API Key.
+
+1.  **Get a Key:** [Google AI Studio](https://aistudio.google.com/app/apikey)
+2.  **Set it up:**
+    *   **Global (Recommended):** Run once, use anywhere.
+        ```bash
+        mkdir -p ~/.config/deepresearch
+        echo "GEMINI_API_KEY=your_key_here" > ~/.config/deepresearch/.env
+        ```
+    *   **Local:** Create a `.env` file in your current directory.
+
+## 📖 Usage Guide
+
+### 1. Basic Research
+Conduct a deep dive into a topic. The `--stream` flag shows the agent's thinking.
+
+```bash
+deep-research research "The history of the internet" --stream
+```
+
+### 2. Research Your Own Files (RAG)
+Have a contract, a paper, or a set of notes? Analyze them instantly.
+
+```bash
+# Analyze a single file
+deep-research research "What are the liability terms?" --upload ./contract.pdf --stream
+
+# Analyze a whole folder
+deep-research research "Summarize the key findings" --upload ./research_papers/ --stream
+```
+*Note: Files are uploaded to a temporary secure store and automatically deleted after the session.*
+
+### 3. Custom Formatting
+Steer the output format to suit your needs.
+
+```bash
+deep-research research "Compare GPU prices" --format "Markdown table with columns: Model, Price, VRAM"
+```
+
+### 4. Follow-up Questions
+Don't just get a report—interact with it. Use the `Interaction ID` from the output.
+
+```bash
+deep-research followup v1_abc123... "Can you elaborate on the second point?"
+```
+
+## 🛠️ Development
+
+We welcome contributions! This project uses `uv` for dependency management and `pytest` for testing.
+
+```bash
+# Run tests
+uv run pytest
+
+# Install pre-commit hooks
+git config core.hooksPath .git/hooks
+```
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
