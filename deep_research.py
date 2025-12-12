@@ -111,8 +111,13 @@ class FileManager:
                  # Fallback path if helper missing
                  file_obj = self.client.files.upload(path=path)
                  self.uploaded_files.append(file_obj.name)
+                 
+                 # Wait for processing with 5-minute timeout
+                 start_time = time.time()
                  while file_obj.state.name == "PROCESSING":
-                     time.sleep(1)
+                     if time.time() - start_time > 300: # 300 seconds = 5 minutes
+                         raise TimeoutError(f"File processing timed out after 5 minutes: {path}")
+                     time.sleep(2)
                      file_obj = self.client.files.get(name=file_obj.name)
         except Exception as e:
             print(f"[ERROR] Failed to upload {path}: {e}")
