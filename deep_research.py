@@ -407,8 +407,9 @@ Examples:
 2. Research with Local Files (Smart Context):
    %(prog)s research "Summarize this contract" --upload ./contract.pdf --stream
 
-3. Formatted Output:
-   %(prog)s research "Compare GPU prices" --format "Markdown table with columns: Model, Price, VRAM"
+3. Formatted Output & Export:
+   %(prog)s research "Compare GPU prices" --format "Markdown table" --output prices.md
+   %(prog)s research "List top 5 cloud providers" --output market_data.json
 
 4. Follow-up Question:
    %(prog)s followup v1_abc123... "Can you elaborate on point 2?"

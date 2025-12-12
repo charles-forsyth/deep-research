@@ -12,6 +12,7 @@ This tool unlocks the power of Google's most advanced autonomous research model,
 
 *   **🚀 Autonomous Deep Research:** Powered by Gemini 3 Pro, it plans, searches, reads, and synthesizes complex topics.
 *   **📂 Smart Context Ingestion:** Instantly analyze local PDFs, text files, or folders. The tool handles cloud upload/cleanup automatically.
+*   **💾 Structured Data Export:** Save reports directly to JSON or CSV files with automatic schema enforcement (`--output`).
 *   **⚡ Real-Time Streaming:** Watch the agent's "Thought Process" in real-time as it navigates the web.
 *   **🛡️ Robust & Resilient:** Auto-resumes sessions if the network drops. 
 *   **💬 Interactive Follow-ups:** Chat with the finished report to ask clarifying questions.
@@ -70,11 +71,18 @@ deep-research research "Summarize the key findings" --upload ./research_papers/ 
 ```
 *Note: Files are uploaded to a temporary secure store and automatically deleted after the session.*
 
-### 3. Custom Formatting
-Steer the output format to suit your needs.
+### 3. Custom Formatting & Export
+Steer the output format and save structured data.
 
 ```bash
-deep-research research "Compare GPU prices" --format "Markdown table with columns: Model, Price, VRAM"
+# Save as Markdown
+deep-research research "Compare GPU prices" --output report.md
+
+# Save as JSON (Schema Enforced)
+deep-research research "List top 5 cloud providers with market share" --output market_data.json
+
+# Save as CSV
+deep-research research "Table of US Presidents and their terms" --output presidents.csv
 ```
 
 ### 4. Follow-up Questions
