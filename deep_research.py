@@ -48,7 +48,7 @@ user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
 load_dotenv(user_config_path)
 
 # Fallback version if not installed as a package
-__version__ = "0.7.3"
+__version__ = "0.7.4"
 
 def get_version():
     try:
@@ -503,7 +503,8 @@ class DeepResearchAgent:
         if request.upload_paths:
              try:
                 store_name = self.file_manager.create_store_from_paths(request.upload_paths)
-                if request.stores is None: request.stores = []
+                if request.stores is None:
+                    request.stores = []
                 request.stores.append(store_name)
              except Exception as e:
                 self._log(f"[ERROR] Upload failed: {e}")
@@ -735,7 +736,8 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
             for s in sessions:
                 # Truncate prompt
                 prompt = s['prompt'].replace('\n', ' ')
-                if len(prompt) > 60: prompt = prompt[:57] + "..."
+                if len(prompt) > 60:
+                    prompt = prompt[:57] + "..."
                 
                 status_style = "green" if s['status'] == "completed" else "yellow" if s['status'] == "running" else "red"
                 status_text = f"[{status_style}]{s['status']}[/{status_style}]"
