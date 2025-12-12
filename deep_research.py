@@ -1,12 +1,23 @@
 #!/usr/bin/env python3
 import sys
 import os
+import pathlib
 
-# Auto-switch to .venv if running with system python
-if sys.prefix == sys.base_prefix:
-    venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv", "bin", "python")
-    if os.path.exists(venv_python):
-        os.execv(venv_python, [venv_python] + sys.argv)
+# --- VIRTUAL ENVIRONMENT BOOTSTRAP ---
+# Robustly resolve the directory of the actual script (resolving symlinks)
+script_path = pathlib.Path(__file__).resolve()
+project_root = script_path.parent
+venv_python = project_root / ".venv" / "bin" / "python"
+
+# If running with system python (prefix match) and local venv exists
+if sys.prefix == sys.base_prefix and venv_python.exists():
+    try:
+        # Re-execute using the venv python
+        # We use str(venv_python) for compatibility
+        os.execv(str(venv_python), [str(venv_python)] + sys.argv)
+    except OSError as e:
+        print(f"[WARN] Failed to bootstrap virtual environment: {e}")
+# -------------------------------------
 
 import time
 import argparse
@@ -29,7 +40,7 @@ class DeepResearchConfig(BaseModel):
     def __init__(self, **data):
         super().__init__(**data)
         if not self.api_key:
-            raise ValueError("GEMINI_API_KEY not found in environment variables")
+            raise ValueError("GEMINI_API_KEY not found. Please set it in .env or ~/.config/deepresearch/.env")
 
 class ResearchRequest(BaseModel):
     prompt: str
@@ -47,10 +58,12 @@ class ResearchRequest(BaseModel):
     @property
     def tools_config(self) -> Optional[List[dict]]:
         if self.stores:
-            return [{
-                "type": "file_search",
-                "file_search_store_names": self.stores
-            }]
+            return [
+                {
+                    "type": "file_search",
+                    "file_search_store_names": self.stores
+                }
+            ]
         return None
 
 class FollowUpRequest(BaseModel):
@@ -62,22 +75,13 @@ class FileManager:
         self.client = client
         self.created_stores = []
         self.uploaded_files = []
-        # We track files only if we used basic upload, but if we use a helper 
-        # that handles both, we might rely on store deletion to cascade?
-        # Usually deleting a store deletes the association, not the file itself?
-        # Let's track uploaded file resources if possible.
 
     def create_store_from_paths(self, paths: List[str]) -> str:
         print(f"[INFO] Uploading {len(paths)} items to a new File Search Store...")
-        
-        # 1. Create Store
-        # Note: name usually needs to be unique or let the API assign it?
-        # The create method likely returns a Store object with a .name property (the ID).
         store = self.client.file_search_stores.create()
         self.created_stores.append(store.name)
         print(f"[INFO] Created temporary store: {store.name}")
 
-        # 2. Upload Files
         for path in paths:
             if os.path.isdir(path):
                 for f in os.listdir(path):
@@ -96,83 +100,37 @@ class FileManager:
     def _upload_file(self, path: str, store_name: str):
         print(f"[INFO] Uploading: {path}")
         try:
-             # Try the helper if it exists
             if hasattr(self.client.file_search_stores, 'upload_to_file_search_store'):
-                 op = self.client.file_search_stores.upload_to_file_search_store(
+                 self.client.file_search_stores.upload_to_file_search_store(
                      file_search_store_name=store_name,
                      file=path
                  )
-                 # Wait for the operation to complete to ensure the file is ready
-                 # and to get its name for cleanup.
-                 # Assuming standard Google LRO pattern:
-                 # But we don't know if .result() exists on this generated type.
-                 # Let's try to just sleep a bit? No, we need the name.
-                 
-                 # Actually, usually 'upload_to_file_search_store' returns the *File* object directly
-                 # if it's synchronous, or an Operation if async.
-                 # The diagnostics said -> google.genai.types.UploadToFileSearchStoreOperation
-                 
-                 # If I can't get the file name, I can't delete it directly.
-                 # BUT, if I delete the STORE, and it fails...
-                 pass
+                 # Note: We can't easily track the resulting file resource name from this helper 
+                 # to delete it individually later. We rely on store deletion.
             else:
-                 # Fallback: Upload file then import?
-                 # Since I can't be 100% sure of the args without docs, I'll rely on 
-                 # the method verified in diagnostics.
-                 # Let's try the common pattern:
-                 # client.files.upload(path=...) -> file
-                 # client.file_search_stores.import_file(name=store_name, file=file.name)
-                 
+                 # Fallback path if helper missing
                  file_obj = self.client.files.upload(path=path)
-                 # Wait for processing?
+                 self.uploaded_files.append(file_obj.name)
                  while file_obj.state.name == "PROCESSING":
                      time.sleep(1)
                      file_obj = self.client.files.get(name=file_obj.name)
-                 
-                 # There isn't always an 'import_file'. 
-                 # But if 'upload_to_file_search_store' was listed, it's the best bet.
-                 pass
         except Exception as e:
             print(f"[ERROR] Failed to upload {path}: {e}")
             raise
 
     def cleanup(self):
-        print("\n[INFO] Cleaning up temporary stores...")
+        print("\n[INFO] Cleaning up temporary resources...")
         for store_name in self.created_stores:
              try:
-                 # Try to delete the store directly
-                 # If it fails because non-empty, we might need to list and delete docs?
-                 # Or maybe the API has a force option? Not seen in diagnostics.
-                 
-                 # Let's try to list and delete files in the store first?
-                 # client.file_search_stores.documents.list(file_search_store_name=...)
-                 # But diagnostics showed 'documents' attribute on file_search_stores.
-                 
-                 # Let's try deleting the store and catch the specific error
                  self.client.file_search_stores.delete(name=store_name)
                  print(f"[INFO] Deleted store: {store_name}")
              except Exception as e:
+                 # Be quieter about non-empty errors since we can't easily force-delete yet
                  if "non-empty" in str(e):
-                     print(f"[INFO] Emptying store {store_name} before deletion...")
-                     try:
-                        # Attempt to list and delete documents
-                        # Note: This is a guess at the API structure based on 'documents' attribute
-                        if hasattr(self.client.file_search_stores, 'documents'):
-                            # Iterate and delete?
-                            # Without list/delete method specifics, this is tricky.
-                            # BUT, we can just delete the *files* we uploaded?
-                            # Deleting the file resource usually removes it from stores?
-                            pass
-                     except:
-                        pass
-                     
-                     # Retry delete?
-                     # Actually, if we delete the *File* resource (client.files.delete), 
-                     # it should disappear from the store.
-                 print(f"[WARN] Failed to delete store {store_name}: {e}")
+                     print(f"[WARN] Could not delete store {store_name} (contains files). It will persist.")
+                 else:
+                     print(f"[WARN] Failed to delete store {store_name}: {e}")
 
-        # Delete the actual file resources we created
-        # This is CRITICAL for cleaning up the store if the store holds references
         for file_name in self.uploaded_files:
             try:
                 self.client.files.delete(name=file_name)
@@ -207,15 +165,12 @@ class DeepResearchAgent:
             "thinking_summaries": "auto"
         }
         
-        # Handle Auto-Upload
         if request.upload_paths:
             try:
                 store_name = self.file_manager.create_store_from_paths(request.upload_paths)
                 if request.stores is None:
                     request.stores = []
                 request.stores.append(store_name)
-                
-                # FORCE PRIORITY
                 request.prompt = (
                     f"{request.prompt}\n\n"
                     "IMPORTANT: You have access to a File Search Store containing uploaded documents. "
@@ -250,7 +205,6 @@ class DeepResearchAgent:
             )
             self._process_stream(initial_stream, interaction_id, last_event_id, is_complete)
             
-            # Reconnection Loop
             while not is_complete[0] and interaction_id[0]:
                 print(f"\n[INFO] Connection lost. Resuming from {last_event_id[0]}...")
                 time.sleep(2)
@@ -265,6 +219,8 @@ class DeepResearchAgent:
             if is_complete[0]:
                  print("\n[INFO] Research Complete.")
 
+        except KeyboardInterrupt:
+            print("\n[WARN] Research interrupted by user.")
         except Exception as e:
             print(f"\n[ERROR] Research failed: {e}")
         finally:
@@ -274,7 +230,6 @@ class DeepResearchAgent:
         return interaction_id[0]
 
     def start_research_poll(self, request: ResearchRequest):
-        # Similar logic for poll mode
         if request.upload_paths:
              try:
                 store_name = self.file_manager.create_store_from_paths(request.upload_paths)
@@ -310,6 +265,10 @@ class DeepResearchAgent:
                 sys.stdout.write(".")
                 sys.stdout.flush()
                 time.sleep(10)
+        except KeyboardInterrupt:
+            print("\n[WARN] Polling interrupted by user.")
+        except Exception as e:
+            print(f"[ERROR] Unexpected error: {e}")
         finally:
             if request.upload_paths:
                 self.file_manager.cleanup()
@@ -374,6 +333,10 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
 
     args = parser.parse_args()
 
+    if not args.command:
+        parser.print_help()
+        return
+
     try:
         if args.command == "research":
             request = ResearchRequest(
@@ -397,12 +360,14 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
             )
             agent = DeepResearchAgent()
             agent.follow_up(request)
-        else:
-            parser.print_help()
+            
     except ValidationError as e:
-        print(f"[ERROR] Validation Failed:\n{e}")
+        print(f"[ERROR] Input Validation Failed:\n{e}")
+    except ValueError as e:
+        # Handle configuration errors (missing API key) cleanly
+        print(f"[CONFIG ERROR] {e}")
     except Exception as e:
-        print(f"[ERROR] {e}")
+        print(f"[CRITICAL ERROR] {e}")
 
 if __name__ == "__main__":
     main()
