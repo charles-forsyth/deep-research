@@ -94,3 +94,29 @@ def test_main_smart_followup(mock_mgr_cls, mock_agent_class):
     mock_agent_class.return_value.follow_up.assert_called_once()
     args = mock_agent_class.return_value.follow_up.call_args[0][0]
     assert args.interaction_id == "v1_real_id"
+
+@patch("deep_research.detach_process")
+@patch("deep_research.SessionManager")
+def test_main_start_command(mock_mgr_cls, mock_detach):
+    """Test 'start' (headless) command."""
+    mock_mgr = mock_mgr_cls.return_value
+    mock_mgr.create_session.return_value = 99
+    
+    test_args = ["deep_research.py", "start", "Topic", "--upload", "doc.pdf"]
+    with patch.object(sys, 'argv', test_args):
+        main()
+        
+    # Verify session created
+    mock_mgr.create_session.assert_called_with("pending_start", "Topic", ["doc.pdf"])
+    
+    # Verify detach called with correct args
+    mock_detach.assert_called_once()
+    child_args, log_path = mock_detach.call_args[0]
+    
+    assert "research" in child_args
+    assert "Topic" in child_args
+    assert "--adopt-session" in child_args
+    assert "99" in child_args
+    assert "--upload" in child_args
+    assert "doc.pdf" in child_args
+    assert "session_99.log" in log_path
