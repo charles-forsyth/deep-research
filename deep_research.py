@@ -572,7 +572,7 @@ class DeepResearchAgent:
         
         return interaction_id[0]
 
-    def start_research_poll(self, request: ResearchRequest):
+    def start_research_poll(self, request: ResearchRequest, auto_update_status: bool = True):
         if request.upload_paths:
              try:
                 store_name = self.file_manager.create_store_from_paths(request.upload_paths)
@@ -609,7 +609,12 @@ class DeepResearchAgent:
                     final_text = interaction.outputs[-1].text
                     self._log(final_text)
                     
-                    self.session_manager.update_session(interaction.id, "completed", final_text)
+                    if auto_update_status:
+                        self.session_manager.update_session(interaction.id, "completed", final_text)
+                    else:
+                        # Recursive Node: Save intermediate result but keep running
+                        self.session_manager.update_session(interaction.id, "running", final_text)
+                    
                     if request.output_file:
                         DataExporter.export(final_text, request.output_file)
                     break
@@ -741,18 +746,19 @@ class DeepResearchAgent:
         )
 
         # 2. Execute Research (Poll)
+        # Only mark 'completed' automatically if this is a LEAF node (no further recursion)
+        is_leaf = (current_depth >= max_depth)
+        
         if current_depth == 1:
-             # Root: Use original request (might stream if we wanted, but we force polling for consistency in recursion logic for now)
-             # Actually, if we want to stream root, we need start_research_stream.
-             # But start_recursive_research replaces standard execution.
-             interaction_id = self.start_research_poll(original_request)
+             # Root
+             interaction_id = self.start_research_poll(original_request, auto_update_status=is_leaf)
         else:
-             # Child: Create session explicitly to link parent
+             # Child
              child_sid = self.session_manager.create_session(
                  "pending_recursion", prompt, original_request.upload_paths, parent_id=parent_id, depth=current_depth
              )
              node_req.adopt_session_id = child_sid
-             interaction_id = self.start_research_poll(node_req)
+             interaction_id = self.start_research_poll(node_req, auto_update_status=is_leaf)
 
         # 3. Fetch Result
         session = self.session_manager.get_session(interaction_id)
