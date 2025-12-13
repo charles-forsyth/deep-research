@@ -896,6 +896,7 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     parser_show = subparsers.add_parser("show", help="Show details of a previous session")
     parser_show.add_argument("id", help="Session ID (integer) or Interaction ID")
     parser_show.add_argument("--save", help="Save the colorful report to HTML or Text file")
+    parser_show.add_argument("--recursive", action="store_true", help="Include all child session reports in output")
 
     # Command: delete
     parser_delete = subparsers.add_parser("delete", help="Delete a session from history")
@@ -1014,6 +1015,54 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
 
         elif args.command == "show":
             mgr = SessionManager()
+            
+            def get_full_recursive_report(root_id, level=1):
+                session = mgr.get_session(root_id)
+                if not session:
+                    return ""
+                
+                # Header
+                indent_hash = "#" * min(level, 6)
+                title = session['prompt'].replace('\n', ' ')
+                
+                report = f"{indent_hash} Session #{session['id']} (Depth {session['depth']})\n"
+                report += f"**Objective:** {title}\n"
+                report += f"**Status:** {session['status']}\n\n"
+                
+                if session['result']:
+                    report += session['result']
+                else:
+                    report += "*(No content)*"
+                
+                report += "\n\n---\n\n"
+                
+                # Children
+                children = mgr.get_children(root_id)
+                for child in children:
+                    report += get_full_recursive_report(child['id'], level + 1)
+                
+                return report
+
+            if args.recursive:
+                full_content = get_full_recursive_report(args.id)
+                if not full_content:
+                    console.print(f"[bold red]Session {args.id} not found.[/]")
+                else:
+                    console.print(Markdown(full_content))
+                    if args.save:
+                        if args.save.lower().endswith('.html'):
+                            # For HTML, we render the Markdown to console (record=True) then save
+                            # But wait, printing to console might be huge.
+                            # We should use a separate console for saving.
+                            save_console = Console(record=True)
+                            save_console.print(Markdown(full_content))
+                            save_console.save_html(args.save, theme=MONOKAI)
+                        else:
+                            with open(args.save, 'w') as f:
+                                f.write(full_content)
+                        console.print(f"[bold green]Recursive report saved to {args.save}[/]")
+                return
+
             session = mgr.get_session(args.id)
             
             # Use recording console if saving
