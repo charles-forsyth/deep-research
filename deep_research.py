@@ -184,14 +184,37 @@ class SessionManager:
             result = []
             for s in sessions:
                 s_dict = dict(s)
-                if s['status'] == 'running' and s['pid']:
-                    try:
-                        os.kill(s['pid'], 0) # Check if process exists
-                    except OSError:
-                        # Process died
+                if s['status'] == 'running':
+                    is_dead = False
+                    
+                    # 1. Check own PID
+                    if s['pid']:
+                        try:
+                            os.kill(s['pid'], 0)
+                        except OSError:
+                            is_dead = True
+                    
+                    # 2. Check Parent Status/PID (if child has no own PID)
+                    elif s['parent_id']:
+                        # Recursive check up the chain? Or just direct parent?
+                        # Direct parent is usually the process owner for our architecture.
+                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
+                        if parent:
+                            # If parent is finished, child should be finished.
+                            if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                                is_dead = True
+                            # If parent is running but dead PID
+                            elif parent['pid']:
+                                try:
+                                    os.kill(parent['pid'], 0)
+                                except OSError:
+                                    is_dead = True
+                    
+                    if is_dead:
                         s_dict['status'] = 'crashed'
                         conn.execute("UPDATE sessions SET status = 'crashed' WHERE id = ?", (s['id'],))
                         conn.commit()
+                        
                 result.append(s_dict)
             return result
 
