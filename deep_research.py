@@ -51,7 +51,7 @@ user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
 load_dotenv(user_config_path)
 
 # Fallback version if not installed as a package
-__version__ = "0.10.1"
+__version__ = "0.11.0"
 
 def get_version():
     try:
@@ -982,6 +982,13 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     parser_auth = subparsers.add_parser("auth", help="Manage authentication")
     parser_auth.add_argument("action", choices=["login", "logout"], help="Action to perform")
 
+    # Command: estimate
+    parser_estimate = subparsers.add_parser("estimate", help="Estimate cost of a research task")
+    parser_estimate.add_argument("prompt", help="The research prompt or question")
+    parser_estimate.add_argument("--depth", type=int, default=1, help="Recursive depth")
+    parser_estimate.add_argument("--breadth", type=int, default=3, help="Recursive breadth")
+    parser_estimate.add_argument("--upload", nargs="+", help="Files to upload (adds to context cost)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1297,6 +1304,62 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
                     console.print("[green]Logged out. Config file deleted.[/]")
                 else:
                     console.print("[yellow]Not logged in.[/]")
+
+        elif args.command == "estimate":
+            # Gemini 3 Pro Pricing (Standard Context)
+            COST_INPUT_1M = 2.00
+            COST_OUTPUT_1M = 12.00
+            
+            # Assumptions per Agent Node (Deep Research is token heavy)
+            AVG_INPUT_TOKENS = 60_000  # Search results + web pages + internal thought trace
+            AVG_OUTPUT_TOKENS = 4_000  # The Markdown report
+            
+            # Calculate File Tokens
+            file_tokens = 0
+            if args.upload:
+                for path in args.upload:
+                    try:
+                        if os.path.isdir(path):
+                            for root, _, files in os.walk(path):
+                                for f in files:
+                                    size = os.path.getsize(os.path.join(root, f))
+                                    file_tokens += size * 0.25 # Approx 1 token = 4 bytes
+                        else:
+                            size = os.path.getsize(path)
+                            file_tokens += size * 0.25
+                    except Exception:
+                        pass
+            
+            # Calculate Total Nodes in Tree
+            # Depth 1 = 1 node
+            # Depth 2 = 1 + breadth
+            # Depth 3 = 1 + breadth + breadth^2
+            total_nodes = 0
+            for d in range(args.depth):
+                nodes_at_level = pow(args.breadth, d)
+                total_nodes += nodes_at_level
+            
+            # Total Tokens
+            # Input: Each node reads standard context + uploaded files
+            total_input = (total_nodes * AVG_INPUT_TOKENS) + (total_nodes * file_tokens)
+            total_output = total_nodes * AVG_OUTPUT_TOKENS
+            
+            cost = (total_input / 1_000_000 * COST_INPUT_1M) + (total_output / 1_000_000 * COST_OUTPUT_1M)
+            
+            table = Table(title="Cost Estimate (Gemini 3 Pro)")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Value", style="bold yellow")
+            
+            table.add_row("Recursion Depth", str(args.depth))
+            table.add_row("Breadth (Fan-out)", str(args.breadth))
+            table.add_row("Total Agent Nodes", str(total_nodes))
+            table.add_row("File Context", f"{file_tokens:,.0f} tokens")
+            table.add_row("Est. Input Tokens", f"{total_input:,.0f}")
+            table.add_row("Est. Output Tokens", f"{total_output:,.0f}")
+            table.add_row("Estimated Cost", f"${cost:.2f}")
+            
+            console.print(table)
+            console.print("[dim]Pricing: $2.00/1M Input, $12.00/1M Output. Actuals may vary based on search grounding.[/]")
 
         else:
             parser.print_help()
