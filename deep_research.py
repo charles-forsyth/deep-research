@@ -217,6 +217,7 @@ class DeepResearchConfig(BaseModel):
     api_key: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY"), validate_default=True)
     agent_name: str = "deep-research-pro-preview-12-2025"
     followup_model: str = "gemini-3-pro-preview"
+    recursion_timeout: int = 600 # 10 minutes per child task
 
     @field_validator('api_key', mode='before')
     @classmethod
@@ -789,13 +790,19 @@ class DeepResearchAgent:
                     q, current_depth + 1, max_depth, breadth, original_request, current_id
                 ))
             
-            for f in concurrent.futures.as_completed(futures):
+            # Enforce timeout
+            done, not_done = concurrent.futures.wait(futures, timeout=self.config.recursion_timeout)
+            
+            for f in done:
                 try:
                     res = f.result()
                     if res:
                         sub_reports.append(res)
                 except Exception as e:
                     self._log(f"{indent}[WARN] Child failed: {e}")
+            
+            if not_done:
+                self._log(f"{indent}[ERROR] {len(not_done)} child tasks timed out.")
 
         if not sub_reports:
             return report
