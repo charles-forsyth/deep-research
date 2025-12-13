@@ -804,11 +804,19 @@ class DeepResearchAgent:
         
         # Robustness: If auto_update_status=False, status might be 'running' but result is ready.
         # We proceed if we have a result.
-        if not session or not session.get('result'):
-            self._log(f"{indent}[ERROR] Research failed or incomplete. Status: {session.get('status') if session else 'None'}")
+        if not session:
+            self._log(f"{indent}[ERROR] Research session not found.")
+            return None
+            
+        # session is sqlite3.Row, doesn't support .get(). Use index access or dict conversion.
+        status = session['status']
+        result = session['result']
+        
+        if status != 'completed' and not result:
+            self._log(f"{indent}[ERROR] Research failed or incomplete. Status: {status}")
             return None
         
-        report = session['result']
+        report = result
         current_id = session['id']
         self._log(f"{indent}[INFO] Phase 1 complete. Report length: {len(report)} chars.")
 
