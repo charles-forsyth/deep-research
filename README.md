@@ -137,6 +137,138 @@ deep-research delete 1
 deep-research cleanup
 ```
 
+## 💡 Use Case Gallery
+
+Unlock the full potential of your autonomous research agent with these powerful workflows.
+
+### 🛠️ Developer & Technical
+
+#### 1. The "Codebase Archaeologist"
+Inherit a messy legacy project? Use this to understand it fast.
+*   **The Power:** Uses `--upload` to ingest the file structure and key files, and `--depth 2` to recursively analyze subsystems and identify architectural patterns.
+*   **Command:**
+    ```bash
+    deep-research "Analyze this codebase. Identify the tech stack, key patterns, and security risks." --upload ./src/ --depth 2
+    ```
+
+#### 2. Technical Troubleshooting
+Stuck on an obscure error? Let the agent find the fix.
+*   **The Power:** Synthesizes solutions from StackOverflow, GitHub Issues, and official documentation into a single, verified fix, saving you hours of tab-switching.
+*   **Command:**
+    ```bash
+    deep-research "Fix 'Error X' in System Y. Synthesize solutions from GitHub issues and docs."
+    ```
+
+#### 3. Content Repurposing
+Need to turn a whitepaper into a tweet thread?
+*   **The Power:** Uploads long PDF reports and intelligently reformats the key insights into specific social media formats.
+*   **Command:**
+    ```bash
+    deep-research "Turn this report into a Tweet thread and a LinkedIn post." --upload report.pdf
+    ```
+
+### 💼 Business & Strategy
+
+#### 4. The "Competitor Matrix"
+Need to compare products for a strategy meeting?
+*   **The Power:** Uses `--breadth 5` to spawn parallel agents that research multiple competitors simultaneously, and `--format CSV` to generate a spreadsheet ready for Excel.
+*   **Command:**
+    ```bash
+    deep-research "Compare top 5 CRM tools. Columns: Pricing, Features, Sentiment." --breadth 5 --format CSV --output crm.csv
+    ```
+
+#### 5. Supply Chain Risk Assessment
+Worried about logistics?
+*   **The Power:** Traces product dependencies recursively to identify geopolitical bottlenecks (e.g., rare earth metals) and single points of failure.
+*   **Command:**
+    ```bash
+    deep-research "Trace the supply chain of Lithium batteries. Identify geopolitical risks." --depth 2
+    ```
+
+#### 6. Investment Due Diligence
+Considering an investment or partnership?
+*   **The Power:** Recursively investigates financial health (10-K), recent lawsuits, and leadership history to create a comprehensive risk profile.
+*   **Command:**
+    ```bash
+    deep-research "Deep dive on [Company]. Focus on financial health, lawsuits, and leadership." --depth 2
+    ```
+
+#### 7. Grant Proposal Generator
+Need funding?
+*   **The Power:** Researches specific funding agencies (NSF, NIH) and tailors your project description to align perfectly with their current strategic goals.
+*   **Command:**
+    ```bash
+    deep-research "Draft a grant proposal for [Project Idea] aligned with NSF strategic goals."
+    ```
+
+### 🎓 Academic & Legal
+
+#### 8. The "Academic Literature Review"
+Writing a thesis or paper?
+*   **The Power:** The "Gap Analysis" feature. The agent creates an initial review, realizes "I found papers on X, but I'm missing Y," and automatically spawns child tasks to find the missing citations.
+*   **Command:**
+    ```bash
+    deep-research start "Write a literature review on microplastics in soil. Identify research gaps." --depth 3 --breadth 4
+    ```
+
+#### 9. Legal Precedent Search
+Need case law?
+*   **The Power:** Recursively analyzes legal databases to find relevant case law in specific jurisdictions and highlights contradictory rulings.
+*   **Command:**
+    ```bash
+    deep-research "Find case law regarding [Legal Concept] in [Jurisdiction]. Analyze contradictions."
+    ```
+
+#### 10. Historical "What If" Analysis
+Studying history?
+*   **The Power:** Synthesizes views from multiple historians to construct a detailed counter-factual analysis of major historical events.
+*   **Command:**
+    ```bash
+    deep-research "Analyze the Battle of Midway outcomes if [Event X] had changed."
+    ```
+
+### 🌍 Life & Automation
+
+#### 11. The "Daily Briefing" Pipeline
+Want a custom news feed?
+*   **The Power:** The `-q` (Quiet Mode) allows you to run this in a cron job or script, piping the output directly to email or Slack without any logs.
+*   **Command:**
+    ```bash
+    deep-research -q "Summarize global AI news from the last 24 hours." > morning_brief.txt
+    ```
+
+#### 12. Travel Itinerary Planner
+Planning a complex trip?
+*   **The Power:** Depth ensures specific constraints (e.g., "Gluten-Free", "Kid-Friendly") are checked against actual restaurant menus and venue policies, not just generic lists.
+*   **Command:**
+    ```bash
+    deep-research "2-week Japan trip. Gluten-free food, kid-friendly hiking, anime spots." --depth 2
+    ```
+
+#### 13. The "Deep Dive Interview Prep"
+Preparing for a big interview?
+*   **The Power:** Recursively looks at the company's recent challenges, the CEO's speeches, and employee reviews to give you talking points that impress.
+*   **Command:**
+    ```bash
+    deep-research "Deep dive on [Company]. Focus on recent product launches and culture." --depth 2
+    ```
+
+#### 14. The "Gift Wizard"
+Need a gift for a hobby you don't understand?
+*   **The Power:** Checks Reddit threads and niche forums to find durable, highly-rated items that enthusiasts actually respect, within your budget.
+*   **Command:**
+    ```bash
+    deep-research "Best gift for a 30yo rock climber who loves coffee. Budget $200."
+    ```
+
+#### 15. Fact-Checking / Debunking
+Is that viral video true?
+*   **The Power:** Traces claims back to primary sources (studies, raw footage) to identify logical fallacies and misinformation.
+*   **Command:**
+    ```bash
+    deep-research "Verify the claims in [Viral Article]. Trace citations to primary sources."
+    ```
+
 ## 🛠️ Development
 
 We welcome contributions! This project uses `uv` for dependency management and `pytest` for testing.
