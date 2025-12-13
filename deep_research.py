@@ -26,6 +26,13 @@ import re
 import sqlite3
 import subprocess
 import concurrent.futures
+import warnings
+import logging
+
+# Suppress library noise for clean CLI output
+warnings.filterwarnings("ignore", category=UserWarning, module="google.genai")
+logging.getLogger("google_genai").setLevel(logging.ERROR)
+
 from datetime import datetime
 from importlib.metadata import version, PackageNotFoundError
 from dotenv import load_dotenv
