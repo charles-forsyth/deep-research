@@ -51,7 +51,7 @@ user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
 load_dotenv(user_config_path)
 
 # Fallback version if not installed as a package
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 def get_version():
     try:
@@ -458,15 +458,19 @@ class FileManager:
                 pass
 
 class DeepResearchAgent:
-    def __init__(self, config: DeepResearchConfig | None = None, logger=None):
+    def __init__(self, config: DeepResearchConfig | None = None, logger=None, quiet: bool = False):
         self.config = config or DeepResearchConfig()
         self.client = genai.Client(api_key=self.config.api_key)
         self.file_manager = FileManager(self.client)
         self.session_manager = SessionManager()
         self.logger = logger
+        self.quiet = quiet
 
     def _log(self, message: str, end: str = "\n", **kwargs):
         """Internal logging helper that respects the custom logger."""
+        if self.quiet:
+            return
+
         if self.logger:
             self.logger(message)
         else:
@@ -585,6 +589,10 @@ class DeepResearchAgent:
                          if final_interaction.outputs:
                              final_text = final_interaction.outputs[-1].text
                              
+                             if self.quiet:
+                                 # In quiet mode, print ONLY the result for piping
+                                 print(final_text)
+                             
                              if auto_update_status:
                                  self.session_manager.update_session(interaction_id[0], "completed", final_text)
                              else:
@@ -651,6 +659,9 @@ class DeepResearchAgent:
                     else:
                         self._log(final_text)
                     
+                    if self.quiet:
+                        print(final_text)
+
                     if auto_update_status:
                         self.session_manager.update_session(interaction.id, "completed", final_text)
                     else:
@@ -938,6 +949,7 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     # Command: research
     parser_research = subparsers.add_parser("research", help="Start a new research task")
     parser_research.add_argument("prompt", help="The research prompt or question")
+    parser_research.add_argument("-q", "--quiet", action="store_true", help="Suppress logs, output only final report (Good for piping)")
     parser_research.add_argument("--stream", action="store_true", help="Stream the agent's thought process (Recommended)")
     parser_research.add_argument("--stores", nargs="+", help="Existing Cloud File Search Store names (advanced)")
     parser_research.add_argument("--upload", nargs="+", help="Local file/folder paths to upload, analyze, and auto-delete")
@@ -994,6 +1006,17 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     parser_estimate.add_argument("--breadth", type=int, default=3, help="Recursive breadth")
     parser_estimate.add_argument("--upload", nargs="+", help="Files to upload (adds to context cost)")
 
+    # Default Command Logic
+    # If the first argument is not a known subcommand, assume 'research'.
+    known_commands = {
+        "research", "start", "followup", "list", "show", 
+        "delete", "cleanup", "tree", "auth", "estimate",
+        "-h", "--help", "-v", "--version"
+    }
+    
+    if len(sys.argv) > 1 and sys.argv[1] not in known_commands:
+        sys.argv.insert(1, "research")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1040,10 +1063,17 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
                 depth=args.depth,
                 breadth=args.breadth
             )
-            agent = DeepResearchAgent()
+            # Default to stream if not quiet, unless explicitly set
+            if not args.quiet and not args.stream and request.depth == 1:
+                 # Auto-stream for interactive use? No, keep existing behavior (default False?)
+                 # Actually, argparse default is False.
+                 # Let's keep it explicit.
+                 pass
+
+            agent = DeepResearchAgent(quiet=args.quiet)
             
             if request.depth > 1:
-                if request.stream:
+                if request.stream and not args.quiet:
                     print("[INFO] Recursive research does not support streaming to stdout. Switching to polling mode.")
                 agent.start_recursive_research(request)
             elif request.stream:
