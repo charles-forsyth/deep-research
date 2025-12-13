@@ -799,6 +799,8 @@ class DeepResearchAgent:
         # 5. Analyze Gaps
         questions = self.analyze_gaps(prompt, report, limit=breadth)
         if not questions:
+            # Recursion ends here (Leaf by logic)
+            self.session_manager.update_session(interaction_id, "completed", result=report)
             return report
 
         self._log(f"{indent}[INFO] Spawning {len(questions)} sub-tasks...")
