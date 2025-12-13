@@ -638,7 +638,12 @@ class DeepResearchAgent:
                 if interaction.status == "completed":
                     self._log("\n" + "="*40 + " REPORT " + "="*40)
                     final_text = interaction.outputs[-1].text
-                    self._log(final_text)
+                    
+                    # Log snippet only to prevent crash on massive output
+                    if len(final_text) > 2000:
+                        self._log(final_text[:2000] + "\n\n... [Report Truncated in Logs. Full content in DB] ...")
+                    else:
+                        self._log(final_text)
                     
                     if auto_update_status:
                         self.session_manager.update_session(interaction.id, "completed", final_text)
@@ -796,7 +801,11 @@ class DeepResearchAgent:
 
         # 3. Fetch Result
         session = self.session_manager.get_session(interaction_id)
-        if not session or session['status'] != 'completed':
+        
+        # Robustness: If auto_update_status=False, status might be 'running' but result is ready.
+        # We proceed if we have a result.
+        if not session or not session.get('result'):
+            self._log(f"{indent}[ERROR] Research failed or incomplete. Status: {session.get('status') if session else 'None'}")
             return None
         
         report = session['result']
