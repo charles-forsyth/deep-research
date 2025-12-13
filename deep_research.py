@@ -25,6 +25,7 @@ import json
 import re
 import sqlite3
 import subprocess
+import concurrent.futures
 from datetime import datetime
 from importlib.metadata import version, PackageNotFoundError
 from dotenv import load_dotenv
@@ -110,13 +111,19 @@ class SessionManager:
             if "pid" not in columns:
                 conn.execute("ALTER TABLE sessions ADD COLUMN pid INTEGER")
             
+            # Migration: Add Recursive Research columns (v0.9.0)
+            if "parent_id" not in columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN parent_id INTEGER")
+            if "depth" not in columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN depth INTEGER DEFAULT 1")
+
             conn.commit()
 
-    def create_session(self, interaction_id: str, prompt: str, files: list[str] | None = None, pid: int | None = None) -> int:
+    def create_session(self, interaction_id: str, prompt: str, files: list[str] | None = None, pid: int | None = None, parent_id: int | None = None, depth: int = 1) -> int:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                "INSERT INTO sessions (interaction_id, prompt, status, created_at, updated_at, files, pid) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (interaction_id, prompt, "running", datetime.now().isoformat(), datetime.now().isoformat(), json.dumps(files or []), pid)
+                "INSERT INTO sessions (interaction_id, prompt, status, created_at, updated_at, files, pid, parent_id, depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (interaction_id, prompt, "running", datetime.now().isoformat(), datetime.now().isoformat(), json.dumps(files or []), pid, parent_id, depth)
             )
             conn.commit()
             print(f"[DB] Session saved (ID: {cursor.lastrowid})")
@@ -272,6 +279,7 @@ class ResearchRequest(BaseModel):
     upload_paths: list[str] | None = None
     output_file: str | None = None
     adopt_session_id: int | None = None
+    depth: int = 1
 
     @property
     def final_prompt(self) -> str:
@@ -638,6 +646,142 @@ class DeepResearchAgent:
         except Exception as e:
             self._log(f"[ERROR] Follow-up failed: {e}")
 
+    def analyze_gaps(self, original_prompt: str, report_text: str) -> list[str]:
+        self._log("[THOUGHT] Analyzing report for gaps (Recursive Deep Research)...")
+        
+        prompt = (
+            f"Original Objective: {original_prompt}\n\n"
+            f"Report:\n{report_text}\n\n"
+            "INSTRUCTIONS:\n"
+            "1. Analyze the report against the objective.\n"
+            "2. Identify 1-3 critical gaps, unanswered questions, or areas needing deeper verification.\n"
+            "3. If the report is comprehensive, return an empty list.\n"
+            "4. Output strictly a JSON list of strings, e.g., [\"Question 1\", \"Question 2\"].\n"
+            "5. Wrap the JSON in a ```json code block."
+        )
+        
+        try:
+            response = self.client.models.generate_content(
+                model=self.config.followup_model,
+                contents=prompt
+            )
+            text = response.text
+            # Use DataExporter utility to extract JSON
+            json_str = DataExporter.extract_code_block(text, "json")
+            if not json_str:
+                # If extraction fails, assume no gaps or parsing error
+                # We could try regex finding simple list items but JSON is safer
+                return []
+            return json.loads(json_str)
+        except Exception as e:
+            self._log(f"[WARN] Failed to analyze gaps: {e}")
+            return []
+
+    def synthesize_findings(self, original_prompt: str, main_report: str, sub_reports: list[str]) -> str:
+        self._log(f"[THOUGHT] Synthesizing {len(sub_reports)} child reports into final answer...")
+        
+        combined_subs = "\n\n---\n\n".join([f"Sub-Report {i+1}:\n{r}" for i, r in enumerate(sub_reports)])
+        
+        prompt = (
+            f"Objective: {original_prompt}\n\n"
+            f"Initial Research Findings:\n{main_report}\n\n"
+            f"Deep Dive Findings (Sub-Reports):\n{combined_subs}\n\n"
+            "INSTRUCTIONS:\n"
+            "1. Synthesize all information into a single, cohesive, comprehensive report.\n"
+            "2. Integrate the Deep Dive findings naturally into the narrative (do not just append them).\n"
+            "3. Resolve any conflicts between reports.\n"
+            "4. Maintain a professional, 'Deep Research' tone."
+        )
+        
+        try:
+            response = self.client.models.generate_content(
+                model=self.config.followup_model,
+                contents=prompt
+            )
+            return response.text
+        except Exception as e:
+            self._log(f"[ERROR] Synthesis failed: {e}")
+            return main_report + "\n\n[ERROR: Synthesis failed. Appending raw sub-reports below]\n\n" + combined_subs
+
+    def start_recursive_research(self, request: ResearchRequest):
+        # 1. Level 1 Research
+        self._log(f"[INFO] Starting Recursive Research (Depth {request.depth}) - Phase 1")
+        
+        # Override output_file for phase 1 to avoid overwriting final
+        original_output_file = request.output_file
+        request.output_file = None 
+        
+        interaction_id = self.start_research_poll(request)
+        
+        # Retrieve result
+        session = self.session_manager.get_session(interaction_id)
+        if not session or session['status'] != 'completed':
+            self._log("[ERROR] Phase 1 failed. Aborting recursion.")
+            return
+        
+        main_report = session['result']
+        parent_id = session['id']
+        
+        # 2. Analyze Gaps
+        questions = self.analyze_gaps(request.prompt, main_report)
+        if not questions:
+            self._log("[INFO] No gaps found. Research complete.")
+            # Restore output file logic if needed
+            if original_output_file:
+                DataExporter.export(main_report, original_output_file)
+            return
+
+        self._log(f"[INFO] Identified {len(questions)} gaps: {questions}")
+        
+        # 3. Parallel Execution (Phase 2)
+        sub_reports = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            futures = []
+            for q in questions:
+                # Create sub-request
+                sub_req = ResearchRequest(
+                    prompt=q,
+                    upload_paths=request.upload_paths, # Share context
+                    stores=request.stores,
+                    stream=False # No streaming for children
+                )
+                # Create session entry for child
+                child_sid = self.session_manager.create_session(
+                    "pending_child", q, request.upload_paths, parent_id=parent_id, depth=request.depth + 1
+                )
+                sub_req.adopt_session_id = child_sid
+                
+                futures.append(executor.submit(self._run_child_research, sub_req))
+            
+            for f in concurrent.futures.as_completed(futures):
+                try:
+                    result = f.result()
+                    if result:
+                        sub_reports.append(result)
+                except Exception as e:
+                    self._log(f"[WARN] Child task failed: {e}")
+
+        # 4. Synthesis
+        final_report = self.synthesize_findings(request.prompt, main_report, sub_reports)
+        
+        # 5. Update Parent Session
+        self.session_manager.update_session(interaction_id, "completed", result=final_report)
+        self._log("[INFO] Recursive Research Complete.")
+        
+        if original_output_file:
+            DataExporter.export(final_report, original_output_file)
+
+    def _run_child_research(self, request: ResearchRequest) -> str | None:
+        # Helper to run poll and return text
+        # Create a new agent instance for thread safety
+        agent = DeepResearchAgent(config=self.config) 
+        iid = agent.start_research_poll(request)
+        
+        # Fetch result
+        mgr = SessionManager() 
+        session = mgr.get_session(iid)
+        return session['result'] if session and session['status'] == 'completed' else None
+
 def main():
     desc = """
 Gemini Deep Research Agent CLI
@@ -695,6 +839,7 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     parser_research.add_argument("--upload", nargs="+", help="Local file/folder paths to upload, analyze, and auto-delete")
     parser_research.add_argument("--format", help="Specific output instructions (e.g., 'Technical Report', 'CSV')")
     parser_research.add_argument("--output", help="Save report to file (e.g., report.md, data.json)")
+    parser_research.add_argument("--depth", type=int, default=1, help="Recursive research depth (default: 1)")
     parser_research.add_argument("--adopt-session", type=int, help=argparse.SUPPRESS)
 
     # Command: start (Headless)
@@ -764,11 +909,16 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
                 output_format=args.format,
                 upload_paths=args.upload,
                 output_file=args.output,
-                adopt_session_id=args.adopt_session
+                adopt_session_id=args.adopt_session,
+                depth=args.depth
             )
             agent = DeepResearchAgent()
             
-            if request.stream:
+            if request.depth > 1:
+                if request.stream:
+                    print("[INFO] Recursive research does not support streaming to stdout. Switching to polling mode.")
+                agent.start_recursive_research(request)
+            elif request.stream:
                 agent.start_research_stream(request)
             else:
                 agent.start_research_poll(request)
