@@ -722,6 +722,10 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     parser_delete = subparsers.add_parser("delete", help="Delete a session from history")
     parser_delete.add_argument("id", help="Session ID (integer) or Interaction ID")
 
+    # Command: cleanup
+    parser_cleanup = subparsers.add_parser("cleanup", help="Delete stale cloud resources (GC)")
+    parser_cleanup.add_argument("--force", action="store_true", help="Delete without confirmation")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -856,6 +860,67 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
                 console.print(f"[bold green][INFO][/] Session '{args.id}' deleted.")
             else:
                 console.print(f"[bold red][ERROR][/] Session '{args.id}' not found.")
+
+        elif args.command == "cleanup":
+            config = DeepResearchConfig()
+            client = genai.Client(api_key=config.api_key)
+            
+            console.print("[bold cyan][INFO][/] Scanning for File Search Stores...")
+            # Note: client.file_search_stores.list() returns an iterator
+            try:
+                stores = list(client.file_search_stores.list())
+            except Exception as e:
+                console.print(f"[bold red][ERROR][/] Failed to list stores: {e}")
+                return
+
+            if not stores:
+                console.print("[bold green]No active stores found. System is clean![/]")
+                return
+
+            table = Table(title=f"Found {len(stores)} Active Cloud Stores")
+            table.add_column("Name (ID)", style="cyan")
+            table.add_column("Create Time", style="dim")
+            
+            for s in stores:
+                # s.name is like 'fileSearchStores/xyz'
+                # s.create_time might be available depending on SDK version
+                created = getattr(s, 'create_time', 'Unknown')
+                table.add_row(s.name, str(created))
+            
+            console.print(table)
+            console.print("[bold yellow]WARNING: This will delete ALL listed stores and their files.[/]")
+            
+            if not args.force:
+                confirm = input(f"Are you sure you want to delete {len(stores)} stores? [y/N] ")
+                if confirm.lower() != 'y':
+                    console.print("[bold yellow]Aborted.[/]")
+                    return
+
+            with console.status("Deleting stores...", spinner="dots"):
+                for s in stores:
+                    # 1. Empty the store
+                    try:
+                        if hasattr(client.file_search_stores, 'documents'):
+                            docs = list(client.file_search_stores.documents.list(parent=s.name))
+                            if docs:
+                                console.print(f"  Emptying {len(docs)} documents...")
+                            for doc in docs:
+                                try:
+                                    # Force delete is required if document has content
+                                    client.file_search_stores.documents.delete(name=doc.name, config={'force': True})
+                                except Exception as e:
+                                    console.print(f"  [yellow]Failed to delete doc {doc.name}: {e}[/]")
+                    except Exception as e:
+                        console.print(f"  [yellow]Failed to list docs: {e}[/]")
+
+                    # 2. Delete the store
+                    try:
+                        client.file_search_stores.delete(name=s.name)
+                        console.print(f"[green]Deleted:[/green] {s.name}")
+                    except Exception as e:
+                        console.print(f"[bold red]Failed to delete {s.name}:[/] {e}")
+            
+            console.print("[bold green]Cleanup Complete![/]")
 
         else:
             parser.print_help()
