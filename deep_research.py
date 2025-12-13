@@ -47,7 +47,7 @@ user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
 load_dotenv(user_config_path)
 
 # Fallback version if not installed as a package
-__version__ = "0.8.3"
+__version__ = "0.8.4"
 
 def get_version():
     try:
@@ -135,7 +135,7 @@ class SessionManager:
             )
             conn.commit()
 
-    def update_session(self, interaction_id: str, status: str, result: str = None):
+    def update_session(self, interaction_id: str, status: str, result: str | None = None):
         with sqlite3.connect(self.db_path) as conn:
             query = "UPDATE sessions SET status = ?, updated_at = ?"
             params = [status, datetime.now().isoformat()]
@@ -549,7 +549,7 @@ class DeepResearchAgent:
         except Exception as e:
             self._log(f"\n[ERROR] Research failed: {e}")
             if interaction_id[0]:
-                self.session_manager.update_session(interaction_id[0], "failed")
+                self.session_manager.update_session(interaction_id[0], "failed", result=f"Exception: {e}")
         finally:
             if request.upload_paths:
                 self.file_manager.cleanup()
@@ -598,8 +598,9 @@ class DeepResearchAgent:
                         DataExporter.export(final_text, request.output_file)
                     break
                 elif interaction.status == "failed":
+                    error_msg = f"API Error: {interaction.error}"
                     self._log(f"[ERROR] Failed: {interaction.error}")
-                    self.session_manager.update_session(interaction.id, "failed")
+                    self.session_manager.update_session(interaction.id, "failed", result=error_msg)
                     break
                 if not self.logger:
                     sys.stdout.write(".")
@@ -612,7 +613,7 @@ class DeepResearchAgent:
         except Exception as e:
             self._log(f"[ERROR] Unexpected error: {e}")
             if 'interaction' in locals() and hasattr(interaction, 'id'):
-                 self.session_manager.update_session(interaction.id, "failed")
+                 self.session_manager.update_session(interaction.id, "failed", result=f"Exception: {e}")
         finally:
             if request.upload_paths:
                 self.file_manager.cleanup()
