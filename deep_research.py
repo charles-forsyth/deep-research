@@ -484,7 +484,13 @@ class DeepResearchAgent:
             
             # Rich print doesn't support 'flush', so we pop it
             kwargs.pop('flush', None)
-            console.print(msg, end=end, highlight=False, **kwargs)
+            
+            # Safety: If message is huge (e.g. > 10KB report), Rich Markdown parsing might crash
+            # in headless/detached mode. Fallback to raw print.
+            if len(msg) > 10000:
+                print(msg, end=end, flush=True)
+            else:
+                console.print(msg, end=end, highlight=False, **kwargs)
 
     def _process_stream(self, event_stream, interaction_id_ref: list, last_event_id_ref: list, is_complete_ref: list, request_prompt: str | None = None, upload_paths: list | None = None, adopt_session_id: int | None = None):
         for event in event_stream:
