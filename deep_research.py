@@ -35,6 +35,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
 from rich.panel import Panel
+from rich.tree import Tree
 from rich.terminal_theme import MONOKAI
 
 # Load environment variables
@@ -167,6 +168,11 @@ class SessionManager:
                     (updated_result, datetime.now().isoformat(), interaction_id)
                 )
                 conn.commit()
+
+    def get_children(self, session_id: int):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute("SELECT * FROM sessions WHERE parent_id = ? ORDER BY id ASC", (session_id,)).fetchall()
 
     def list_sessions(self, limit: int = 10):
         with sqlite3.connect(self.db_path) as conn:
@@ -892,6 +898,10 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     parser_cleanup = subparsers.add_parser("cleanup", help="Delete stale cloud resources (GC)")
     parser_cleanup.add_argument("--force", action="store_true", help="Delete without confirmation")
 
+    # Command: tree
+    parser_tree = subparsers.add_parser("tree", help="Visualize session hierarchy")
+    parser_tree.add_argument("id", nargs="?", help="Root Session ID (optional)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1097,6 +1107,40 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
                         console.print(f"[bold red]Failed to delete {s.name}:[/] {e}")
             
             console.print("[bold green]Cleanup Complete![/]")
+
+        elif args.command == "tree":
+            mgr = SessionManager()
+            
+            def build_tree(node_id, tree_node):
+                children = mgr.get_children(node_id)
+                for child in children:
+                    status_style = "green" if child['status'] == "completed" else "red" if child['status'] == "crashed" or child['status'] == "failed" else "yellow"
+                    label = f"#{child['id']} [{status_style}]{child['status']}[/] [dim]Depth {child['depth']}[/] - {child['prompt'][:50]}..."
+                    branch = tree_node.add(label)
+                    build_tree(child['id'], branch)
+
+            if args.id:
+                root = mgr.get_session(args.id)
+                if not root:
+                    console.print(f"[bold red]Session {args.id} not found[/]")
+                    return
+                root_label = f"[bold cyan]Session #{root['id']}[/] [dim]Depth {root['depth']}[/]"
+                t = Tree(root_label)
+                build_tree(root['id'], t)
+                console.print(t)
+            else:
+                forest = Tree("[bold]Recent Research Trees[/]")
+                # Get recent roots
+                with sqlite3.connect(mgr.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    roots = conn.execute("SELECT * FROM sessions WHERE parent_id IS NULL ORDER BY updated_at DESC LIMIT 10").fetchall()
+                
+                for r in roots:
+                    status_style = "green" if r['status'] == "completed" else "red" if r['status'] == "crashed" or r['status'] == "failed" else "yellow"
+                    label = f"#{r['id']} [{status_style}]{r['status']}[/] - {r['prompt'][:50]}..."
+                    branch = forest.add(label)
+                    build_tree(r['id'], branch)
+                console.print(forest)
 
         else:
             parser.print_help()
