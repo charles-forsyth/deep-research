@@ -58,7 +58,7 @@ user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
 load_dotenv(user_config_path)
 
 # Fallback version if not installed as a package
-__version__ = "0.13.0"
+__version__ = "0.13.1"
 
 def get_version():
     try:
