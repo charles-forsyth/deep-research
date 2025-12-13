@@ -48,7 +48,7 @@ user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
 load_dotenv(user_config_path)
 
 # Fallback version if not installed as a package
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 
 def get_version():
     try:
@@ -280,6 +280,7 @@ class ResearchRequest(BaseModel):
     output_file: str | None = None
     adopt_session_id: int | None = None
     depth: int = 1
+    breadth: int = 3 # Max child tasks per node
 
     @property
     def final_prompt(self) -> str:
@@ -646,15 +647,15 @@ class DeepResearchAgent:
         except Exception as e:
             self._log(f"[ERROR] Follow-up failed: {e}")
 
-    def analyze_gaps(self, original_prompt: str, report_text: str) -> list[str]:
-        self._log("[THOUGHT] Analyzing report for gaps (Recursive Deep Research)...")
+    def analyze_gaps(self, original_prompt: str, report_text: str, limit: int = 3) -> list[str]:
+        self._log(f"[THOUGHT] Analyzing report for gaps (Limit: {limit})...")
         
         prompt = (
             f"Original Objective: {original_prompt}\n\n"
             f"Report:\n{report_text}\n\n"
             "INSTRUCTIONS:\n"
             "1. Analyze the report against the objective.\n"
-            "2. Identify 1-3 critical gaps, unanswered questions, or areas needing deeper verification.\n"
+            f"2. Identify 1-{limit} critical gaps, unanswered questions, or areas needing deeper verification.\n"
             "3. If the report is comprehensive, return an empty list.\n"
             "4. Output strictly a JSON list of strings, e.g., [\"Question 1\", \"Question 2\"].\n"
             "5. Wrap the JSON in a ```json code block."
@@ -704,83 +705,100 @@ class DeepResearchAgent:
             return main_report + "\n\n[ERROR: Synthesis failed. Appending raw sub-reports below]\n\n" + combined_subs
 
     def start_recursive_research(self, request: ResearchRequest):
-        # 1. Level 1 Research
-        self._log(f"[INFO] Starting Recursive Research (Depth {request.depth}) - Phase 1")
+        """Entry point for recursive research."""
+        final_result = self._execute_recursion_level(
+            prompt=request.prompt,
+            current_depth=1,
+            max_depth=request.depth,
+            breadth=request.breadth,
+            original_request=request
+        )
         
-        # Override output_file for phase 1 to avoid overwriting final
-        original_output_file = request.output_file
-        request.output_file = None 
-        
-        interaction_id = self.start_research_poll(request)
-        
-        # Retrieve result
+        if request.output_file and final_result:
+             DataExporter.export(final_result, request.output_file)
+
+    def _execute_recursion_level(self, prompt: str, current_depth: int, max_depth: int, breadth: int, original_request: ResearchRequest, parent_id: int | None = None) -> str | None:
+        indent = "  " * (current_depth - 1)
+        if current_depth > 1:
+            self._log(f"{indent}[INFO] Recursive Step Depth {current_depth}/{max_depth}: {prompt}")
+        else:
+            self._log(f"[INFO] Starting Recursive Research (Depth {max_depth}, Breadth {breadth})")
+
+        # 1. Prepare Request
+        node_req = ResearchRequest(
+            prompt=prompt,
+            upload_paths=original_request.upload_paths,
+            stores=original_request.stores,
+            stream=False, # Only root could stream, but for simplicity we poll everything in recursion
+            depth=current_depth
+        )
+
+        # 2. Execute Research (Poll)
+        if current_depth == 1:
+             # Root: Use original request (might stream if we wanted, but we force polling for consistency in recursion logic for now)
+             # Actually, if we want to stream root, we need start_research_stream.
+             # But start_recursive_research replaces standard execution.
+             interaction_id = self.start_research_poll(original_request)
+        else:
+             # Child: Create session explicitly to link parent
+             child_sid = self.session_manager.create_session(
+                 "pending_recursion", prompt, original_request.upload_paths, parent_id=parent_id, depth=current_depth
+             )
+             node_req.adopt_session_id = child_sid
+             interaction_id = self.start_research_poll(node_req)
+
+        # 3. Fetch Result
         session = self.session_manager.get_session(interaction_id)
         if not session or session['status'] != 'completed':
-            self._log("[ERROR] Phase 1 failed. Aborting recursion.")
-            return
+            return None
         
-        main_report = session['result']
-        parent_id = session['id']
-        
-        # 2. Analyze Gaps
-        questions = self.analyze_gaps(request.prompt, main_report)
-        if not questions:
-            self._log("[INFO] No gaps found. Research complete.")
-            # Restore output file logic if needed
-            if original_output_file:
-                DataExporter.export(main_report, original_output_file)
-            return
+        report = session['result']
+        current_id = session['id']
 
-        self._log(f"[INFO] Identified {len(questions)} gaps: {questions}")
-        
-        # 3. Parallel Execution (Phase 2)
+        # 4. Check Termination
+        if current_depth >= max_depth:
+            return report
+
+        # 5. Analyze Gaps
+        questions = self.analyze_gaps(prompt, report, limit=breadth)
+        if not questions:
+            return report
+
+        self._log(f"{indent}[INFO] Spawning {len(questions)} sub-tasks...")
+
+        # 6. Recurse in Parallel
         sub_reports = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=breadth) as executor:
             futures = []
             for q in questions:
-                # Create sub-request
-                sub_req = ResearchRequest(
-                    prompt=q,
-                    upload_paths=request.upload_paths, # Share context
-                    stores=request.stores,
-                    stream=False # No streaming for children
-                )
-                # Create session entry for child
-                child_sid = self.session_manager.create_session(
-                    "pending_child", q, request.upload_paths, parent_id=parent_id, depth=request.depth + 1
-                )
-                sub_req.adopt_session_id = child_sid
-                
-                futures.append(executor.submit(self._run_child_research, sub_req))
+                futures.append(executor.submit(
+                    self._run_recursive_child_safe, 
+                    q, current_depth + 1, max_depth, breadth, original_request, current_id
+                ))
             
             for f in concurrent.futures.as_completed(futures):
                 try:
-                    result = f.result()
-                    if result:
-                        sub_reports.append(result)
+                    res = f.result()
+                    if res:
+                        sub_reports.append(res)
                 except Exception as e:
-                    self._log(f"[WARN] Child task failed: {e}")
+                    self._log(f"{indent}[WARN] Child failed: {e}")
 
-        # 4. Synthesis
-        final_report = self.synthesize_findings(request.prompt, main_report, sub_reports)
+        if not sub_reports:
+            return report
+
+        # 7. Synthesis
+        final_report = self.synthesize_findings(prompt, report, sub_reports)
         
-        # 5. Update Parent Session
+        # Update Session with synthesis
         self.session_manager.update_session(interaction_id, "completed", result=final_report)
-        self._log("[INFO] Recursive Research Complete.")
         
-        if original_output_file:
-            DataExporter.export(final_report, original_output_file)
+        return final_report
 
-    def _run_child_research(self, request: ResearchRequest) -> str | None:
-        # Helper to run poll and return text
-        # Create a new agent instance for thread safety
-        agent = DeepResearchAgent(config=self.config) 
-        iid = agent.start_research_poll(request)
-        
-        # Fetch result
-        mgr = SessionManager() 
-        session = mgr.get_session(iid)
-        return session['result'] if session and session['status'] == 'completed' else None
+    def _run_recursive_child_safe(self, q, d, max_d, b, req, pid):
+        # Helper to instantiate agent and run recursion in thread
+        agent = DeepResearchAgent(config=self.config)
+        return agent._execute_recursion_level(q, d, max_d, b, req, pid)
 
 def main():
     desc = """
@@ -840,6 +858,7 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     parser_research.add_argument("--format", help="Specific output instructions (e.g., 'Technical Report', 'CSV')")
     parser_research.add_argument("--output", help="Save report to file (e.g., report.md, data.json)")
     parser_research.add_argument("--depth", type=int, default=1, help="Recursive research depth (default: 1)")
+    parser_research.add_argument("--breadth", type=int, default=3, help="Max child tasks per recursion level (default: 3)")
     parser_research.add_argument("--adopt-session", type=int, help=argparse.SUPPRESS)
 
     # Command: start (Headless)
@@ -910,7 +929,8 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
                 upload_paths=args.upload,
                 output_file=args.output,
                 adopt_session_id=args.adopt_session,
-                depth=args.depth
+                depth=args.depth,
+                breadth=args.breadth
             )
             agent = DeepResearchAgent()
             
