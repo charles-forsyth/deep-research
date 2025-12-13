@@ -87,7 +87,18 @@ deep-research research "List top 5 cloud providers with market share" --output m
 deep-research research "Table of US Presidents and their terms" --output presidents.csv
 ```
 
-### 4. Headless Research (Fire & Forget)
+### 4. Recursive Deep Research (New!)
+For complex topics, use `--depth 2` to enable the autonomous recursive mode.
+1.  **Phase 1:** The agent performs initial research and generates a report.
+2.  **Gap Analysis:** It autonomously analyzes the report for missing information or "gaps".
+3.  **Deep Dive:** It spawns parallel child research tasks to investigate these gaps.
+4.  **Synthesis:** It merges all findings into a final, comprehensive answer.
+
+```bash
+deep-research research "Deep analysis of quantum computing timelines" --depth 2
+```
+
+### 5. Headless Research (Fire & Forget)
 For long tasks, start the research in the background and check back later.
 
 ```bash
@@ -101,7 +112,7 @@ deep-research list
 deep-research show 1
 ```
 
-### 5. Follow-up Questions
+### 6. Follow-up Questions
 Interact with your research history. You can use the local **Session ID** (e.g., `1`) or the API Interaction ID.
 
 ```bash
@@ -109,15 +120,21 @@ Interact with your research history. You can use the local **Session ID** (e.g.,
 deep-research followup 1 "Can you explain the error correction part simply?"
 ```
 
-### 6. Manage History
-Review your past research sessions.
+### 7. Manage History & Maintenance
+Review your past research sessions and keep your system clean.
 
 ```bash
 # List recent sessions
 deep-research list
 
 # Show the report from a specific session ID
-deep-research show 1
+deep-research show 1 --save report.html
+
+# Delete a session
+deep-research delete 1
+
+# Garbage Collection (Cleanup Stale Cloud Files)
+deep-research cleanup
 ```
 
 ## 🛠️ Development
