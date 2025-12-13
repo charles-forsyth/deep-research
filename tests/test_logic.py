@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 import pytest
+import os
 from deep_research import FileManager, DeepResearchAgent, ResearchRequest
 
 @pytest.fixture
@@ -93,7 +94,8 @@ def test_agent_auto_upload_and_cleanup(mock_client):
     agent.file_manager.cleanup.assert_called_once()
 
 def test_recursive_research():
-    with patch("deep_research.DeepResearchAgent.start_research_poll") as mock_poll, \
+    with patch.dict(os.environ, {"GEMINI_API_KEY": "fake_key"}), \
+         patch("deep_research.DeepResearchAgent.start_research_poll") as mock_poll, \
          patch("deep_research.DeepResearchAgent.analyze_gaps") as mock_gaps, \
          patch("deep_research.DeepResearchAgent.synthesize_findings") as mock_synth, \
          patch("deep_research.SessionManager.create_session") as mock_create_session, \
