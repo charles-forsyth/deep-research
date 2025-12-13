@@ -69,7 +69,8 @@ def detach_process(args_list: list[str], log_path: str) -> int:
     
     with open(log_path, 'a') as log_file:
         script_file = str(pathlib.Path(__file__).resolve())
-        cmd = [sys.executable, script_file] + args_list
+        # Use -u for unbuffered output to ensure logs are written immediately
+        cmd = [sys.executable, "-u", script_file] + args_list
         
         kwargs = {}
         if sys.platform == 'win32':
@@ -765,6 +766,10 @@ class DeepResearchAgent:
             original_request=request
         )
         
+        if final_result:
+            self._log("[INFO] Recursive Research Complete.")
+            sys.stdout.flush()
+
         if request.output_file and final_result:
              DataExporter.export(final_result, request.output_file)
 
