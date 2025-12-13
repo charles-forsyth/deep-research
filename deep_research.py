@@ -51,7 +51,7 @@ user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
 load_dotenv(user_config_path)
 
 # Fallback version if not installed as a package
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 def get_version():
     try:
@@ -513,7 +513,7 @@ class DeepResearchAgent:
             if event.event_type in ['interaction.complete', 'error']:
                 is_complete_ref[0] = True
 
-    def start_research_stream(self, request: ResearchRequest):
+    def start_research_stream(self, request: ResearchRequest, auto_update_status: bool = True):
         agent_config = {
             "type": "deep-research",
             "thinking_summaries": "auto"
@@ -584,7 +584,12 @@ class DeepResearchAgent:
                          final_interaction = self.client.interactions.get(id=interaction_id[0])
                          if final_interaction.outputs:
                              final_text = final_interaction.outputs[-1].text
-                             self.session_manager.update_session(interaction_id[0], "completed", final_text)
+                             
+                             if auto_update_status:
+                                 self.session_manager.update_session(interaction_id[0], "completed", final_text)
+                             else:
+                                 self.session_manager.update_session(interaction_id[0], "running", final_text)
+                                 
                              if request.output_file:
                                  DataExporter.export(final_text, request.output_file)
                      except Exception as e:
@@ -785,19 +790,19 @@ class DeepResearchAgent:
             prompt=prompt,
             upload_paths=original_request.upload_paths,
             stores=original_request.stores,
-            stream=False, # Only root could stream, but for simplicity we poll everything in recursion
+            stream=(current_depth == 1), # Stream Root only
             depth=current_depth
         )
 
-        # 2. Execute Research (Poll)
+        # 2. Execute Research (Poll or Stream)
         # Only mark 'completed' automatically if this is a LEAF node (no further recursion)
         is_leaf = (current_depth >= max_depth)
         
         if current_depth == 1:
-             # Root
-             interaction_id = self.start_research_poll(original_request, auto_update_status=is_leaf)
+             # Root: Stream to show thoughts in logs
+             interaction_id = self.start_research_stream(node_req, auto_update_status=is_leaf)
         else:
-             # Child
+             # Child: Poll to avoid log interleaving
              child_sid = self.session_manager.create_session(
                  "pending_recursion", prompt, original_request.upload_paths, parent_id=parent_id, depth=current_depth
              )

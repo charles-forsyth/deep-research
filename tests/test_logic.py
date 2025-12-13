@@ -96,33 +96,71 @@ def test_agent_auto_upload_and_cleanup(mock_client):
 def test_recursive_research():
     with patch.dict(os.environ, {"GEMINI_API_KEY": "fake_key"}), \
          patch("deep_research.DeepResearchAgent.start_research_poll") as mock_poll, \
+         patch("deep_research.DeepResearchAgent.start_research_stream") as mock_stream, \
          patch("deep_research.DeepResearchAgent.analyze_gaps") as mock_gaps, \
          patch("deep_research.DeepResearchAgent.synthesize_findings") as mock_synth, \
          patch("deep_research.SessionManager.create_session") as mock_create_session, \
          patch("deep_research.SessionManager.get_session") as mock_get_session, \
          patch("deep_research.SessionManager.update_session"):
-         
+
          # Setup mocks
-         mock_poll.return_value = "interaction_123"
-         mock_gaps.return_value = ["Q1", "Q2"]
-         mock_synth.return_value = "Final Report"
-         mock_create_session.return_value = 100
-         mock_get_session.return_value = {'status': 'completed', 'result': 'Initial Report', 'id': 1}
-         
-         agent = DeepResearchAgent()
-         req = ResearchRequest(prompt="Topic", depth=2)
-         
-         agent.start_recursive_research(req)
-         
-         # Verify logic
-         # 1 Parent + 2 Children = 3 calls
-         assert mock_poll.call_count == 3
-         mock_gaps.assert_called_once()
-         mock_synth.assert_called_once()
-         
-         # Verify synthesis args
-         args = mock_synth.call_args
-         assert args[0][0] == "Topic" # original prompt
-         assert args[0][1] == "Initial Report" # main report
-         # Sub reports should be in the list (mocked result from get_session is 'Initial Report' for children too)
-         assert len(args[0][2]) == 2
+    
+             mock_poll.return_value = "interaction_child"
+    
+             mock_stream.return_value = "interaction_root"
+    
+             mock_gaps.return_value = ["Q1", "Q2"]
+    
+             mock_synth.return_value = "Final Report"
+    
+             mock_create_session.return_value = 100
+    
+             # We need to simulate DB state. Root (stream) marks completed. Children (poll) mark running.
+    
+             # But the mocks for poll/stream don't run real code, so we rely on what logic expects.
+    
+             mock_get_session.return_value = {'status': 'completed', 'result': 'Initial Report', 'id': 1}
+    
+    
+    
+             agent = DeepResearchAgent()
+    
+             req = ResearchRequest(prompt="Topic", depth=2)
+    
+    
+    
+             agent.start_recursive_research(req)
+    
+    
+    
+             # Verify logic
+    
+             # Root uses stream
+    
+             assert mock_stream.call_count == 1
+    
+             # 2 Children use poll
+    
+             assert mock_poll.call_count == 2
+    
+    
+    
+             mock_gaps.assert_called_once()
+    
+             mock_synth.assert_called_once()
+    
+             
+    
+             # Verify synthesis args
+    
+             args = mock_synth.call_args
+    
+             assert args[0][0] == "Topic" # original prompt
+    
+             assert args[0][1] == "Initial Report" # main report
+    
+             # Sub reports should be in the list (mocked result from get_session is 'Initial Report' for children too)
+    
+             assert len(args[0][2]) == 2
+    
+    
