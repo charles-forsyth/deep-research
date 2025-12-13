@@ -43,7 +43,8 @@ from rich.terminal_theme import MONOKAI
 load_dotenv()
 
 # Initialize Rich Console
-console = Console()
+# Force width=120 to prevent layout crashes in headless (non-TTY) mode
+console = Console(width=120)
 xdg_config_home = os.getenv("XDG_CONFIG_HOME", os.path.join(os.path.expanduser("~"), ".config"))
 user_config_path = os.path.join(xdg_config_home, "deepresearch", ".env")
 user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
