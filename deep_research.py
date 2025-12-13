@@ -36,6 +36,7 @@ from rich.markdown import Markdown
 from rich.table import Table
 from rich.panel import Panel
 from rich.tree import Tree
+from rich.prompt import Prompt
 from rich.terminal_theme import MONOKAI
 
 # Load environment variables
@@ -902,6 +903,10 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     parser_tree = subparsers.add_parser("tree", help="Visualize session hierarchy")
     parser_tree.add_argument("id", nargs="?", help="Root Session ID (optional)")
 
+    # Command: auth
+    parser_auth = subparsers.add_parser("auth", help="Manage authentication")
+    parser_auth.add_argument("action", choices=["login", "logout"], help="Action to perform")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1141,6 +1146,27 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
                     branch = forest.add(label)
                     build_tree(r['id'], branch)
                 console.print(forest)
+
+        elif args.command == "auth":
+            if args.action == "login":
+                console.print(Panel("Enter your Gemini API Key. It will be stored securely in `~/.config/deepresearch/.env`.", title="Authentication"))
+                key = Prompt.ask("API Key", password=True)
+                if not key.startswith("AIza"):
+                    console.print("[yellow]Warning: Key does not start with 'AIza'. It might be invalid.[/]")
+                
+                # Write to file
+                os.makedirs(os.path.dirname(user_config_path), exist_ok=True)
+                with open(user_config_path, 'w') as f:
+                    f.write(f"GEMINI_API_KEY={key}\n")
+                
+                console.print(f"[bold green]Success![/] Key saved to {user_config_path}")
+            
+            elif args.action == "logout":
+                if os.path.exists(user_config_path):
+                    os.remove(user_config_path)
+                    console.print("[green]Logged out. Config file deleted.[/]")
+                else:
+                    console.print("[yellow]Not logged in.[/]")
 
         else:
             parser.print_help()
