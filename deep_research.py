@@ -47,7 +47,7 @@ user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
 load_dotenv(user_config_path)
 
 # Fallback version if not installed as a package
-__version__ = "0.8.2"
+__version__ = "0.8.3"
 
 def get_version():
     try:
@@ -544,8 +544,12 @@ class DeepResearchAgent:
 
         except KeyboardInterrupt:
             self._log("\n[WARN] Research interrupted by user.")
+            if interaction_id[0]:
+                self.session_manager.update_session(interaction_id[0], "cancelled")
         except Exception as e:
             self._log(f"\n[ERROR] Research failed: {e}")
+            if interaction_id[0]:
+                self.session_manager.update_session(interaction_id[0], "failed")
         finally:
             if request.upload_paths:
                 self.file_manager.cleanup()
@@ -603,8 +607,12 @@ class DeepResearchAgent:
                 time.sleep(10)
         except KeyboardInterrupt:
             self._log("\n[WARN] Polling interrupted by user.")
+            if 'interaction' in locals() and hasattr(interaction, 'id'):
+                 self.session_manager.update_session(interaction.id, "cancelled")
         except Exception as e:
             self._log(f"[ERROR] Unexpected error: {e}")
+            if 'interaction' in locals() and hasattr(interaction, 'id'):
+                 self.session_manager.update_session(interaction.id, "failed")
         finally:
             if request.upload_paths:
                 self.file_manager.cleanup()
