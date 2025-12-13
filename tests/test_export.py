@@ -27,16 +27,16 @@ def test_extract_code_block_no_block():
 
 def test_save_json_valid():
     content = '```json\n{"a": 1}\n```'
-    with patch("builtins.open", mock_open()) as mock_file:
-        DataExporter.save_json(content, "out.json")
+    with patch("builtins.open", mock_open()) as mock_file, patch("rich.console.Console") as mock_console:
+        DataExporter.save_json(content, "out.json", mock_console)
         mock_file.assert_called_with("out.json", "w")
         handle = mock_file()
         handle.write.assert_called()
 
 def test_save_json_invalid_fallback():
     content = "Not JSON"
-    with patch("builtins.open", mock_open()) as mock_file:
-        DataExporter.save_json(content, "out.json")
+    with patch("builtins.open", mock_open()) as mock_file, patch("rich.console.Console") as mock_console:
+        DataExporter.save_json(content, "out.json", mock_console)
         # Should save to .raw
         mock_file.assert_called_with("out.json.raw", "w")
 

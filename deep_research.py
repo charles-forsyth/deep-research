@@ -59,184 +59,6 @@ def get_version():
     except PackageNotFoundError:
         return __version__
 
-def detach_process(args_list: list[str], log_path: str) -> int:
-    """
-    Spawns a detached subprocess that survives terminal closure.
-    Redirects stdout/stderr to the specified log file.
-    Returns the PID of the spawned process.
-    """
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    
-    with open(log_path, 'a') as log_file:
-        script_file = str(pathlib.Path(__file__).resolve())
-        # Use -u for unbuffered output to ensure logs are written immediately
-        cmd = [sys.executable, "-u", script_file] + args_list
-        
-        kwargs = {}
-        if sys.platform == 'win32':
-            kwargs['creationflags'] = 0x00000008 # DETACHED_PROCESS
-        else:
-            kwargs['start_new_session'] = True
-            
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log_file,
-            stderr=log_file,
-            stdin=subprocess.DEVNULL,
-            **kwargs
-        )
-        return proc.pid
-
-class SessionManager:
-    def __init__(self, db_path: str = user_db_path):
-        self.db_path = db_path
-        self._init_db()
-
-    def _init_db(self):
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
-            # Enable Write-Ahead Logging for concurrency
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS sessions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    interaction_id TEXT,
-                    prompt TEXT,
-                    status TEXT,
-                    created_at TIMESTAMP,
-                    updated_at TIMESTAMP,
-                    result TEXT,
-                    files JSON
-                )
-            """)
-            # Migration: Add PID column if missing (v0.8.1)
-            cursor = conn.execute("PRAGMA table_info(sessions)")
-            columns = [col[1] for col in cursor.fetchall()]
-            if "pid" not in columns:
-                conn.execute("ALTER TABLE sessions ADD COLUMN pid INTEGER")
-            
-            # Migration: Add Recursive Research columns (v0.9.0)
-            if "parent_id" not in columns:
-                conn.execute("ALTER TABLE sessions ADD COLUMN parent_id INTEGER")
-            if "depth" not in columns:
-                conn.execute("ALTER TABLE sessions ADD COLUMN depth INTEGER DEFAULT 1")
-
-            conn.commit()
-
-    def create_session(self, interaction_id: str, prompt: str, files: list[str] | None = None, pid: int | None = None, parent_id: int | None = None, depth: int = 1) -> int:
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "INSERT INTO sessions (interaction_id, prompt, status, created_at, updated_at, files, pid, parent_id, depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (interaction_id, prompt, "running", datetime.now().isoformat(), datetime.now().isoformat(), json.dumps(files or []), pid, parent_id, depth)
-            )
-            conn.commit()
-            print(f"[DB] Session saved (ID: {cursor.lastrowid})")
-            return cursor.lastrowid
-
-    def update_session_pid(self, session_id: int, pid: int):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("UPDATE sessions SET pid = ? WHERE id = ?", (pid, session_id))
-            conn.commit()
-
-    def update_session_interaction_id(self, session_id: int, interaction_id: str):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "UPDATE sessions SET interaction_id = ?, status = 'running', updated_at = ? WHERE id = ?",
-                (interaction_id, datetime.now().isoformat(), session_id)
-            )
-            conn.commit()
-
-    def update_session(self, interaction_id: str, status: str, result: str | None = None):
-        with sqlite3.connect(self.db_path) as conn:
-            query = "UPDATE sessions SET status = ?, updated_at = ?"
-            params = [status, datetime.now().isoformat()]
-            if result:
-                query += ", result = ?"
-                params.append(result)
-            query += " WHERE interaction_id = ?"
-            params.append(interaction_id)
-            
-            conn.execute(query, tuple(params))
-            conn.commit()
-
-    def append_to_result(self, interaction_id: str, new_content: str):
-        with sqlite3.connect(self.db_path) as conn:
-            # Get current result
-            row = conn.execute("SELECT result FROM sessions WHERE interaction_id = ?", (interaction_id,)).fetchone()
-            if row:
-                current_result = row[0] or ""
-                updated_result = f"{current_result}\n\n{new_content}"
-                conn.execute(
-                    "UPDATE sessions SET result = ?, updated_at = ? WHERE interaction_id = ?",
-                    (updated_result, datetime.now().isoformat(), interaction_id)
-                )
-                conn.commit()
-
-    def get_children(self, session_id: int):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            return conn.execute("SELECT * FROM sessions WHERE parent_id = ? ORDER BY id ASC", (session_id,)).fetchall()
-
-    def list_sessions(self, limit: int = 10):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
-            
-            # Check for dead processes
-            result = []
-            for s in sessions:
-                s_dict = dict(s)
-                if s['status'] == 'running':
-                    is_dead = False
-                    
-                    # 1. Check own PID
-                    if s['pid']:
-                        try:
-                            os.kill(s['pid'], 0)
-                        except OSError:
-                            is_dead = True
-                    
-                    # 2. Check Parent Status/PID (if child has no own PID)
-                    elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
-                        if parent:
-                            # If parent is finished, child should be finished.
-                            if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
-                                is_dead = True
-                            # If parent is running but dead PID
-                            elif parent['pid']:
-                                try:
-                                    os.kill(parent['pid'], 0)
-                                except OSError:
-                                    is_dead = True
-                    
-                    if is_dead:
-                        s_dict['status'] = 'crashed'
-                        conn.execute("UPDATE sessions SET status = 'crashed' WHERE id = ?", (s['id'],))
-                        conn.commit()
-                        
-                result.append(s_dict)
-            return result
-
-    def get_session(self, session_id_or_interaction_id: str):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            # Try as ID first
-            if str(session_id_or_interaction_id).isdigit():
-                return conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id_or_interaction_id,)).fetchone()
-            # Try as interaction_id
-            return conn.execute("SELECT * FROM sessions WHERE interaction_id = ?", (session_id_or_interaction_id,)).fetchone()
-
-    def delete_session(self, session_id_or_interaction_id: str) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
-            if str(session_id_or_interaction_id).isdigit():
-                cursor = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id_or_interaction_id,))
-            else:
-                cursor = conn.execute("DELETE FROM sessions WHERE interaction_id = ?", (session_id_or_interaction_id,))
-            conn.commit()
-            return cursor.rowcount > 0
 
 class DeepResearchConfig(BaseModel):
     api_key: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY"), validate_default=True)
@@ -265,7 +87,7 @@ class DataExporter:
         return match.group(1) if match else text
 
     @staticmethod
-    def save_json(content: str, filepath: str):
+    def save_json(content: str, filepath: str, console: Console):
         try:
             # Try to extract JSON from code blocks first
             clean_content = DataExporter.extract_code_block(content, "json")
@@ -274,44 +96,43 @@ class DataExporter:
             
             with open(filepath, 'w') as f:
                 json.dump(data, f, indent=2)
-            print(f"[INFO] JSON report saved to {filepath}")
+            console.print(f"[INFO] JSON report saved to {filepath}")
         except json.JSONDecodeError as e:
-            print(f"[ERROR] Failed to parse JSON output: {e}")
+            console.print(f"[ERROR] Failed to parse JSON output: {e}")
             # Save raw content as fallback
             with open(filepath + ".raw", 'w') as f:
                 f.write(content)
-            print(f"[WARN] Raw content saved to {filepath}.raw")
+            console.print(f"[WARN] Raw content saved to {filepath}.raw")
 
     @staticmethod
-    def save_csv(content: str, filepath: str):
+    def save_csv(content: str, filepath: str, console: Console):
         try:
             clean_content = DataExporter.extract_code_block(content, "csv")
             with open(filepath, 'w') as f:
                 f.write(clean_content)
-            print(f"[INFO] CSV report saved to {filepath}")
+            console.print(f"[INFO] CSV report saved to {filepath}")
         except Exception as e:
-            print(f"[ERROR] Failed to save CSV: {e}")
+            console.print(f"[ERROR] Failed to save CSV: {e}")
 
     @staticmethod
-    def export(content: str, filepath: str):
+    def export(content: str, filepath: str, console: Console):
         if filepath.lower().endswith('.json'):
-            DataExporter.save_json(content, filepath)
+            DataExporter.save_json(content, filepath, console)
         elif filepath.lower().endswith('.csv'):
-            DataExporter.save_csv(content, filepath)
+            DataExporter.save_csv(content, filepath, console)
         else:
             # Default text/markdown save
             with open(filepath, 'w') as f:
                 f.write(content)
-            print(f"[INFO] Report saved to {filepath}")
+            console.print(f"[INFO] Report saved to {filepath}")
 
 class ResearchRequest(BaseModel):
     prompt: str
     stores: list[str] | None = None
-    stream: bool = False
+    verbose: bool = False
     output_format: str | None = None
     upload_paths: list[str] | None = None
     output_file: str | None = None
-    adopt_session_id: int | None = None
     depth: int = 1
     breadth: int = 3 # Max child tasks per node
 
@@ -341,21 +162,19 @@ class ResearchRequest(BaseModel):
             ]
         return None
 
-class FollowUpRequest(BaseModel):
-    interaction_id: str
-    prompt: str
 
 class FileManager:
-    def __init__(self, client):
+    def __init__(self, client, console: Console):
         self.client = client
+        self.console = console
         self.created_stores = []
         self.uploaded_files = []
 
     def create_store_from_paths(self, paths: list[str]) -> str:
-        console.print(f"[bold cyan][INFO][/] Uploading {len(paths)} items to a new File Search Store...")
+        self.console.print(f"[bold cyan][INFO][/] Uploading {len(paths)} items to a new File Search Store...")
         store = self.client.file_search_stores.create()
         self.created_stores.append(store.name)
-        console.print(f"[bold cyan][INFO][/] Created temporary store: {store.name}")
+        self.console.print(f"[bold cyan][INFO][/] Created temporary store: {store.name}")
 
         for path in paths:
             if os.path.isdir(path):
@@ -366,14 +185,14 @@ class FileManager:
             elif os.path.isfile(path):
                 self._upload_file(path, store.name)
             else:
-                console.print(f"[bold yellow][WARN][/] Skipped invalid path: {path}")
+                self.console.print(f"[bold yellow][WARN][/] Skipped invalid path: {path}")
 
-        console.print("[bold cyan][INFO][/] Waiting 5s for file ingestion...")
+        self.console.print("[bold cyan][INFO][/] Waiting 5s for file ingestion...")
         time.sleep(5)
         return store.name
 
     def _upload_file(self, path: str, store_name: str):
-        console.print(f"[bold cyan][INFO][/] Uploading: {path}")
+        self.console.print(f"[bold cyan][INFO][/] Uploading: {path}")
         try:
             # Determine MIME type for source files that might fail auto-detection
             mime_type = None
@@ -409,11 +228,11 @@ class FileManager:
                      time.sleep(2)
                      file_obj = self.client.files.get(name=file_obj.name)
         except Exception as e:
-            console.print(f"[bold red][ERROR][/] Failed to upload {path}: {e}")
+            self.console.print(f"[bold red][ERROR][/] Failed to upload {path}: {e}")
             raise
 
     def cleanup(self):
-        console.print("\n[bold cyan][INFO][/] Cleaning up temporary resources...")
+        self.console.print("\n[bold cyan][INFO][/] Cleaning up temporary resources...")
         for store_name in self.created_stores:
              try:
                  # 1. Empty the store first
@@ -423,26 +242,26 @@ class FileManager:
                          pager = self.client.file_search_stores.documents.list(parent=store_name)
                          for doc in pager:
                              try:
-                                 console.print(f"[bold cyan][INFO][/] Deleting document: {doc.name}")
+                                 self.console.print(f"[bold cyan][INFO][/] Deleting document: {doc.name}")
                                  # Force delete to remove chunks/non-empty docs
                                  self.client.file_search_stores.documents.delete(
                                      name=doc.name,
                                      config={'force': True}
                                  )
                              except Exception as e:
-                                 console.print(f"[bold yellow][WARN][/] Failed to delete document {doc.name}: {e}")
+                                 self.console.print(f"[bold yellow][WARN][/] Failed to delete document {doc.name}: {e}")
                      except Exception as e:
                          # If listing fails, we might just try deleting the store directly
-                         console.print(f"[bold yellow][WARN][/] Failed to list documents in {store_name}: {e}")
+                         self.console.print(f"[bold yellow][WARN][/] Failed to list documents in {store_name}: {e}")
 
                  # 2. Delete the store
                  self.client.file_search_stores.delete(name=store_name)
-                 console.print(f"[bold cyan][INFO][/] Deleted store: {store_name}")
+                 self.console.print(f"[bold cyan][INFO][/] Deleted store: {store_name}")
              except Exception as e:
                  if "non-empty" in str(e):
-                     console.print(f"[bold yellow][WARN][/] Could not delete store {store_name} (contains files). It will persist.")
+                     self.console.print(f"[bold yellow][WARN][/] Could not delete store {store_name} (contains files). It will persist.")
                  else:
-                     console.print(f"[bold yellow][WARN][/] Failed to delete store {store_name}: {e}")
+                     self.console.print(f"[bold yellow][WARN][/] Failed to delete store {store_name}: {e}")
 
         # Note: We don't need to delete 'uploaded_files' via client.files.delete() 
         # if they were uploaded via upload_to_file_search_store() as they are managed by the store?
@@ -453,67 +272,34 @@ class FileManager:
         for file_name in self.uploaded_files:
             try:
                 self.client.files.delete(name=file_name)
-                console.print(f"[bold cyan][INFO][/] Deleted file resource: {file_name}")
+                self.console.print(f"[bold cyan][INFO][/] Deleted file resource: {file_name}")
             except Exception:
                 pass
 
 class DeepResearchAgent:
-    def __init__(self, config: DeepResearchConfig | None = None, logger=None):
+    def __init__(self, console: Console, config: DeepResearchConfig | None = None):
         self.config = config or DeepResearchConfig()
         self.client = genai.Client(api_key=self.config.api_key)
-        self.file_manager = FileManager(self.client)
-        self.session_manager = SessionManager()
-        self.logger = logger
+        self.console = console
+        self.file_manager = FileManager(self.client, self.console)
 
-    def _log(self, message: str, end: str = "\n", **kwargs):
-        """Internal logging helper that respects the custom logger."""
-        if self.logger:
-            self.logger(message)
-        else:
-            # Rich styling
-            msg = message
-            if "[INFO]" in message:
-                msg = message.replace("[INFO]", "[bold cyan][INFO][/]")
-            elif "[THOUGHT]" in message:
-                msg = message.replace("[THOUGHT]", "[bold magenta][THOUGHT][/]")
-            elif "[ERROR]" in message:
-                msg = message.replace("[ERROR]", "[bold red][ERROR][/]")
-            elif "[WARN]" in message:
-                msg = message.replace("[WARN]", "[bold yellow][WARN][/]")
-            elif "[DB]" in message:
-                msg = message.replace("[DB]", "[bold green][DB][/]")
-            
-            # Rich print doesn't support 'flush', so we pop it
-            kwargs.pop('flush', None)
-            
-            # Safety: If message is huge (e.g. > 10KB report), Rich Markdown parsing might crash
-            # in headless/detached mode. Fallback to raw print.
-            if len(msg) > 10000:
-                print(msg, end=end, flush=True)
-            else:
-                console.print(msg, end=end, highlight=False, **kwargs)
-
-    def _process_stream(self, event_stream, interaction_id_ref: list, last_event_id_ref: list, is_complete_ref: list, request_prompt: str | None = None, upload_paths: list | None = None, adopt_session_id: int | None = None):
+    def _process_stream(self, event_stream, interaction_id_ref: list, last_event_id_ref: list, is_complete_ref: list):
         for event in event_stream:
             if event.event_type == "interaction.start":
                 interaction_id_ref[0] = event.interaction.id
-                self._log(f"\n[INFO] Interaction started: {event.interaction.id}")
-                if adopt_session_id:
-                    self.session_manager.update_session_interaction_id(adopt_session_id, event.interaction.id)
-                elif request_prompt:
-                    self.session_manager.create_session(event.interaction.id, request_prompt, upload_paths)
+                self.console.print(f"\n[INFO] Interaction started: {event.interaction.id}")
 
             if event.event_id:
                 last_event_id_ref[0] = event.event_id
             if event.event_type == "content.delta":
                 if event.delta.type == "text":
-                    self._log(event.delta.text, end="")
+                    self.console.print(event.delta.text, end="")
                 elif event.delta.type == "thought_summary":
-                    self._log(f"\n[THOUGHT] {event.delta.content.text}", flush=True)
+                    self.console.print(f"\n[THOUGHT] {event.delta.content.text}", flush=True)
             if event.event_type in ['interaction.complete', 'error']:
                 is_complete_ref[0] = True
 
-    def start_research_stream(self, request: ResearchRequest, auto_update_status: bool = True):
+    def start_research_stream(self, request: ResearchRequest):
         agent_config = {
             "type": "deep-research",
             "thinking_summaries": "auto"
@@ -535,7 +321,7 @@ class DeepResearchAgent:
                     "If the answer is found in the uploaded files, cite them explicitly."
                 )
             except Exception as e:
-                self._log(f"[ERROR] File upload failed: {e}")
+                self.console.print(f"[ERROR] File upload failed: {e}")
                 self.file_manager.cleanup()
                 return None
 
@@ -544,10 +330,10 @@ class DeepResearchAgent:
         is_complete = [False]
 
         if request.stores:
-            self._log(f"[INFO] Using File Search Stores: {request.stores}")
+            self.console.print(f"[INFO] Using File Search Stores: {request.stores}")
 
         try:
-            self._log("[INFO] Starting Research Stream...")
+            self.console.print("[INFO] Starting Research Stream...")
             if not hasattr(self.client, 'interactions'):
                 import google.genai
                 raise RuntimeError(f"google-genai version {google.genai.__version__} too old.")
@@ -561,55 +347,46 @@ class DeepResearchAgent:
                 agent_config=agent_config
             )
             # Pass prompt for DB saving
-            self._process_stream(initial_stream, interaction_id, last_event_id, is_complete, request.prompt, request.upload_paths, request.adopt_session_id)
+            self._process_stream(initial_stream, interaction_id, last_event_id, is_complete)
             
             # Reconnection Loop
             while not is_complete[0] and interaction_id[0]:
-                self._log(f"\n[INFO] Connection lost. Resuming from {last_event_id[0]}...")
+                self.console.print(f"\n[INFO] Connection lost. Resuming from {last_event_id[0]}...")
                 time.sleep(2)
                 try:
                     resume_stream = self.client.interactions.get(
                         id=interaction_id[0], stream=True, last_event_id=last_event_id[0]
                     )
-                    self._process_stream(resume_stream, interaction_id, last_event_id, is_complete, adopt_session_id=request.adopt_session_id)
+                    self._process_stream(resume_stream, interaction_id, last_event_id, is_complete)
                 except Exception as e:
-                    self._log(f"[ERROR] Reconnection failed: {e}")
+                    self.console.print(f"[ERROR] Reconnection failed: {e}")
             
             if is_complete[0]:
-                 self._log("\n[INFO] Research Complete.")
-                 
-                 # Retrieve final text
-                 if interaction_id[0]:
-                     try:
-                         final_interaction = self.client.interactions.get(id=interaction_id[0])
-                         if final_interaction.outputs:
-                             final_text = final_interaction.outputs[-1].text
-                             
-                             if auto_update_status:
-                                 self.session_manager.update_session(interaction_id[0], "completed", final_text)
-                             else:
-                                 self.session_manager.update_session(interaction_id[0], "running", final_text)
-                                 
-                             if request.output_file:
-                                 DataExporter.export(final_text, request.output_file)
-                     except Exception as e:
-                         self._log(f"[WARN] Failed to retrieve/export result: {e}")
+                self.console.print("\n[INFO] Research Complete.")
+
+                # Retrieve final text
+                if interaction_id[0]:
+                    try:
+                        final_interaction = self.client.interactions.get(id=interaction_id[0])
+                        if final_interaction.outputs:
+                            final_text = final_interaction.outputs[-1].text
+                            if request.output_file:
+                                DataExporter.export(final_text, request.output_file, self.console)
+                            return final_text
+                    except Exception as e:
+                        self.console.print(f"[WARN] Failed to retrieve/export result: {e}")
 
         except KeyboardInterrupt:
-            self._log("\n[WARN] Research interrupted by user.")
-            if interaction_id[0]:
-                self.session_manager.update_session(interaction_id[0], "cancelled")
+            self.console.print("\n[WARN] Research interrupted by user.")
         except Exception as e:
-            self._log(f"\n[ERROR] Research failed: {e}")
-            if interaction_id[0]:
-                self.session_manager.update_session(interaction_id[0], "failed", result=f"Exception: {e}")
+            self.console.print(f"\n[ERROR] Research failed: {e}")
         finally:
             if request.upload_paths:
                 self.file_manager.cleanup()
         
-        return interaction_id[0]
+        return None
 
-    def start_research_poll(self, request: ResearchRequest, auto_update_status: bool = True):
+    def start_research_poll(self, request: ResearchRequest):
         if request.upload_paths:
              try:
                 store_name = self.file_manager.create_store_from_paths(request.upload_paths)
@@ -617,14 +394,14 @@ class DeepResearchAgent:
                     request.stores = []
                 request.stores.append(store_name)
              except Exception as e:
-                self._log(f"[ERROR] Upload failed: {e}")
+                self.console.print(f"[ERROR] Upload failed: {e}")
                 self.file_manager.cleanup()
                 return
 
         if request.stores:
-             self._log(f"[INFO] Using Stores: {request.stores}")
+             self.console.print(f"[INFO] Using Stores: {request.stores}")
 
-        self._log("[INFO] Starting Research (Polling)...")
+        self.console.print("[INFO] Starting Research (Polling)...")
         try:
             interaction = self.client.interactions.create(
                 input=request.final_prompt,
@@ -632,77 +409,35 @@ class DeepResearchAgent:
                 background=True,
                 tools=request.tools_config
             )
-            self._log(f"[INFO] Started: {interaction.id}")
-            
-            if hasattr(request, 'adopt_session_id') and request.adopt_session_id:
-                self.session_manager.update_session_interaction_id(request.adopt_session_id, interaction.id)
-            else:
-                self.session_manager.create_session(interaction.id, request.prompt, request.upload_paths)
+            self.console.print(f"[INFO] Started: {interaction.id}")
 
             while True:
                 interaction = self.client.interactions.get(interaction.id)
                 if interaction.status == "completed":
-                    self._log("\n" + "="*40 + " REPORT " + "="*40)
+                    self.console.print("\n[INFO] Research Complete.")
                     final_text = interaction.outputs[-1].text
                     
-                    # Log snippet only to prevent crash on massive output
-                    if len(final_text) > 2000:
-                        self._log(final_text[:2000] + "\n\n... [Report Truncated in Logs. Full content in DB] ...")
-                    else:
-                        self._log(final_text)
-                    
-                    if auto_update_status:
-                        self.session_manager.update_session(interaction.id, "completed", final_text)
-                    else:
-                        # Recursive Node: Save intermediate result but keep running
-                        self.session_manager.update_session(interaction.id, "running", final_text)
-                    
                     if request.output_file:
-                        DataExporter.export(final_text, request.output_file)
-                    break
+                        DataExporter.export(final_text, request.output_file, self.console)
+                    return final_text
                 elif interaction.status == "failed":
                     error_msg = f"API Error: {interaction.error}"
-                    self._log(f"[ERROR] Failed: {interaction.error}")
-                    self.session_manager.update_session(interaction.id, "failed", result=error_msg)
+                    self.console.print(f"[ERROR] Failed: {interaction.error}")
                     break
-                if not self.logger:
-                    sys.stdout.write(".")
-                    sys.stdout.flush()
+
+                self.console.print(".", end="")
                 time.sleep(10)
         except KeyboardInterrupt:
-            self._log("\n[WARN] Polling interrupted by user.")
-            if 'interaction' in locals() and hasattr(interaction, 'id'):
-                 self.session_manager.update_session(interaction.id, "cancelled")
+            self.console.print("\n[WARN] Polling interrupted by user.")
         except Exception as e:
-            self._log(f"[ERROR] Unexpected error: {e}")
-            if 'interaction' in locals() and hasattr(interaction, 'id'):
-                 self.session_manager.update_session(interaction.id, "failed", result=f"Exception: {e}")
+            self.console.print(f"[ERROR] Unexpected error: {e}")
         finally:
             if request.upload_paths:
                 self.file_manager.cleanup()
-        return interaction.id
-
-    def follow_up(self, request: FollowUpRequest):
-        self._log(f"[INFO] Sending follow-up to interaction: {request.interaction_id}")
-        try:
-            interaction = self.client.interactions.create(
-                input=request.prompt,
-                model=self.config.followup_model, 
-                previous_interaction_id=request.interaction_id
-            )
-            if interaction.outputs:
-                response_text = interaction.outputs[-1].text
-                self._log(response_text)
-                
-                # Save to DB
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-                append_text = f"\n\n---\n### Follow-up ({timestamp})\n\n**Q: {request.prompt}**\n\n{response_text}"
-                self.session_manager.append_to_result(request.interaction_id, append_text)
-        except Exception as e:
-            self._log(f"[ERROR] Follow-up failed: {e}")
+        return None
 
     def analyze_gaps(self, original_prompt: str, report_text: str, limit: int = 3) -> list[str]:
-        self._log(f"[THOUGHT] Analyzing report for gaps (Limit: {limit})...")
+        self.console.print(f"[THOUGHT] Analyzing report for gaps (Limit: {limit})...")
         
         prompt = (
             f"Original Objective: {original_prompt}\n\n"
@@ -716,13 +451,13 @@ class DeepResearchAgent:
         )
         
         try:
-            self._log("[DEBUG] Sending gap analysis request...")
+            self.console.print("[DEBUG] Sending gap analysis request...")
             response = self.client.models.generate_content(
                 model=self.config.followup_model,
                 contents=prompt
             )
             text = response.text
-            self._log(f"[DEBUG] Gap analysis response: {text[:100]}...")
+            self.console.print(f"[DEBUG] Gap analysis response: {text[:100]}...")
             
             # Use DataExporter utility to extract JSON
             json_str = DataExporter.extract_code_block(text, "json")
@@ -732,11 +467,11 @@ class DeepResearchAgent:
                 return []
             return json.loads(json_str)
         except Exception as e:
-            self._log(f"[WARN] Failed to analyze gaps: {e}")
+            self.console.print(f"[WARN] Failed to analyze gaps: {e}")
             return []
 
     def synthesize_findings(self, original_prompt: str, main_report: str, sub_reports: list[str]) -> str:
-        self._log(f"[THOUGHT] Synthesizing {len(sub_reports)} child reports into final answer...")
+        self.console.print(f"[THOUGHT] Synthesizing {len(sub_reports)} child reports into final answer...")
         
         combined_subs = "\n\n---\n\n".join([f"Sub-Report {i+1}:\n{r}" for i, r in enumerate(sub_reports)])
         
@@ -758,7 +493,7 @@ class DeepResearchAgent:
             )
             return response.text
         except Exception as e:
-            self._log(f"[ERROR] Synthesis failed: {e}")
+            self.console.print(f"[ERROR] Synthesis failed: {e}")
             return main_report + "\n\n[ERROR: Synthesis failed. Appending raw sub-reports below]\n\n" + combined_subs
 
     def start_recursive_research(self, request: ResearchRequest):
@@ -772,79 +507,54 @@ class DeepResearchAgent:
         )
         
         if final_result:
-            self._log("[INFO] Recursive Research Complete.")
-            sys.stdout.flush()
+            self.console.print("[INFO] Recursive Research Complete.")
+            if request.output_file:
+                 DataExporter.export(final_result, request.output_file, self.console)
+            return final_result
+        return None
 
-        if request.output_file and final_result:
-             DataExporter.export(final_result, request.output_file)
-
-    def _execute_recursion_level(self, prompt: str, current_depth: int, max_depth: int, breadth: int, original_request: ResearchRequest, parent_id: int | None = None) -> str | None:
+    def _execute_recursion_level(self, prompt: str, current_depth: int, max_depth: int, breadth: int, original_request: ResearchRequest) -> str | None:
         indent = "  " * (current_depth - 1)
         if current_depth > 1:
-            self._log(f"{indent}[INFO] Recursive Step Depth {current_depth}/{max_depth}: {prompt}")
+            self.console.print(f"{indent}[INFO] Recursive Step Depth {current_depth}/{max_depth}: {prompt}")
         else:
-            self._log(f"[INFO] Starting Recursive Research (Depth {max_depth}, Breadth {breadth})")
+            self.console.print(f"[INFO] Starting Recursive Research (Depth {max_depth}, Breadth {breadth})")
 
         # 1. Prepare Request
         node_req = ResearchRequest(
             prompt=prompt,
             upload_paths=original_request.upload_paths,
             stores=original_request.stores,
-            stream=(current_depth == 1), # Stream Root only
+            verbose=(current_depth == 1 and original_request.verbose), # Stream Root only if verbose
             depth=current_depth
         )
 
-        # 2. Execute Research (Poll or Stream)
-        # Only mark 'completed' automatically if this is a LEAF node (no further recursion)
-        is_leaf = (current_depth >= max_depth)
-        
-        if current_depth == 1:
-             # Root: Stream to show thoughts in logs
-             interaction_id = self.start_research_stream(node_req, auto_update_status=is_leaf)
+        # 2. Execute Research
+        if current_depth == 1 and original_request.verbose:
+             report = self.start_research_stream(node_req)
         else:
-             # Child: Poll to avoid log interleaving
-             child_sid = self.session_manager.create_session(
-                 "pending_recursion", prompt, original_request.upload_paths, parent_id=parent_id, depth=current_depth
-             )
-             node_req.adopt_session_id = child_sid
-             interaction_id = self.start_research_poll(node_req, auto_update_status=is_leaf)
+             report = self.start_research_poll(node_req)
 
-        # 3. Fetch Result
-        session = self.session_manager.get_session(interaction_id)
-        
-        # Robustness: If auto_update_status=False, status might be 'running' but result is ready.
-        # We proceed if we have a result.
-        if not session:
-            self._log(f"{indent}[ERROR] Research session not found.")
-            return None
-            
-        # session is sqlite3.Row, doesn't support .get(). Use index access or dict conversion.
-        status = session['status']
-        result = session['result']
-        
-        if status != 'completed' and not result:
-            self._log(f"{indent}[ERROR] Research failed or incomplete. Status: {status}")
+        # 3. Check Result
+        if not report:
+            self.console.print(f"{indent}[ERROR] Research failed or incomplete.")
             return None
         
-        report = result
-        current_id = session['id']
-        self._log(f"{indent}[INFO] Phase 1 complete. Report length: {len(report)} chars.")
+        self.console.print(f"{indent}[INFO] Phase 1 complete. Report length: {len(report)} chars.")
 
         # 4. Check Termination
         if current_depth >= max_depth:
             return report
 
         # 5. Analyze Gaps
-        self._log(f"{indent}[INFO] Analyzing gaps...")
+        self.console.print(f"{indent}[INFO] Analyzing gaps...")
         questions = self.analyze_gaps(prompt, report, limit=breadth)
-        self._log(f"{indent}[INFO] Gaps found: {len(questions)}")
+        self.console.print(f"{indent}[INFO] Gaps found: {len(questions)}")
         
         if not questions:
-            # Recursion ends here (Leaf by logic)
-            self.session_manager.update_session(interaction_id, "completed", result=report)
             return report
 
-        self._log(f"{indent}[INFO] Spawning {len(questions)} sub-tasks...")
+        self.console.print(f"{indent}[INFO] Spawning {len(questions)} sub-tasks...")
 
         # 6. Recurse in Parallel
         sub_reports = []
@@ -853,7 +563,7 @@ class DeepResearchAgent:
             for q in questions:
                 futures.append(executor.submit(
                     self._run_recursive_child_safe, 
-                    q, current_depth + 1, max_depth, breadth, original_request, current_id
+                    q, current_depth + 1, max_depth, breadth, original_request
                 ))
             
             # Enforce timeout
@@ -865,60 +575,42 @@ class DeepResearchAgent:
                     if res:
                         sub_reports.append(res)
                 except Exception as e:
-                    self._log(f"{indent}[WARN] Child failed: {e}")
+                    self.console.print(f"{indent}[WARN] Child failed: {e}")
             
             if not_done:
-                self._log(f"{indent}[ERROR] {len(not_done)} child tasks timed out.")
+                self.console.print(f"{indent}[ERROR] {len(not_done)} child tasks timed out.")
 
         if not sub_reports:
             return report
 
         # 7. Synthesis
         final_report = self.synthesize_findings(prompt, report, sub_reports)
-        
-        # Update Session with synthesis
-        self.session_manager.update_session(interaction_id, "completed", result=final_report)
-        
         return final_report
 
-    def _run_recursive_child_safe(self, q, d, max_d, b, req, pid):
+    def _run_recursive_child_safe(self, q, d, max_d, b, req):
         # Helper to instantiate agent and run recursion in thread
-        agent = DeepResearchAgent(config=self.config)
-        return agent._execute_recursion_level(q, d, max_d, b, req, pid)
+        # Create a new console that is silenced if the parent is silenced
+        child_console = Console(width=120, quiet=self.console.quiet)
+        agent = DeepResearchAgent(console=child_console, config=self.config)
+        return agent._execute_recursion_level(q, d, max_d, b, req)
 
 def main():
-    desc = """
-Gemini Deep Research Agent CLI
-==============================
-A powerful tool to conduct autonomous, multi-step research using Gemini 3 Pro.
-Support web search, local file ingestion, streaming thoughts, and follow-ups.
-    """
-    
+    desc = "A powerful tool to conduct autonomous, multi-step research using Gemini 3 Pro."
     epilog = """
 Examples:
 ---------
-1. Basic Web Research (Streaming):
-   %(prog)s research "History of the internet" --stream
+1. Basic Web Research:
+   %(prog)s "History of the internet"
 
 2. Research with Local Files (Smart Context):
-   %(prog)s research "Summarize this contract" --upload ./contract.pdf --stream
+   %(prog)s "Summarize this contract" --upload ./contract.pdf
 
 3. Formatted Output & Export:
-   %(prog)s research "Compare GPU prices" --format "Markdown table" --output prices.md
-   %(prog)s research "List top 5 cloud providers" --output market_data.json
+   %(prog)s "Compare GPU prices" --format "Markdown table" --output prices.md
+   %(prog)s "List top 5 cloud providers" --output market_data.json
 
-4. Headless Research (Fire & Forget):
-   %(prog)s start "Detailed analysis of quantum computing"
-   # ... process detaches ...
-   %(prog)s list
-   %(prog)s show 1
-
-5. Follow-up Question:
-   %(prog)s followup 1 "Can you explain the error correction?"
-
-6. Manage History:
-   %(prog)s list
-   %(prog)s show 1
+4. Show Agent's Thought Process:
+   %(prog)s "How do LLMs work?" --verbose
 
 Configuration:
 --------------
@@ -931,444 +623,50 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
+    parser.add_argument("prompt", help="The research prompt or question")
     parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {get_version()}")
-
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
-
-    # Command: research
-    parser_research = subparsers.add_parser("research", help="Start a new research task")
-    parser_research.add_argument("prompt", help="The research prompt or question")
-    parser_research.add_argument("--stream", action="store_true", help="Stream the agent's thought process (Recommended)")
-    parser_research.add_argument("--stores", nargs="+", help="Existing Cloud File Search Store names (advanced)")
-    parser_research.add_argument("--upload", nargs="+", help="Local file/folder paths to upload, analyze, and auto-delete")
-    parser_research.add_argument("--format", help="Specific output instructions (e.g., 'Technical Report', 'CSV')")
-    parser_research.add_argument("--output", help="Save report to file (e.g., report.md, data.json)")
-    parser_research.add_argument("--depth", type=int, default=1, help="Recursive research depth (default: 1)")
-    parser_research.add_argument("--breadth", type=int, default=3, help="Max child tasks per recursion level (default: 3)")
-    parser_research.add_argument("--adopt-session", type=int, help=argparse.SUPPRESS)
-
-    # Command: start (Headless)
-    parser_start = subparsers.add_parser("start", help="Start a research task in the background (Headless)")
-    parser_start.add_argument("prompt", help="The research prompt or question")
-    parser_start.add_argument("--upload", nargs="+", help="Local file/folder paths to upload")
-    parser_start.add_argument("--format", help="Specific output instructions")
-    parser_start.add_argument("--output", help="Save report to file")
-    parser_start.add_argument("--depth", type=int, default=1, help="Recursive research depth (default: 1)")
-    parser_start.add_argument("--breadth", type=int, default=3, help="Max child tasks per recursion level (default: 3)")
-
-    # Command: followup
-    parser_followup = subparsers.add_parser("followup", help="Ask a follow-up question to a previous session")
-    parser_followup.add_argument("id", help="The Interaction ID from a previous research task")
-    parser_followup.add_argument("prompt", help="The follow-up question")
-
-    # Command: list
-    parser_list = subparsers.add_parser("list", help="List recent research sessions")
-    parser_list.add_argument("--limit", type=int, default=10, help="Number of sessions to show")
-
-    # Command: show
-    parser_show = subparsers.add_parser("show", help="Show details of a previous session")
-    parser_show.add_argument("id", help="Session ID (integer) or Interaction ID")
-    parser_show.add_argument("--save", help="Save the colorful report to HTML or Text file")
-    parser_show.add_argument("--recursive", action="store_true", help="Include all child session reports in output")
-
-    # Command: delete
-    parser_delete = subparsers.add_parser("delete", help="Delete a session from history")
-    parser_delete.add_argument("id", help="Session ID (integer) or Interaction ID")
-
-    # Command: cleanup
-    parser_cleanup = subparsers.add_parser("cleanup", help="Delete stale cloud resources (GC)")
-    parser_cleanup.add_argument("--force", action="store_true", help="Delete without confirmation")
-
-    # Command: tree
-    parser_tree = subparsers.add_parser("tree", help="Visualize session hierarchy")
-    parser_tree.add_argument("id", nargs="?", help="Root Session ID (optional)")
-
-    # Command: auth
-    parser_auth = subparsers.add_parser("auth", help="Manage authentication")
-    parser_auth.add_argument("action", choices=["login", "logout"], help="Action to perform")
-
-    # Command: estimate
-    parser_estimate = subparsers.add_parser("estimate", help="Estimate cost of a research task")
-    parser_estimate.add_argument("prompt", help="The research prompt or question")
-    parser_estimate.add_argument("--depth", type=int, default=1, help="Recursive depth")
-    parser_estimate.add_argument("--breadth", type=int, default=3, help="Recursive breadth")
-    parser_estimate.add_argument("--upload", nargs="+", help="Files to upload (adds to context cost)")
+    parser.add_argument("--verbose", action="store_true", help="Stream the agent's thought process")
+    parser.add_argument("--stores", nargs="+", help="Existing Cloud File Search Store names (advanced)")
+    parser.add_argument("--upload", nargs="+", help="Local file/folder paths to upload, analyze, and auto-delete")
+    parser.add_argument("--format", help="Specific output instructions (e.g., 'Technical Report', 'CSV')")
+    parser.add_argument("--output", help="Save report to file (e.g., report.md, data.json)")
+    parser.add_argument("--depth", type=int, default=1, help="Recursive research depth (default: 1)")
+    parser.add_argument("--breadth", type=int, default=3, help="Max child tasks per recursion level (default: 3)")
 
     args = parser.parse_args()
 
-    if not args.command:
-        parser.print_help()
-        return
-
+    # Initialize console based on verbosity
+    # All agent output is sent here. If quiet, nothing is printed until the final result.
+    output_console = Console(width=120, quiet=not args.verbose)
     try:
-        if args.command == "start":
-            # 1. Create Placeholder Session
-            mgr = SessionManager()
-            sid = mgr.create_session("pending_start", args.prompt, args.upload)
-            
-            # 2. Construct Child Arguments
-            child_args = ["research", args.prompt, "--adopt-session", str(sid)]
-            if args.upload:
-                 child_args += ["--upload"] + args.upload
-            if args.format:
-                 child_args += ["--format", args.format]
-            if args.output:
-                 child_args += ["--output", args.output]
-            
-            # Pass recursion params
-            child_args += ["--depth", str(args.depth)]
-            child_args += ["--breadth", str(args.breadth)]
-            
-            # 3. Detach
-            log_file = os.path.join(xdg_config_home, "deepresearch", "logs", f"session_{sid}.log")
-            pid = detach_process(child_args, log_file)
-            mgr.update_session_pid(sid, pid)
-            
-            print(f"[INFO] Research started in background! (Session ID: {sid}, PID: {pid})")
-            print(f"[INFO] Logs: {log_file}")
-            print("[INFO] Check status with: deep-research list")
+        request = ResearchRequest(
+            prompt=args.prompt,
+            stores=args.stores,
+            verbose=args.verbose,
+            output_format=args.format,
+            upload_paths=args.upload,
+            output_file=args.output,
+            depth=args.depth,
+            breadth=args.breadth
+        )
 
-        elif args.command == "research":
-            request = ResearchRequest(
-                prompt=args.prompt,
-                stores=args.stores,
-                stream=args.stream,
-                output_format=args.format,
-                upload_paths=args.upload,
-                output_file=args.output,
-                adopt_session_id=args.adopt_session,
-                depth=args.depth,
-                breadth=args.breadth
-            )
-            agent = DeepResearchAgent()
-            
-            if request.depth > 1:
-                if request.stream:
-                    print("[INFO] Recursive research does not support streaming to stdout. Switching to polling mode.")
-                agent.start_recursive_research(request)
-            elif request.stream:
-                agent.start_research_stream(request)
-            else:
-                agent.start_research_poll(request)
+        agent = DeepResearchAgent(console=output_console)
+        final_report = None
 
-        elif args.command == "followup":
-            interaction_id = args.id
-            
-            # Smart Lookup: If ID is numeric, look it up in DB
-            if args.id.isdigit():
-                mgr = SessionManager()
-                session = mgr.get_session(args.id)
-                if session and session['interaction_id']:
-                    print(f"[INFO] Resuming Session #{args.id} (Interaction: {session['interaction_id']})")
-                    interaction_id = session['interaction_id']
-                else:
-                    print(f"[ERROR] Session #{args.id} not found or invalid.")
-                    return
-
-            request = FollowUpRequest(
-                interaction_id=interaction_id,
-                prompt=args.prompt
-            )
-            agent = DeepResearchAgent()
-            agent.follow_up(request)
-
-        elif args.command == "list":
-            mgr = SessionManager()
-            sessions = mgr.list_sessions(args.limit)
-            
-            table = Table(title="Recent Research Sessions", box=None)
-            table.add_column("ID", style="cyan", no_wrap=True)
-            table.add_column("Status")
-            table.add_column("Date", style="dim")
-            table.add_column("Prompt", style="bold")
-
-            for s in sessions:
-                # Replace newlines for cleaner table but keep full length
-                prompt = s['prompt'].replace('\n', ' ')
-                
-                status_style = "green" if s['status'] == "completed" else "yellow" if s['status'] == "running" else "red"
-                status_text = f"[{status_style}]{s['status']}[/{status_style}]"
-                
-                table.add_row(str(s['id']), status_text, s['created_at'][:19], prompt)
-            
-            console.print(table)
-
-        elif args.command == "show":
-            mgr = SessionManager()
-            
-            def get_full_recursive_report(root_id, level=1):
-                session = mgr.get_session(root_id)
-                if not session:
-                    return ""
-                
-                # Header
-                indent_hash = "#" * min(level, 6)
-                title = session['prompt'].replace('\n', ' ')
-                
-                report = f"{indent_hash} Session #{session['id']} (Depth {session['depth']})\n"
-                report += f"**Objective:** {title}\n"
-                report += f"**Status:** {session['status']}\n\n"
-                
-                if session['result']:
-                    report += session['result']
-                else:
-                    report += "*(No content)*"
-                
-                report += "\n\n---\n\n"
-                
-                # Children
-                children = mgr.get_children(root_id)
-                for child in children:
-                    report += get_full_recursive_report(child['id'], level + 1)
-                
-                return report
-
-            if args.recursive:
-                full_content = get_full_recursive_report(args.id)
-                if not full_content:
-                    console.print(f"[bold red]Session {args.id} not found.[/]")
-                else:
-                    console.print(Markdown(full_content))
-                    if args.save:
-                        if args.save.lower().endswith('.html'):
-                            # For HTML, we render the Markdown to console (record=True) then save
-                            # But wait, printing to console might be huge.
-                            # We should use a separate console for saving.
-                            save_console = Console(record=True)
-                            save_console.print(Markdown(full_content))
-                            save_console.save_html(args.save, theme=MONOKAI)
-                        else:
-                            with open(args.save, 'w') as f:
-                                f.write(full_content)
-                        console.print(f"[bold green]Recursive report saved to {args.save}[/]")
-                return
-
-            session = mgr.get_session(args.id)
-            
-            # Use recording console if saving
-            show_console = Console(record=True) if args.save else console
-
-            if not session:
-                show_console.print(f"[bold red][ERROR] Session '{args.id}' not found.[/]")
-            else:
-                show_console.print(Panel(
-                    f"[bold]Interaction ID:[/bold] {session['interaction_id']}\n"
-                    f"[bold]Date:[/bold] {session['created_at']}\n"
-                    f"[bold]Status:[/bold] {session['status']}\n"
-                    f"[bold]Files:[/bold] {session['files']}",
-                    title=f"Session #{session['id']}",
-                    subtitle="Metadata"
-                ))
-                
-                show_console.rule("[bold cyan]Prompt[/]")
-                show_console.print(f"[bold]{session['prompt']}[/]\n")
-                
-                show_console.rule("[bold green]Result[/]")
-                if session['result']:
-                    show_console.print(Markdown(session['result']))
-                else:
-                    show_console.print("[italic dim](No result stored)[/]")
-            
-            if args.save:
-                if args.save.lower().endswith('.html'):
-                    # Use Monokai (Dark) theme for HTML export
-                    show_console.save_html(args.save, theme=MONOKAI)
-                else:
-                    show_console.save_text(args.save)
-                console.print(f"[bold green][INFO][/] Report saved to {args.save}")
-
-        elif args.command == "delete":
-            mgr = SessionManager()
-            success = mgr.delete_session(args.id)
-            if success:
-                console.print(f"[bold green][INFO][/] Session '{args.id}' deleted.")
-            else:
-                console.print(f"[bold red][ERROR][/] Session '{args.id}' not found.")
-
-        elif args.command == "cleanup":
-            config = DeepResearchConfig()
-            client = genai.Client(api_key=config.api_key)
-            
-            console.print("[bold cyan][INFO][/] Scanning for File Search Stores...")
-            # Note: client.file_search_stores.list() returns an iterator
-            try:
-                stores = list(client.file_search_stores.list())
-            except Exception as e:
-                console.print(f"[bold red][ERROR][/] Failed to list stores: {e}")
-                return
-
-            if not stores:
-                console.print("[bold green]No active stores found. System is clean![/]")
-                return
-
-            table = Table(title=f"Found {len(stores)} Active Cloud Stores")
-            table.add_column("Name (ID)", style="cyan")
-            table.add_column("Create Time", style="dim")
-            
-            for s in stores:
-                # s.name is like 'fileSearchStores/xyz'
-                # s.create_time might be available depending on SDK version
-                created = getattr(s, 'create_time', 'Unknown')
-                table.add_row(s.name, str(created))
-            
-            console.print(table)
-            console.print("[bold yellow]WARNING: This will delete ALL listed stores and their files.[/]")
-            
-            if not args.force:
-                confirm = input(f"Are you sure you want to delete {len(stores)} stores? [y/N] ")
-                if confirm.lower() != 'y':
-                    console.print("[bold yellow]Aborted.[/]")
-                    return
-
-            with console.status("Deleting stores...", spinner="dots"):
-                for s in stores:
-                    # 1. Empty the store
-                    try:
-                        if hasattr(client.file_search_stores, 'documents'):
-                            docs = list(client.file_search_stores.documents.list(parent=s.name))
-                            if docs:
-                                console.print(f"  Emptying {len(docs)} documents...")
-                            for doc in docs:
-                                try:
-                                    # Force delete is required if document has content
-                                    client.file_search_stores.documents.delete(name=doc.name, config={'force': True})
-                                except Exception as e:
-                                    console.print(f"  [yellow]Failed to delete doc {doc.name}: {e}[/]")
-                    except Exception as e:
-                        console.print(f"  [yellow]Failed to list docs: {e}[/]")
-
-                    # 2. Delete the store
-                    try:
-                        client.file_search_stores.delete(name=s.name)
-                        console.print(f"[green]Deleted:[/green] {s.name}")
-                    except Exception as e:
-                        console.print(f"[bold red]Failed to delete {s.name}:[/] {e}")
-            
-            console.print("[bold green]Cleanup Complete![/]")
-
-        elif args.command == "tree":
-            mgr = SessionManager()
-            
-            def build_tree(node_id, tree_node):
-                children = mgr.get_children(node_id)
-                for child in children:
-                    status_style = "green" if child['status'] == "completed" else "red" if child['status'] == "crashed" or child['status'] == "failed" else "yellow"
-                    # Clean prompt newlines but keep length
-                    prompt = child['prompt'].replace('\n', ' ')
-                    if len(prompt) > 100:
-                        prompt = prompt[:97] + "..."
-                    
-                    label = f"#{child['id']} [{status_style}]{child['status']}[/] [dim]Depth {child['depth']}[/]\n[italic]{prompt}[/]"
-                    branch = tree_node.add(label)
-                    build_tree(child['id'], branch)
-
-            if args.id:
-                root = mgr.get_session(args.id)
-                if not root:
-                    console.print(f"[bold red]Session {args.id} not found[/]")
-                    return
-                root_label = f"[bold cyan]Session #{root['id']}[/] [dim]Depth {root['depth']}[/]"
-                t = Tree(root_label)
-                build_tree(root['id'], t)
-                console.print(t)
-            else:
-                forest = Tree("[bold]Recent Research Trees[/]")
-                # Get recent roots
-                with sqlite3.connect(mgr.db_path) as conn:
-                    conn.row_factory = sqlite3.Row
-                    roots = conn.execute("SELECT * FROM sessions WHERE parent_id IS NULL ORDER BY updated_at DESC LIMIT 10").fetchall()
-                
-                for r in roots:
-                    status_style = "green" if r['status'] == "completed" else "red" if r['status'] == "crashed" or r['status'] == "failed" else "yellow"
-                    prompt = r['prompt'].replace('\n', ' ')
-                    if len(prompt) > 100:
-                        prompt = prompt[:97] + "..."
-                    
-                    label = f"#{r['id']} [{status_style}]{r['status']}[/]\n[italic]{prompt}[/]"
-                    branch = forest.add(label)
-                    build_tree(r['id'], branch)
-                console.print(forest)
-
-        elif args.command == "auth":
-            if args.action == "login":
-                console.print(Panel("Enter your Gemini API Key. It will be stored securely in `~/.config/deepresearch/.env`.", title="Authentication"))
-                key = Prompt.ask("API Key", password=True)
-                if not key.startswith("AIza"):
-                    console.print("[yellow]Warning: Key does not start with 'AIza'. It might be invalid.[/]")
-                
-                # Write to file
-                os.makedirs(os.path.dirname(user_config_path), exist_ok=True)
-                with open(user_config_path, 'w') as f:
-                    f.write(f"GEMINI_API_KEY={key}\n")
-                
-                console.print(f"[bold green]Success![/] Key saved to {user_config_path}")
-            
-            elif args.action == "logout":
-                if os.path.exists(user_config_path):
-                    os.remove(user_config_path)
-                    console.print("[green]Logged out. Config file deleted.[/]")
-                else:
-                    console.print("[yellow]Not logged in.[/]")
-
-        elif args.command == "estimate":
-            # Gemini 3 Pro Pricing (Standard Context)
-            COST_INPUT_1M = 2.00
-            COST_OUTPUT_1M = 12.00
-            
-            # Assumptions per Agent Node (Deep Research is token heavy)
-            AVG_INPUT_TOKENS = 60_000  # Search results + web pages + internal thought trace
-            AVG_OUTPUT_TOKENS = 4_000  # The Markdown report
-            
-            # Calculate File Tokens
-            file_tokens = 0
-            if args.upload:
-                for path in args.upload:
-                    try:
-                        if os.path.isdir(path):
-                            for root, _, files in os.walk(path):
-                                for f in files:
-                                    size = os.path.getsize(os.path.join(root, f))
-                                    file_tokens += size * 0.25 # Approx 1 token = 4 bytes
-                        else:
-                            size = os.path.getsize(path)
-                            file_tokens += size * 0.25
-                    except Exception:
-                        pass
-            
-            # Calculate Total Nodes in Tree
-            # Depth 1 = 1 node
-            # Depth 2 = 1 + breadth
-            # Depth 3 = 1 + breadth + breadth^2
-            total_nodes = 0
-            for d in range(args.depth):
-                nodes_at_level = pow(args.breadth, d)
-                total_nodes += nodes_at_level
-            
-            # Total Tokens
-            # Input: Each node reads standard context + uploaded files
-            total_input = (total_nodes * AVG_INPUT_TOKENS) + (total_nodes * file_tokens)
-            total_output = total_nodes * AVG_OUTPUT_TOKENS
-            
-            cost = (total_input / 1_000_000 * COST_INPUT_1M) + (total_output / 1_000_000 * COST_OUTPUT_1M)
-            
-            table = Table(title="Cost Estimate (Gemini 3 Pro)")
-            table.add_column("Metric", style="cyan")
-            table.add_column("Value", style="bold yellow")
-            
-            table.add_row("Recursion Depth", str(args.depth))
-            table.add_row("Breadth (Fan-out)", str(args.breadth))
-            table.add_row("Total Agent Nodes", str(total_nodes))
-            table.add_row("File Context", f"{file_tokens:,.0f} tokens")
-            table.add_row("Est. Input Tokens", f"{total_input:,.0f}")
-            table.add_row("Est. Output Tokens", f"{total_output:,.0f}")
-            table.add_row("Estimated Cost", f"${cost:.2f}")
-            
-            console.print(table)
-            console.print("[dim]Pricing: $2.00/1M Input, $12.00/1M Output. Actuals may vary based on search grounding.[/]")
-
+        if request.depth > 1:
+            if request.verbose:
+                output_console.print("[INFO] Recursive research does not support streaming to stdout. Thought process will be logged instead.")
+            final_report = agent.start_recursive_research(request)
+        elif request.verbose:
+            final_report = agent.start_research_stream(request)
         else:
-            parser.print_help()
+            final_report = agent.start_research_poll(request)
 
+        # Print the final report to stdout if not in verbose/streaming mode
+        if final_report and not request.verbose:
+            # Use a non-quiet console to ensure final output is always visible
+            final_console = Console(width=120)
+            final_console.print(Markdown(final_report))
     except ValidationError as e:
         print(f"[ERROR] Input Validation Failed:\n{e}")
     except ValueError as e:
