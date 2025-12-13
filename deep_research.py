@@ -867,6 +867,8 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     parser_start.add_argument("--upload", nargs="+", help="Local file/folder paths to upload")
     parser_start.add_argument("--format", help="Specific output instructions")
     parser_start.add_argument("--output", help="Save report to file")
+    parser_start.add_argument("--depth", type=int, default=1, help="Recursive research depth (default: 1)")
+    parser_start.add_argument("--breadth", type=int, default=3, help="Max child tasks per recursion level (default: 3)")
 
     # Command: followup
     parser_followup = subparsers.add_parser("followup", help="Ask a follow-up question to a previous session")
@@ -910,6 +912,10 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
                  child_args += ["--format", args.format]
             if args.output:
                  child_args += ["--output", args.output]
+            
+            # Pass recursion params
+            child_args += ["--depth", str(args.depth)]
+            child_args += ["--breadth", str(args.breadth)]
             
             # 3. Detach
             log_file = os.path.join(xdg_config_home, "deepresearch", "logs", f"session_{sid}.log")
