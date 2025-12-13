@@ -698,11 +698,14 @@ class DeepResearchAgent:
         )
         
         try:
+            self._log("[DEBUG] Sending gap analysis request...")
             response = self.client.models.generate_content(
                 model=self.config.followup_model,
                 contents=prompt
             )
             text = response.text
+            self._log(f"[DEBUG] Gap analysis response: {text[:100]}...")
+            
             # Use DataExporter utility to extract JSON
             json_str = DataExporter.extract_code_block(text, "json")
             if not json_str:
@@ -791,13 +794,17 @@ class DeepResearchAgent:
         
         report = session['result']
         current_id = session['id']
+        self._log(f"{indent}[INFO] Phase 1 complete. Report length: {len(report)} chars.")
 
         # 4. Check Termination
         if current_depth >= max_depth:
             return report
 
         # 5. Analyze Gaps
+        self._log(f"{indent}[INFO] Analyzing gaps...")
         questions = self.analyze_gaps(prompt, report, limit=breadth)
+        self._log(f"{indent}[INFO] Gaps found: {len(questions)}")
+        
         if not questions:
             # Recursion ends here (Leaf by logic)
             self.session_manager.update_session(interaction_id, "completed", result=report)
