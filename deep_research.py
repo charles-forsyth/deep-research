@@ -996,10 +996,8 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
             table.add_column("Prompt", style="bold")
 
             for s in sessions:
-                # Truncate prompt
+                # Replace newlines for cleaner table but keep full length
                 prompt = s['prompt'].replace('\n', ' ')
-                if len(prompt) > 60:
-                    prompt = prompt[:57] + "..."
                 
                 status_style = "green" if s['status'] == "completed" else "yellow" if s['status'] == "running" else "red"
                 status_text = f"[{status_style}]{s['status']}[/{status_style}]"
@@ -1120,7 +1118,12 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
                 children = mgr.get_children(node_id)
                 for child in children:
                     status_style = "green" if child['status'] == "completed" else "red" if child['status'] == "crashed" or child['status'] == "failed" else "yellow"
-                    label = f"#{child['id']} [{status_style}]{child['status']}[/] [dim]Depth {child['depth']}[/] - {child['prompt'][:50]}..."
+                    # Clean prompt newlines but keep length
+                    prompt = child['prompt'].replace('\n', ' ')
+                    if len(prompt) > 100:
+                        prompt = prompt[:97] + "..."
+                    
+                    label = f"#{child['id']} [{status_style}]{child['status']}[/] [dim]Depth {child['depth']}[/]\n[italic]{prompt}[/]"
                     branch = tree_node.add(label)
                     build_tree(child['id'], branch)
 
@@ -1142,7 +1145,11 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
                 
                 for r in roots:
                     status_style = "green" if r['status'] == "completed" else "red" if r['status'] == "crashed" or r['status'] == "failed" else "yellow"
-                    label = f"#{r['id']} [{status_style}]{r['status']}[/] - {r['prompt'][:50]}..."
+                    prompt = r['prompt'].replace('\n', ' ')
+                    if len(prompt) > 100:
+                        prompt = prompt[:97] + "..."
+                    
+                    label = f"#{r['id']} [{status_style}]{r['status']}[/]\n[italic]{prompt}[/]"
                     branch = forest.add(label)
                     build_tree(r['id'], branch)
                 console.print(forest)
