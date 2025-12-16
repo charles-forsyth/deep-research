@@ -128,6 +128,13 @@ class SessionManager:
             if "depth" not in columns:
                 conn.execute("ALTER TABLE sessions ADD COLUMN depth INTEGER DEFAULT 1")
 
+            # Bolt ⚡: Add indexes for faster session lookups.
+            # As the session history grows, querying by these fields without an index
+            # would result in a full table scan, making lookups slow.
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_interaction_id ON sessions (interaction_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_parent_id ON sessions (parent_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON sessions (status);")
+
             conn.commit()
 
     def create_session(self, interaction_id: str, prompt: str, files: list[str] | None = None, pid: int | None = None, parent_id: int | None = None, depth: int = 1) -> int:
