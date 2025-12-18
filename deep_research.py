@@ -128,6 +128,16 @@ class SessionManager:
             if "depth" not in columns:
                 conn.execute("ALTER TABLE sessions ADD COLUMN depth INTEGER DEFAULT 1")
 
+            # --- PERFORMANCE OPTIMIZATION (Bolt ⚡) ---
+            # Create indexes on frequently queried columns to speed up lookups.
+            # - interaction_id: Used to find sessions by their API ID.
+            # - parent_id: Used to reconstruct session trees.
+            # - status: Used to find running sessions for status checks.
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_interaction_id ON sessions (interaction_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_parent_id ON sessions (parent_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON sessions (status);")
+            # --- END PERFORMANCE OPTIMIZATION ---
+
             conn.commit()
 
     def create_session(self, interaction_id: str, prompt: str, files: list[str] | None = None, pid: int | None = None, parent_id: int | None = None, depth: int = 1) -> int:
@@ -189,6 +199,17 @@ class SessionManager:
             conn.row_factory = sqlite3.Row
             sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
             
+            # --- PERFORMANCE OPTIMIZATION (Bolt ⚡) ---
+            # N+1 Query Fix: Instead of querying for each session's parent inside the loop,
+            # we fetch all required parents in a single query beforehand.
+            parent_ids = {s['parent_id'] for s in sessions if s['parent_id']}
+            parents = {}
+            if parent_ids:
+                # The IN clause is efficient, especially with the parent_id index.
+                parent_sessions = conn.execute(f"SELECT id, pid, status FROM sessions WHERE id IN ({','.join('?' for _ in parent_ids)})", tuple(parent_ids)).fetchall()
+                parents = {p['id']: p for p in parent_sessions}
+            # --- END PERFORMANCE OPTIMIZATION ---
+
             # Check for dead processes
             result = []
             for s in sessions:
@@ -205,14 +226,11 @@ class SessionManager:
                     
                     # 2. Check Parent Status/PID (if child has no own PID)
                     elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
+                        # Use the pre-fetched parent dictionary.
+                        parent = parents.get(s['parent_id'])
                         if parent:
-                            # If parent is finished, child should be finished.
                             if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
                                 is_dead = True
-                            # If parent is running but dead PID
                             elif parent['pid']:
                                 try:
                                     os.kill(parent['pid'], 0)
