@@ -189,6 +189,17 @@ class SessionManager:
             conn.row_factory = sqlite3.Row
             sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
             
+            # ⚡ OPTIMIZATION: Pre-fetch parent data to solve N+1 query problem.
+            # Instead of querying for each session's parent inside the loop, we
+            # gather all parent IDs and fetch them in a single query.
+            parent_ids = {s['parent_id'] for s in sessions if s['parent_id']}
+            parents = {}
+            if parent_ids:
+                # Use a placeholder string for the IN clause
+                placeholders = ','.join('?' for _ in parent_ids)
+                parent_rows = conn.execute(f"SELECT id, pid, status FROM sessions WHERE id IN ({placeholders})", list(parent_ids)).fetchall()
+                parents = {p['id']: p for p in parent_rows}
+
             # Check for dead processes
             result = []
             for s in sessions:
@@ -205,9 +216,8 @@ class SessionManager:
                     
                     # 2. Check Parent Status/PID (if child has no own PID)
                     elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
+                        # ⚡ OPTIMIZATION: Use the pre-fetched parent dictionary.
+                        parent = parents.get(s['parent_id'])
                         if parent:
                             # If parent is finished, child should be finished.
                             if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
