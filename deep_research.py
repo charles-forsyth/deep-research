@@ -128,6 +128,13 @@ class SessionManager:
             if "depth" not in columns:
                 conn.execute("ALTER TABLE sessions ADD COLUMN depth INTEGER DEFAULT 1")
 
+            # Bolt ⚡: Add indexes for faster lookups on common query patterns.
+            # These prevent slow full-table scans when listing or getting sessions.
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_interaction_id ON sessions (interaction_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_parent_id ON sessions (parent_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON sessions (status);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_updated_at ON sessions (updated_at);")
+
             conn.commit()
 
     def create_session(self, interaction_id: str, prompt: str, files: list[str] | None = None, pid: int | None = None, parent_id: int | None = None, depth: int = 1) -> int:
@@ -189,8 +196,20 @@ class SessionManager:
             conn.row_factory = sqlite3.Row
             sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
             
+            # Bolt ⚡: Optimization to fix N+1 query problem.
+            # Instead of querying for each session's parent inside the loop, we
+            # fetch all required parents in a single query beforehand.
+            parent_ids = {s['parent_id'] for s in sessions if s['parent_id']}
+            parents = {}
+            if parent_ids:
+                # The IN clause is efficient, especially with an index on `id`.
+                parent_sessions = conn.execute(f"SELECT id, pid, status FROM sessions WHERE id IN ({','.join('?' for _ in parent_ids)})", tuple(parent_ids)).fetchall()
+                parents = {p['id']: p for p in parent_sessions}
+
             # Check for dead processes
             result = []
+            sessions_to_update = [] # Collect sessions to update status
+
             for s in sessions:
                 s_dict = dict(s)
                 if s['status'] == 'running':
@@ -205,9 +224,8 @@ class SessionManager:
                     
                     # 2. Check Parent Status/PID (if child has no own PID)
                     elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
+                        # Use the pre-fetched parent data
+                        parent = parents.get(s['parent_id'])
                         if parent:
                             # If parent is finished, child should be finished.
                             if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
@@ -221,10 +239,16 @@ class SessionManager:
                     
                     if is_dead:
                         s_dict['status'] = 'crashed'
-                        conn.execute("UPDATE sessions SET status = 'crashed' WHERE id = ?", (s['id'],))
-                        conn.commit()
+                        sessions_to_update.append(s['id'])
                         
                 result.append(s_dict)
+
+            # Bolt ⚡: Batch update for efficiency.
+            # Instead of committing inside the loop, we do one bulk update at the end.
+            if sessions_to_update:
+                conn.execute(f"UPDATE sessions SET status = 'crashed' WHERE id IN ({','.join('?' for _ in sessions_to_update)})", tuple(sessions_to_update))
+                conn.commit()
+
             return result
 
     def get_session(self, session_id_or_interaction_id: str):
