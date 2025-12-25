@@ -77,3 +77,28 @@ def test_pid_tracking_dead(test_db):
         
 
     assert sessions[0]['status'] == 'crashed'
+
+
+def test_list_sessions_with_parent_child_logic(test_db):
+    """
+    Tests the N+1 query fix for parent/child status checks.
+    """
+    mgr = SessionManager(test_db)
+    parent_pid = os.getpid()
+
+    # 1. Create a running parent and a running child
+    parent_id = mgr.create_session("parent_1", "Parent", pid=parent_pid)
+    child_id = mgr.create_session("child_1", "Child", parent_id=parent_id)
+
+    # With a live parent, child should be 'running'
+    sessions = mgr.list_sessions()
+    child_session = next(s for s in sessions if s['id'] == child_id)
+    assert child_session['status'] == 'running'
+
+    # 2. Test with a completed parent
+    mgr.update_session("parent_1", "completed", "Parent finished")
+
+    # After parent is complete, child should be marked as 'crashed'
+    sessions = mgr.list_sessions()
+    child_session = next(s for s in sessions if s['id'] == child_id)
+    assert child_session['status'] == 'crashed'
