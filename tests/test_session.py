@@ -77,3 +77,40 @@ def test_pid_tracking_dead(test_db):
         
 
     assert sessions[0]['status'] == 'crashed'
+
+
+def test_child_pid_tracking_dead_parent(test_db):
+    mgr = SessionManager(test_db)
+
+    fake_parent_pid = 99998
+
+    # 1. Create a parent session that will be marked as "dead"
+    parent_id = mgr.create_session("v1_PARENT", "Parent", pid=fake_parent_pid)
+
+    # 2. Create a child session that is "running" but has no PID itself
+    # It relies on the parent's status.
+    child_id = mgr.create_session("v1_CHILD", "Child", parent_id=parent_id)
+
+    # Mock os.kill to be more robust: only fail for the specific fake parent PID.
+    # This avoids issues with the order of sessions being processed.
+    def kill_side_effect(pid, sig):
+        if pid == fake_parent_pid:
+            raise OSError
+        # For any other PID, do nothing to avoid unintended side effects.
+        return
+
+    with patch("os.kill", side_effect=kill_side_effect):
+        sessions = mgr.list_sessions()
+
+    # Find the sessions from the result list
+    parent_session = next((s for s in sessions if s['id'] == parent_id), None)
+    child_session = next((s for s in sessions if s['id'] == child_id), None)
+
+    assert parent_session is not None, "Parent session not found in results"
+    assert child_session is not None, "Child session not found in results"
+
+    # The parent should be crashed because its PID is dead
+    assert parent_session['status'] == 'crashed'
+
+    # The child should ALSO be marked as crashed because its parent is dead
+    assert child_session['status'] == 'crashed'
