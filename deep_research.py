@@ -189,35 +189,42 @@ class SessionManager:
             conn.row_factory = sqlite3.Row
             sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
             
-            # Check for dead processes
+            # ⚡ OPTIMIZATION: Pre-fetch parent data to solve N+1 query problem.
+            # Instead of querying for each child's parent inside the loop, we
+            # gather all unique parent IDs and fetch their statuses in one go.
+            parent_ids_to_fetch = {s['parent_id'] for s in sessions if s['parent_id']}
+            parents = {}
+            if parent_ids_to_fetch:
+                # Use a placeholder list for the IN clause
+                placeholders = ','.join('?' for _ in parent_ids_to_fetch)
+                parent_rows = conn.execute(
+                    f"SELECT id, pid, status FROM sessions WHERE id IN ({placeholders})",
+                    list(parent_ids_to_fetch)
+                ).fetchall()
+                parents = {p['id']: p for p in parent_rows}
+
             result = []
             for s in sessions:
                 s_dict = dict(s)
                 if s['status'] == 'running':
                     is_dead = False
                     
-                    # 1. Check own PID
                     if s['pid']:
                         try:
                             os.kill(s['pid'], 0)
                         except OSError:
                             is_dead = True
                     
-                    # 2. Check Parent Status/PID (if child has no own PID)
-                    elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
-                        if parent:
-                            # If parent is finished, child should be finished.
-                            if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                    # Check parent status using the pre-fetched data
+                    elif s['parent_id'] and s['parent_id'] in parents:
+                        parent = parents[s['parent_id']]
+                        if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                            is_dead = True
+                        elif parent['pid']:
+                            try:
+                                os.kill(parent['pid'], 0)
+                            except OSError:
                                 is_dead = True
-                            # If parent is running but dead PID
-                            elif parent['pid']:
-                                try:
-                                    os.kill(parent['pid'], 0)
-                                except OSError:
-                                    is_dead = True
                     
                     if is_dead:
                         s_dict['status'] = 'crashed'
