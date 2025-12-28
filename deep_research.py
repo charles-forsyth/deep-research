@@ -189,42 +189,66 @@ class SessionManager:
             conn.row_factory = sqlite3.Row
             sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
             
-            # Check for dead processes
+            # --- PERFORMANCE OPTIMIZATION (N+1 Query) ---
+            # Pre-fetch parent session data to avoid N+1 queries inside the loop.
+            # 1. Collect all unique parent_ids from the current list of sessions.
+            parent_ids_to_fetch = {s['parent_id'] for s in sessions if s['parent_id']}
+
+            parents = {}
+            if parent_ids_to_fetch:
+                # 2. Fetch all required parents in a single query.
+                # The '?' placeholders are generated dynamically based on the number of IDs.
+                placeholders = ','.join('?' for _ in parent_ids_to_fetch)
+                parent_rows = conn.execute(
+                    f"SELECT id, pid, status FROM sessions WHERE id IN ({placeholders})",
+                    list(parent_ids_to_fetch)
+                ).fetchall()
+                # 3. Store parents in a dictionary for O(1) lookup.
+                parents = {p['id']: p for p in parent_rows}
+
+            # List for bulk-updating crashed sessions.
+            sessions_to_crash = []
+
             result = []
             for s in sessions:
                 s_dict = dict(s)
                 if s['status'] == 'running':
                     is_dead = False
                     
-                    # 1. Check own PID
+                    # 1. Check own PID.
                     if s['pid']:
                         try:
                             os.kill(s['pid'], 0)
                         except OSError:
                             is_dead = True
                     
-                    # 2. Check Parent Status/PID (if child has no own PID)
-                    elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
-                        if parent:
-                            # If parent is finished, child should be finished.
-                            if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                    # 2. Check Parent Status/PID using the pre-fetched data.
+                    elif s['parent_id'] and s['parent_id'] in parents:
+                        parent = parents[s['parent_id']]
+                        # If parent is finished, child is considered dead.
+                        if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                            is_dead = True
+                        # If parent has a PID, check if it's alive.
+                        elif parent['pid']:
+                            try:
+                                os.kill(parent['pid'], 0)
+                            except OSError:
                                 is_dead = True
-                            # If parent is running but dead PID
-                            elif parent['pid']:
-                                try:
-                                    os.kill(parent['pid'], 0)
-                                except OSError:
-                                    is_dead = True
                     
                     if is_dead:
                         s_dict['status'] = 'crashed'
-                        conn.execute("UPDATE sessions SET status = 'crashed' WHERE id = ?", (s['id'],))
-                        conn.commit()
+                        sessions_to_crash.append(s['id'])
                         
                 result.append(s_dict)
+
+            # Bulk update all crashed sessions in a single transaction.
+            if sessions_to_crash:
+                conn.executemany(
+                    "UPDATE sessions SET status = 'crashed' WHERE id = ?",
+                    [(sid,) for sid in sessions_to_crash]
+                )
+                conn.commit()
+
             return result
 
     def get_session(self, session_id_or_interaction_id: str):
