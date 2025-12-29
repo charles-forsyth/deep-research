@@ -189,8 +189,34 @@ class SessionManager:
             conn.row_factory = sqlite3.Row
             sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
             
-            # Check for dead processes
+            # --- ⚡ OPTIMIZATION START ⚡ ---
+            # The original code had an N+1 query problem. It looped through running sessions
+            # and executed a new SQL query for *each one* to check its parent's status.
+            # This is inefficient.
+            #
+            # The fix:
+            # 1. Find all parent IDs we need to check from the initial list.
+            # 2. Fetch all required parent session data in a *single* query.
+            # 3. Store parents in a hash map (dict) for fast lookups in the loop.
+            # This reduces database calls from (potentially) N+1 to just 2.
+
+            # Step 1: Find all parent IDs we might need.
+            running_sessions_with_parent = [s for s in sessions if s['status'] == 'running' and s['parent_id']]
+            parent_ids_to_fetch = {s['parent_id'] for s in running_sessions_with_parent}
+
+            # Step 2: Fetch all required parents in one query.
+            parents = {}
+            if parent_ids_to_fetch:
+                parent_list = conn.execute(
+                    f"SELECT id, pid, status FROM sessions WHERE id IN ({','.join('?' for _ in parent_ids_to_fetch)})",
+                    list(parent_ids_to_fetch)
+                ).fetchall()
+                # Step 3: Create a fast lookup map.
+                parents = {p['id']: p for p in parent_list}
+            # --- ⚡ OPTIMIZATION END ⚡ ---
+
             result = []
+            ids_to_crash = []
             for s in sessions:
                 s_dict = dict(s)
                 if s['status'] == 'running':
@@ -199,20 +225,17 @@ class SessionManager:
                     # 1. Check own PID
                     if s['pid']:
                         try:
+                            # A signal of 0 doesn't kill the process but checks if it exists.
                             os.kill(s['pid'], 0)
                         except OSError:
                             is_dead = True
                     
-                    # 2. Check Parent Status/PID (if child has no own PID)
+                    # 2. Check Parent Status/PID (using the pre-fetched map)
                     elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
+                        parent = parents.get(s['parent_id'])
                         if parent:
-                            # If parent is finished, child should be finished.
                             if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
                                 is_dead = True
-                            # If parent is running but dead PID
                             elif parent['pid']:
                                 try:
                                     os.kill(parent['pid'], 0)
@@ -221,10 +244,18 @@ class SessionManager:
                     
                     if is_dead:
                         s_dict['status'] = 'crashed'
-                        conn.execute("UPDATE sessions SET status = 'crashed' WHERE id = ?", (s['id'],))
-                        conn.commit()
+                        ids_to_crash.append(s['id'])
                         
                 result.append(s_dict)
+
+            if ids_to_crash:
+                # ⚡ OPTIMIZATION: Update all crashed sessions in a single transaction.
+                conn.execute(
+                    f"UPDATE sessions SET status = 'crashed' WHERE id IN ({','.join('?' for _ in ids_to_crash)})",
+                    ids_to_crash
+                )
+                conn.commit()
+
             return result
 
     def get_session(self, session_id_or_interaction_id: str):
