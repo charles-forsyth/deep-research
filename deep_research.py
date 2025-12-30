@@ -128,6 +128,12 @@ class SessionManager:
             if "depth" not in columns:
                 conn.execute("ALTER TABLE sessions ADD COLUMN depth INTEGER DEFAULT 1")
 
+            # Performance: Add index on status for faster lookups.
+            # This is critical for the `list_sessions` method, which queries
+            # sessions with status='running' to check for dead processes.
+            # Without this, the query would perform a full table scan.
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON sessions (status)")
+
             conn.commit()
 
     def create_session(self, interaction_id: str, prompt: str, files: list[str] | None = None, pid: int | None = None, parent_id: int | None = None, depth: int = 1) -> int:
