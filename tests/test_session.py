@@ -77,3 +77,43 @@ def test_pid_tracking_dead(test_db):
         
 
     assert sessions[0]['status'] == 'crashed'
+
+
+def test_list_sessions_child_process_dead_parent(test_db):
+    """
+    Tests that a child session is marked 'crashed' if its running parent's PID is dead.
+    This is the primary scenario that the N+1 optimization was written for.
+    """
+    mgr = SessionManager(test_db)
+    fake_parent_pid = 99998
+
+    # 1. Create a running parent with a fake (soon-to-be-dead) PID
+    parent_id = mgr.create_session("parent_1", "Parent", pid=fake_parent_pid)
+
+    # 2. Create a child session linked to the parent, with no PID of its own
+    mgr.create_session("child_1", "Child", parent_id=parent_id)
+
+    # 3. Create another healthy, unrelated session to ensure it is not affected
+    mgr.create_session("healthy_1", "Healthy", pid=os.getpid())
+
+    # 4. Mock os.kill to simulate ONLY the parent process not existing.
+    # The mock will raise OSError for the parent's fake PID, and do nothing
+    # for any other PID (like the healthy process), simulating a live process.
+    def mock_kill(pid, sig):
+        if pid == fake_parent_pid:
+            raise OSError
+
+    with patch("os.kill", side_effect=mock_kill):
+        sessions = mgr.list_sessions()
+
+    # 5. Verify the statuses
+    sessions_by_id = {s['interaction_id']: s for s in sessions}
+
+    # The parent, whose PID is dead, should be marked crashed
+    assert sessions_by_id['parent_1']['status'] == 'crashed'
+
+    # The child, whose parent is dead, should also be marked crashed
+    assert sessions_by_id['child_1']['status'] == 'crashed'
+
+    # The healthy process should remain running
+    assert sessions_by_id['healthy_1']['status'] == 'running'

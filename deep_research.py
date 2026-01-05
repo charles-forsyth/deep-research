@@ -189,8 +189,22 @@ class SessionManager:
             conn.row_factory = sqlite3.Row
             sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
             
-            # Check for dead processes
+            # ⚡ OPTIMIZATION: N+1 Query Fix
+            # Problem: The original code fetched the parent status for each session inside the loop,
+            # leading to `N` extra database queries.
+            # Solution: Fetch all relevant parent data in a single query upfront and look it up
+            # in a dictionary, reducing DB calls from O(N) to O(1).
+            parent_ids = {s['parent_id'] for s in sessions if s['parent_id']}
+            parents = {}
+            if parent_ids:
+                parent_sessions = conn.execute(
+                    f"SELECT id, pid, status FROM sessions WHERE id IN ({','.join('?' for _ in parent_ids)})",
+                    list(parent_ids)
+                ).fetchall()
+                parents = {p['id']: p for p in parent_sessions}
+
             result = []
+            crashed_ids = []
             for s in sessions:
                 s_dict = dict(s)
                 if s['status'] == 'running':
@@ -199,32 +213,40 @@ class SessionManager:
                     # 1. Check own PID
                     if s['pid']:
                         try:
+                            # Use os.kill(pid, 0) to check if the process exists.
+                            # It doesn't actually kill the process.
                             os.kill(s['pid'], 0)
                         except OSError:
                             is_dead = True
                     
                     # 2. Check Parent Status/PID (if child has no own PID)
-                    elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
-                        if parent:
-                            # If parent is finished, child should be finished.
-                            if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                    elif s['parent_id'] and s['parent_id'] in parents:
+                        parent = parents[s['parent_id']]
+                        # If parent is finished, child is considered finished (crashed if still 'running').
+                        if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                            is_dead = True
+                        # If parent is running but its PID is dead, child is also dead.
+                        elif parent['pid']:
+                            try:
+                                os.kill(parent['pid'], 0)
+                            except OSError:
                                 is_dead = True
-                            # If parent is running but dead PID
-                            elif parent['pid']:
-                                try:
-                                    os.kill(parent['pid'], 0)
-                                except OSError:
-                                    is_dead = True
                     
                     if is_dead:
                         s_dict['status'] = 'crashed'
-                        conn.execute("UPDATE sessions SET status = 'crashed' WHERE id = ?", (s['id'],))
-                        conn.commit()
+                        crashed_ids.append(s['id'])
                         
                 result.append(s_dict)
+
+            # ⚡ OPTIMIZATION: Batch Update
+            # Update all crashed sessions in a single query outside the loop.
+            if crashed_ids:
+                conn.execute(
+                    f"UPDATE sessions SET status = 'crashed' WHERE id IN ({','.join('?' for _ in crashed_ids)})",
+                    crashed_ids
+                )
+                conn.commit()
+
             return result
 
     def get_session(self, session_id_or_interaction_id: str):
