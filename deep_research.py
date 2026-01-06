@@ -188,7 +188,27 @@ class SessionManager:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+
+            # --- OPTIMIZATION: N+1 Query Prevention ---
+            # Instead of fetching the parent status for each child session inside the loop,
+            # we fetch all relevant parent data in a single query upfront.
+
+            # 1. Collect all parent IDs from the current batch of sessions
+            parent_ids = {s['parent_id'] for s in sessions if s['parent_id']}
             
+            # 2. Fetch all parent data in one go
+            parents = {}
+            if parent_ids:
+                # The IN clause is efficient for a small number of IDs.
+                # The '?' placeholder syntax is required for parameter substitution.
+                placeholders = ','.join('?' for _ in parent_ids)
+                query = f"SELECT id, pid, status FROM sessions WHERE id IN ({placeholders})"
+                parent_rows = conn.execute(query, tuple(parent_ids)).fetchall()
+                parents = {p['id']: p for p in parent_rows}
+
+            # 3. Batch status updates to run in a single transaction
+            updates_to_make = []
+
             # Check for dead processes
             result = []
             for s in sessions:
@@ -205,9 +225,8 @@ class SessionManager:
                     
                     # 2. Check Parent Status/PID (if child has no own PID)
                     elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
+                        # Use the pre-fetched parent data
+                        parent = parents.get(s['parent_id'])
                         if parent:
                             # If parent is finished, child should be finished.
                             if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
@@ -221,10 +240,15 @@ class SessionManager:
                     
                     if is_dead:
                         s_dict['status'] = 'crashed'
-                        conn.execute("UPDATE sessions SET status = 'crashed' WHERE id = ?", (s['id'],))
-                        conn.commit()
+                        updates_to_make.append((s['id'],)) # Tuple for executemany
                         
                 result.append(s_dict)
+
+            # 4. Apply all status updates in a single transaction
+            if updates_to_make:
+                conn.executemany("UPDATE sessions SET status = 'crashed' WHERE id = ?", updates_to_make)
+                conn.commit()
+
             return result
 
     def get_session(self, session_id_or_interaction_id: str):
