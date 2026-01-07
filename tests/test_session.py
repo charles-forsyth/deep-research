@@ -77,3 +77,61 @@ def test_pid_tracking_dead(test_db):
         
 
     assert sessions[0]['status'] == 'crashed'
+
+
+from unittest.mock import MagicMock
+
+
+def test_list_sessions_avoids_n_plus_1_query(test_db):
+    """
+    Ensures that list_sessions is not making a query for each parent session inside the loop.
+    This test is designed to FAIL before the optimization (expecting 3 calls)
+    and PASS after the optimization (expecting 2 calls).
+    """
+    mgr = SessionManager(test_db)
+
+    # We don't need to populate the real DB, we will mock the return values.
+    # Patch os.kill to prevent it from raising OSError, which simplifies our test
+    # by avoiding the 'crashed' status update logic and its extra DB calls.
+    with patch('os.kill'), patch('deep_research.sqlite3.connect') as mock_connect:
+        # Arrange: Mock the connection and cursor
+        mock_conn = MagicMock()
+        mock_connect.return_value.__enter__.return_value = mock_conn
+
+        # This is the list of sessions that the first `execute` call should return.
+        mock_sessions_data = [
+            # The code uses dict-like access, so a list of dicts is fine for mocking.
+            {'id': 1, 'pid': 123, 'status': 'running', 'parent_id': None, 'prompt': 'p'},
+            {'id': 2, 'pid': None, 'status': 'running', 'parent_id': 1, 'prompt': 'c1'},
+            {'id': 3, 'pid': None, 'status': 'running', 'parent_id': 1, 'prompt': 'c2'},
+        ]
+
+        # This simulates the parent data fetched inside the loop (the N+1 query).
+        # The code expects a dict-like row, so we'll mock it as such.
+        mock_parent_data = {'pid': 123, 'status': 'running'}
+
+        # The first call to execute() fetches all sessions.
+        # Subsequent calls (the N+1) fetch parent data.
+        # We can simulate this by changing the return value of the mock cursor.
+        mock_cursor_list = MagicMock()
+        mock_cursor_list.fetchall.return_value = mock_sessions_data
+
+        mock_cursor_parent = MagicMock()
+        mock_cursor_parent.fetchone.return_value = mock_parent_data
+
+        mock_conn.execute.side_effect = [
+            mock_cursor_list,    # For SELECT * FROM sessions...
+            mock_cursor_parent,  # For SELECT ... WHERE id=? for child 1
+            mock_cursor_parent,  # For SELECT ... WHERE id=? for child 2
+        ]
+
+        # Act: Call the method under test
+        mgr.list_sessions()
+
+        # Assert: Check how many times the database was queried.
+        # Before optimization, we expect 3 SELECT queries.
+        # After optimization, we expect only 2 SELECT queries.
+        # We will assert that the number of calls is 2, so the test fails initially.
+        # os.kill is patched to prevent side effects, so no 'crashed' status updates are expected,
+        # which simplifies the test by removing UPDATE/COMMIT calls.
+        assert mock_conn.execute.call_count == 2, "Expected 2 DB executes (optimized), but found more (likely N+1)."
