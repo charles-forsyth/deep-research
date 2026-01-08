@@ -187,32 +187,47 @@ class SessionManager:
     def list_sessions(self, limit: int = 10):
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
+            # Fetch the primary list of sessions
             sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+
+            # ⚡ OPTIMIZATION: N+1 Query Fix
+            # Instead of querying for each session's parent inside the loop, we collect all
+            # unique parent IDs and fetch them in a single, efficient query.
+
+            # 1. Collect all parent_ids that need to be checked from the initial session list.
+            parent_ids_to_fetch = {s['parent_id'] for s in sessions if s['parent_id']}
             
-            # Check for dead processes
+            parents = {}
+            if parent_ids_to_fetch:
+                # 2. Fetch all required parent sessions in one go.
+                placeholders = ','.join('?' * len(parent_ids_to_fetch))
+                parent_rows = conn.execute(
+                    f"SELECT id, pid, status FROM sessions WHERE id IN ({placeholders})",
+                    list(parent_ids_to_fetch)
+                ).fetchall()
+                # 3. Create a lookup map for instant O(1) access inside the loop.
+                parents = {p['id']: p for p in parent_rows}
+
             result = []
+            sessions_to_update_to_crashed = []
+
             for s in sessions:
                 s_dict = dict(s)
                 if s['status'] == 'running':
                     is_dead = False
                     
-                    # 1. Check own PID
                     if s['pid']:
                         try:
                             os.kill(s['pid'], 0)
                         except OSError:
                             is_dead = True
                     
-                    # 2. Check Parent Status/PID (if child has no own PID)
                     elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
+                        # Use the pre-fetched parent from our map instead of a new DB call.
+                        parent = parents.get(s['parent_id'])
                         if parent:
-                            # If parent is finished, child should be finished.
                             if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
                                 is_dead = True
-                            # If parent is running but dead PID
                             elif parent['pid']:
                                 try:
                                     os.kill(parent['pid'], 0)
@@ -221,10 +236,21 @@ class SessionManager:
                     
                     if is_dead:
                         s_dict['status'] = 'crashed'
-                        conn.execute("UPDATE sessions SET status = 'crashed' WHERE id = ?", (s['id'],))
-                        conn.commit()
+                        sessions_to_update_to_crashed.append(s['id'])
                         
                 result.append(s_dict)
+
+            # ⚡ OPTIMIZATION: Batch Updates
+            # Instead of committing an UPDATE for each crashed session, we batch them
+            # into a single transaction at the end, reducing DB write overhead.
+            if sessions_to_update_to_crashed:
+                placeholders = ','.join('?' * len(sessions_to_update_to_crashed))
+                conn.execute(
+                    f"UPDATE sessions SET status = 'crashed' WHERE id IN ({placeholders})",
+                    sessions_to_update_to_crashed
+                )
+                conn.commit()
+
             return result
 
     def get_session(self, session_id_or_interaction_id: str):
