@@ -188,9 +188,23 @@ class SessionManager:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+
+            # --- N+1 Optimization ---
+            # 1. Collect all unique parent_ids from the initial session list.
+            parent_ids = {s['parent_id'] for s in sessions if s['parent_id']}
             
-            # Check for dead processes
+            # 2. Fetch all required parent sessions in a single query.
+            parents = {}
+            if parent_ids:
+                # Use placeholders for IN clause
+                placeholders = ','.join('?' for _ in parent_ids)
+                parent_rows = conn.execute(f"SELECT id, pid, status FROM sessions WHERE id IN ({placeholders})", list(parent_ids)).fetchall()
+                parents = {p['id']: p for p in parent_rows}
+            # --- End Optimization ---
+
             result = []
+            crashed_ids = []
+
             for s in sessions:
                 s_dict = dict(s)
                 if s['status'] == 'running':
@@ -203,28 +217,29 @@ class SessionManager:
                         except OSError:
                             is_dead = True
                     
-                    # 2. Check Parent Status/PID (if child has no own PID)
-                    elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
-                        if parent:
-                            # If parent is finished, child should be finished.
-                            if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                    # 2. Check Parent Status (using pre-fetched data)
+                    elif s['parent_id'] and s['parent_id'] in parents:
+                        parent = parents[s['parent_id']]
+                        if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                            is_dead = True
+                        elif parent['pid']:
+                            try:
+                                os.kill(parent['pid'], 0)
+                            except OSError:
                                 is_dead = True
-                            # If parent is running but dead PID
-                            elif parent['pid']:
-                                try:
-                                    os.kill(parent['pid'], 0)
-                                except OSError:
-                                    is_dead = True
                     
                     if is_dead:
                         s_dict['status'] = 'crashed'
-                        conn.execute("UPDATE sessions SET status = 'crashed' WHERE id = ?", (s['id'],))
-                        conn.commit()
+                        crashed_ids.append(s['id'])
                         
                 result.append(s_dict)
+
+            # Batch update all crashed sessions
+            if crashed_ids:
+                placeholders = ','.join('?' for _ in crashed_ids)
+                conn.execute(f"UPDATE sessions SET status = 'crashed' WHERE id IN ({placeholders})", crashed_ids)
+                conn.commit()
+
             return result
 
     def get_session(self, session_id_or_interaction_id: str):
