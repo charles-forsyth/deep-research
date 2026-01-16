@@ -188,9 +188,24 @@ class SessionManager:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
-            
+
+            # ⚡ OPTIMIZATION: N+1 Query Fix
+            # Problem: Checking a child's parent status inside the loop caused one
+            #          extra query *per child*, leading to slow performance on lists.
+            # Solution: Fetch all relevant parent data in a single query *before* the loop.
+            parent_ids = {s['parent_id'] for s in sessions if s['parent_id'] is not None and s['status'] == 'running'}
+            parents = {}
+            if parent_ids:
+                # The IN clause is efficient for batch fetching.
+                # The '?' placeholder syntax is safe against SQL injection.
+                placeholders = ','.join('?' for _ in parent_ids)
+                parent_rows = conn.execute(f"SELECT id, pid, status FROM sessions WHERE id IN ({placeholders})", list(parent_ids))
+                parents = {row['id']: row for row in parent_rows}
+
             # Check for dead processes
             result = []
+            sessions_to_update = []
+
             for s in sessions:
                 s_dict = dict(s)
                 if s['status'] == 'running':
@@ -203,28 +218,34 @@ class SessionManager:
                         except OSError:
                             is_dead = True
                     
-                    # 2. Check Parent Status/PID (if child has no own PID)
-                    elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
-                        if parent:
-                            # If parent is finished, child should be finished.
-                            if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                    # 2. Check Parent Status/PID (using our pre-fetched cache)
+                    elif s['parent_id'] and s['parent_id'] in parents:
+                        parent = parents[s['parent_id']]
+                        # If parent is finished, child should be considered finished/crashed.
+                        if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                            is_dead = True
+                        # If parent is running but has a dead PID
+                        elif parent['pid']:
+                            try:
+                                os.kill(parent['pid'], 0)
+                            except OSError:
                                 is_dead = True
-                            # If parent is running but dead PID
-                            elif parent['pid']:
-                                try:
-                                    os.kill(parent['pid'], 0)
-                                except OSError:
-                                    is_dead = True
                     
                     if is_dead:
                         s_dict['status'] = 'crashed'
-                        conn.execute("UPDATE sessions SET status = 'crashed' WHERE id = ?", (s['id'],))
-                        conn.commit()
+                        sessions_to_update.append(s['id'])
                         
                 result.append(s_dict)
+
+            # ⚡ OPTIMIZATION: Batch Update
+            # Problem: Updating the status of each crashed session inside the loop
+            #          would cause another N queries.
+            # Solution: Collect all IDs that need to be updated and run a single UPDATE.
+            if sessions_to_update:
+                placeholders = ','.join('?' for _ in sessions_to_update)
+                conn.execute(f"UPDATE sessions SET status = 'crashed' WHERE id IN ({placeholders})", sessions_to_update)
+                conn.commit()
+
             return result
 
     def get_session(self, session_id_or_interaction_id: str):
