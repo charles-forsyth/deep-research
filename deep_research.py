@@ -189,6 +189,27 @@ class SessionManager:
             conn.row_factory = sqlite3.Row
             sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
             
+            # --- PERFORMANCE OPTIMIZATION (N+1 Query Fix) ---
+            # 1. Collect all parent_ids from sessions that need a parent status check.
+            #    This applies only to 'running' child sessions that don't have their own PID.
+            parent_ids_to_fetch = {
+                s['parent_id'] for s in sessions
+                if s['status'] == 'running' and not s['pid'] and s['parent_id']
+            }
+
+            # 2. Fetch all required parent session data in a single batch query.
+            parents = {}
+            if parent_ids_to_fetch:
+                # Use a placeholder for each ID to prevent SQL injection.
+                placeholders = ','.join('?' for _ in parent_ids_to_fetch)
+                parent_rows = conn.execute(
+                    f"SELECT id, pid, status FROM sessions WHERE id IN ({placeholders})",
+                    list(parent_ids_to_fetch)
+                ).fetchall()
+                # Create a lookup map for O(1) access inside the loop.
+                parents = {p['id']: p for p in parent_rows}
+            # --- END OPTIMIZATION ---
+
             # Check for dead processes
             result = []
             for s in sessions:
@@ -204,20 +225,19 @@ class SessionManager:
                             is_dead = True
                     
                     # 2. Check Parent Status/PID (if child has no own PID)
-                    elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
-                        if parent:
-                            # If parent is finished, child should be finished.
-                            if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                    elif s['parent_id'] in parents:
+                        # O(1) lookup, no database call
+                        parent = parents[s['parent_id']]
+
+                        # If parent is finished, child is considered crashed.
+                        if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                            is_dead = True
+                        # If parent is running but its PID is dead, child is also crashed.
+                        elif parent['pid']:
+                            try:
+                                os.kill(parent['pid'], 0)
+                            except OSError:
                                 is_dead = True
-                            # If parent is running but dead PID
-                            elif parent['pid']:
-                                try:
-                                    os.kill(parent['pid'], 0)
-                                except OSError:
-                                    is_dead = True
                     
                     if is_dead:
                         s_dict['status'] = 'crashed'
