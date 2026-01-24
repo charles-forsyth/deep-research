@@ -189,7 +189,16 @@ class SessionManager:
             conn.row_factory = sqlite3.Row
             sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
             
-            # Check for dead processes
+            # --- OPTIMIZATION: Pre-fetch all parent data in a single query ---
+            parent_ids = {s['parent_id'] for s in sessions if s['parent_id']}
+            parents = {}
+            if parent_ids:
+                # Create a placeholder string for the IN clause
+                placeholders = ','.join('?' for _ in parent_ids)
+                parent_rows = conn.execute(f"SELECT id, pid, status FROM sessions WHERE id IN ({placeholders})", list(parent_ids)).fetchall()
+                parents = {p['id']: p for p in parent_rows}
+            # ----------------------------------------------------------------
+
             result = []
             for s in sessions:
                 s_dict = dict(s)
@@ -205,14 +214,11 @@ class SessionManager:
                     
                     # 2. Check Parent Status/PID (if child has no own PID)
                     elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
+                        # Use the pre-fetched parent map instead of a new query
+                        parent = parents.get(s['parent_id'])
                         if parent:
-                            # If parent is finished, child should be finished.
                             if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
                                 is_dead = True
-                            # If parent is running but dead PID
                             elif parent['pid']:
                                 try:
                                     os.kill(parent['pid'], 0)
