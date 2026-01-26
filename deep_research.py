@@ -189,6 +189,23 @@ class SessionManager:
             conn.row_factory = sqlite3.Row
             sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
             
+            # --- OPTIMIZATION: N+1 Query Fix ---
+            # Pre-fetch all relevant parent session data in a single query to avoid
+            # executing a query for each child session inside the loop.
+            parent_ids_to_fetch = {
+                s['parent_id'] for s in sessions
+                if s['status'] == 'running' and not s['pid'] and s['parent_id']
+            }
+            parents = {}
+            if parent_ids_to_fetch:
+                placeholders = ','.join('?' for _ in parent_ids_to_fetch)
+                parent_rows = conn.execute(
+                    f"SELECT id, pid, status FROM sessions WHERE id IN ({placeholders})",
+                    list(parent_ids_to_fetch)
+                ).fetchall()
+                parents = {p['id']: p for p in parent_rows}
+            # --- END OPTIMIZATION ---
+
             # Check for dead processes
             result = []
             for s in sessions:
@@ -205,14 +222,13 @@ class SessionManager:
                     
                     # 2. Check Parent Status/PID (if child has no own PID)
                     elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
+                        # Use the pre-fetched parent map instead of a new DB query.
+                        parent = parents.get(s['parent_id'])
                         if parent:
-                            # If parent is finished, child should be finished.
+                            # If parent is finished, child should be considered dead.
                             if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
                                 is_dead = True
-                            # If parent is running but dead PID
+                            # If parent is running, check if its PID is alive.
                             elif parent['pid']:
                                 try:
                                     os.kill(parent['pid'], 0)
