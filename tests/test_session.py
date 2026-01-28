@@ -1,5 +1,6 @@
 import pytest
 import os
+import sqlite3
 from unittest.mock import patch
 from deep_research import SessionManager
 
@@ -77,3 +78,73 @@ def test_pid_tracking_dead(test_db):
         
 
     assert sessions[0]['status'] == 'crashed'
+
+
+def test_list_sessions_n_plus_one_fix(test_db):
+    """
+    Tests that list_sessions uses a constant number of queries
+    regardless of the number of child sessions, verifying the N+1 fix.
+    """
+
+    # This proxy class intercepts calls to the real database connection
+    # to count how many times `execute` is called.
+    class QueryCountingConnectionProxy:
+        def __init__(self, connection):
+            self._connection = connection
+            self.execute_count = 0
+
+        def execute(self, *args, **kwargs):
+            self.execute_count += 1
+            # print(f"QUERY: {args[0]}") # Uncomment for debugging
+            return self._connection.execute(*args, **kwargs)
+
+        def __setattr__(self, name, value):
+            # Intercept attribute setting.
+            # Attributes '_connection' and 'execute_count' are owned by the proxy itself.
+            if name in ('_connection', 'execute_count'):
+                # Use super().__setattr__ to avoid recursion
+                super().__setattr__(name, value)
+            # Delegate all other assignments (like 'row_factory') to the real connection.
+            else:
+                setattr(self._connection, name, value)
+
+        def __getattr__(self, name):
+            # Delegate all other attribute access (e.g., commit, close)
+            # to the real connection object.
+            return getattr(self._connection, name)
+
+        def __enter__(self):
+            # Support the context manager protocol (`with` statement)
+            self._connection.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            # Delegate the exit call to the real connection to handle transactions
+            return self._connection.__exit__(exc_type, exc_val, exc_tb)
+
+    # 1. Setup a real connection and wrap it with the proxy
+    real_conn = sqlite3.connect(test_db)
+    proxy_conn = QueryCountingConnectionProxy(real_conn)
+
+    # 2. Patch sqlite3.connect to return our proxy instead of a real connection
+    with patch('deep_research.sqlite3.connect', return_value=proxy_conn):
+        mgr = SessionManager(test_db)
+
+        # 3. Setup test data: 1 parent, 5 running child sessions
+        parent_id = mgr.create_session("parent_interaction", "Parent", pid=os.getpid())
+        for i in range(5):
+            mgr.create_session(f"child_{i}", f"Child {i}", parent_id=parent_id)
+
+        # 4. Reset counter to ignore setup queries (CREATE, INSERT)
+        proxy_conn.execute_count = 0
+
+        # 5. Patch os.kill to isolate the test to only database logic
+        with patch("os.kill"):
+            mgr.list_sessions()
+
+    # ⚡ VERIFY:
+    # We expect exactly 2 SELECT queries now, thanks to the optimization:
+    # 1. The initial `SELECT * FROM sessions ...`
+    # 2. The single `SELECT ... FROM sessions WHERE id IN (...)` for all parents
+    # This number should NOT scale with the number of children (which is 5).
+    assert proxy_conn.execute_count == 2, "Should use a constant number of queries (2) for the parent check"
