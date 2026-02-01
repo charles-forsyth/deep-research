@@ -95,11 +95,18 @@ def detach_process(args_list: list[str], log_path: str) -> int:
         return proc.pid
 
 class SessionManager:
+    # Optimization: Cache initialized DBs to avoid redundant PRAGMA/migration checks
+    _initialized_dbs = set()
+
     def __init__(self, db_path: str = user_db_path):
-        self.db_path = db_path
+        # Ensure path is absolute for consistent cache lookups
+        self.db_path = os.path.abspath(db_path)
         self._init_db()
 
     def _init_db(self):
+        if self.db_path in self._initialized_dbs:
+            return
+
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         with sqlite3.connect(self.db_path) as conn:
             # Enable Write-Ahead Logging for concurrency
@@ -128,7 +135,14 @@ class SessionManager:
             if "depth" not in columns:
                 conn.execute("ALTER TABLE sessions ADD COLUMN depth INTEGER DEFAULT 1")
 
+            # Performance: Add indexes for frequently queried columns
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_interaction_id ON sessions(interaction_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_parent_id ON sessions(parent_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)")
+
             conn.commit()
+
+        self._initialized_dbs.add(self.db_path)
 
     def create_session(self, interaction_id: str, prompt: str, files: list[str] | None = None, pid: int | None = None, parent_id: int | None = None, depth: int = 1) -> int:
         with sqlite3.connect(self.db_path) as conn:
@@ -187,10 +201,19 @@ class SessionManager:
     def list_sessions(self, limit: int = 10):
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+            # Optimization: Use JOIN to fetch parent info in one query to avoid N+1 problem
+            query = """
+                SELECT s.*, p.pid AS parent_pid, p.status AS parent_status
+                FROM sessions s
+                LEFT JOIN sessions p ON s.parent_id = p.id
+                ORDER BY s.updated_at DESC
+                LIMIT ?
+            """
+            sessions = conn.execute(query, (limit,)).fetchall()
             
             # Check for dead processes
             result = []
+            crashed_ids = []
             for s in sessions:
                 s_dict = dict(s)
                 if s['status'] == 'running':
@@ -205,26 +228,27 @@ class SessionManager:
                     
                     # 2. Check Parent Status/PID (if child has no own PID)
                     elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
-                        if parent:
-                            # If parent is finished, child should be finished.
-                            if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                        # Use joined data from the initial query
+                        if s['parent_status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                            is_dead = True
+                        elif s['parent_pid']:
+                            try:
+                                os.kill(s['parent_pid'], 0)
+                            except OSError:
                                 is_dead = True
-                            # If parent is running but dead PID
-                            elif parent['pid']:
-                                try:
-                                    os.kill(parent['pid'], 0)
-                                except OSError:
-                                    is_dead = True
                     
                     if is_dead:
                         s_dict['status'] = 'crashed'
-                        conn.execute("UPDATE sessions SET status = 'crashed' WHERE id = ?", (s['id'],))
-                        conn.commit()
+                        crashed_ids.append(s['id'])
                         
                 result.append(s_dict)
+
+            # Optimization: Batch update crashed sessions in a single query to reduce disk I/O
+            if crashed_ids:
+                placeholders = ",".join(["?"] * len(crashed_ids))
+                conn.execute(f"UPDATE sessions SET status = 'crashed' WHERE id IN ({placeholders})", crashed_ids)
+                conn.commit()
+
             return result
 
     def get_session(self, session_id_or_interaction_id: str):
