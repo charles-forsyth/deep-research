@@ -25,6 +25,7 @@ import json
 import re
 import sqlite3
 import subprocess
+import threading
 import concurrent.futures
 import warnings
 import logging
@@ -95,9 +96,18 @@ def detach_process(args_list: list[str], log_path: str) -> int:
         return proc.pid
 
 class SessionManager:
+    # Optimization: Cache initialized DBs to avoid redundant migrations/Pragmas in the same process
+    _initialized_dbs = set()
+    _init_lock = threading.Lock()
+
     def __init__(self, db_path: str = user_db_path):
-        self.db_path = db_path
-        self._init_db()
+        # Normalize path to ensure cache hits
+        self.db_path = os.path.abspath(db_path)
+
+        with self._init_lock:
+            if self.db_path not in self._initialized_dbs:
+                self._init_db()
+                self._initialized_dbs.add(self.db_path)
 
     def _init_db(self):
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
@@ -127,6 +137,11 @@ class SessionManager:
                 conn.execute("ALTER TABLE sessions ADD COLUMN parent_id INTEGER")
             if "depth" not in columns:
                 conn.execute("ALTER TABLE sessions ADD COLUMN depth INTEGER DEFAULT 1")
+
+            # Optimization: Add indexes for frequently queried fields
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_interaction_id ON sessions(interaction_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_parent_id ON sessions(parent_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)")
 
             conn.commit()
 
@@ -168,16 +183,12 @@ class SessionManager:
 
     def append_to_result(self, interaction_id: str, new_content: str):
         with sqlite3.connect(self.db_path) as conn:
-            # Get current result
-            row = conn.execute("SELECT result FROM sessions WHERE interaction_id = ?", (interaction_id,)).fetchone()
-            if row:
-                current_result = row[0] or ""
-                updated_result = f"{current_result}\n\n{new_content}"
-                conn.execute(
-                    "UPDATE sessions SET result = ?, updated_at = ? WHERE interaction_id = ?",
-                    (updated_result, datetime.now().isoformat(), interaction_id)
-                )
-                conn.commit()
+            # Optimize to single update using SQLite concatenation (reduces round-trips)
+            conn.execute(
+                "UPDATE sessions SET result = COALESCE(result, '') || ? || ?, updated_at = ? WHERE interaction_id = ?",
+                ("\n\n", new_content, datetime.now().isoformat(), interaction_id)
+            )
+            conn.commit()
 
     def get_children(self, session_id: int):
         with sqlite3.connect(self.db_path) as conn:
@@ -187,12 +198,24 @@ class SessionManager:
     def list_sessions(self, limit: int = 10):
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+            # Use LEFT JOIN to fetch parent info in one go (prevents N+1 queries)
+            query = """
+                SELECT s.*, p.status as p_status, p.pid as p_pid
+                FROM sessions s
+                LEFT JOIN sessions p ON s.parent_id = p.id
+                ORDER BY s.updated_at DESC LIMIT ?
+            """
+            sessions = conn.execute(query, (limit,)).fetchall()
             
             # Check for dead processes
             result = []
+            to_mark_crashed = []
             for s in sessions:
                 s_dict = dict(s)
+                # Remove parent fields from final dict to keep it clean
+                p_status = s_dict.pop('p_status', None)
+                p_pid = s_dict.pop('p_pid', None)
+
                 if s['status'] == 'running':
                     is_dead = False
                     
@@ -205,26 +228,32 @@ class SessionManager:
                     
                     # 2. Check Parent Status/PID (if child has no own PID)
                     elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
-                        if parent:
+                        if p_status:
                             # If parent is finished, child should be finished.
-                            if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                            if p_status in ['completed', 'crashed', 'failed', 'cancelled']:
                                 is_dead = True
                             # If parent is running but dead PID
-                            elif parent['pid']:
+                            elif p_pid:
                                 try:
-                                    os.kill(parent['pid'], 0)
+                                    os.kill(p_pid, 0)
                                 except OSError:
                                     is_dead = True
                     
                     if is_dead:
                         s_dict['status'] = 'crashed'
-                        conn.execute("UPDATE sessions SET status = 'crashed' WHERE id = ?", (s['id'],))
-                        conn.commit()
+                        to_mark_crashed.append(s['id'])
                         
                 result.append(s_dict)
+
+            # Batch update crashed sessions (efficiency)
+            if to_mark_crashed:
+                placeholders = ",".join(["?"] * len(to_mark_crashed))
+                conn.execute(
+                    f"UPDATE sessions SET status = 'crashed', updated_at = ? WHERE id IN ({placeholders})",
+                    (datetime.now().isoformat(), *to_mark_crashed)
+                )
+                conn.commit()
+
             return result
 
     def get_session(self, session_id_or_interaction_id: str):
