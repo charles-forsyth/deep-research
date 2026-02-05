@@ -1,0 +1,3 @@
+## 2025-05-14 - SessionManager Database Optimization
+**Learning:** SQLite database interactions in recursive research tasks can quickly become a bottleneck due to N+1 query patterns in session listing and redundant initializations. Using LEFT JOINs and batch updates significantly reduces the number of database round-trips. Caching initialized database paths at the class level prevents redundant migrations and PRAGMA calls.
+**Action:** Always check for N+1 query patterns when fetching hierarchical data (like parent-child sessions) and use SQL JOINs or batching to optimize. Use single-statement updates with string concatenation (||) where possible to avoid SELECT-then-UPDATE cycles.
