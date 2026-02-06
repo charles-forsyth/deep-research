@@ -1,0 +1,3 @@
+## 2025-05-15 - Optimizing SessionManager Database Efficiency
+**Learning:** SQLite database initialization in a multi-threaded recursive research environment can be a significant bottleneck if performed redundantly. Additionally, using `os.path.dirname()` on relative paths like "history.db" returns an empty string, which causes `os.makedirs("", exist_ok=True)` to fail.
+**Action:** Always normalize database paths to absolute paths using `os.path.abspath()`. Implement thread-safe class-level caching to skip redundant schema initializations. Use `LEFT JOIN` and batch updates to eliminate N+1 query problems in session listing.

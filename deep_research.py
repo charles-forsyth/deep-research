@@ -24,6 +24,7 @@ import argparse
 import json
 import re
 import sqlite3
+import threading
 import subprocess
 import concurrent.futures
 import warnings
@@ -95,40 +96,50 @@ def detach_process(args_list: list[str], log_path: str) -> int:
         return proc.pid
 
 class SessionManager:
+    # Class-level cache to skip redundant initializations in the same process
+    _initialized_dbs = set()
+    _init_lock = threading.Lock()
+
     def __init__(self, db_path: str = user_db_path):
-        self.db_path = db_path
+        # Normalize to absolute path for consistent cache keys and to fix makedirs bug
+        self.db_path = os.path.abspath(db_path)
         self._init_db()
 
     def _init_db(self):
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
-            # Enable Write-Ahead Logging for concurrency
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS sessions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    interaction_id TEXT,
-                    prompt TEXT,
-                    status TEXT,
-                    created_at TIMESTAMP,
-                    updated_at TIMESTAMP,
-                    result TEXT,
-                    files JSON
-                )
-            """)
-            # Migration: Add PID column if missing (v0.8.1)
-            cursor = conn.execute("PRAGMA table_info(sessions)")
-            columns = [col[1] for col in cursor.fetchall()]
-            if "pid" not in columns:
-                conn.execute("ALTER TABLE sessions ADD COLUMN pid INTEGER")
-            
-            # Migration: Add Recursive Research columns (v0.9.0)
-            if "parent_id" not in columns:
-                conn.execute("ALTER TABLE sessions ADD COLUMN parent_id INTEGER")
-            if "depth" not in columns:
-                conn.execute("ALTER TABLE sessions ADD COLUMN depth INTEGER DEFAULT 1")
+        with self._init_lock:
+            if self.db_path in self._initialized_dbs:
+                return
 
-            conn.commit()
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+            with sqlite3.connect(self.db_path) as conn:
+                # Enable Write-Ahead Logging for concurrency
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS sessions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        interaction_id TEXT,
+                        prompt TEXT,
+                        status TEXT,
+                        created_at TIMESTAMP,
+                        updated_at TIMESTAMP,
+                        result TEXT,
+                        files JSON
+                    )
+                """)
+                # Migration: Add PID column if missing (v0.8.1)
+                cursor = conn.execute("PRAGMA table_info(sessions)")
+                columns = [col[1] for col in cursor.fetchall()]
+                if "pid" not in columns:
+                    conn.execute("ALTER TABLE sessions ADD COLUMN pid INTEGER")
+
+                # Migration: Add Recursive Research columns (v0.9.0)
+                if "parent_id" not in columns:
+                    conn.execute("ALTER TABLE sessions ADD COLUMN parent_id INTEGER")
+                if "depth" not in columns:
+                    conn.execute("ALTER TABLE sessions ADD COLUMN depth INTEGER DEFAULT 1")
+
+                conn.commit()
+            self._initialized_dbs.add(self.db_path)
 
     def create_session(self, interaction_id: str, prompt: str, files: list[str] | None = None, pid: int | None = None, parent_id: int | None = None, depth: int = 1) -> int:
         with sqlite3.connect(self.db_path) as conn:
@@ -168,16 +179,13 @@ class SessionManager:
 
     def append_to_result(self, interaction_id: str, new_content: str):
         with sqlite3.connect(self.db_path) as conn:
-            # Get current result
-            row = conn.execute("SELECT result FROM sessions WHERE interaction_id = ?", (interaction_id,)).fetchone()
-            if row:
-                current_result = row[0] or ""
-                updated_result = f"{current_result}\n\n{new_content}"
-                conn.execute(
-                    "UPDATE sessions SET result = ?, updated_at = ? WHERE interaction_id = ?",
-                    (updated_result, datetime.now().isoformat(), interaction_id)
-                )
-                conn.commit()
+            # Atomic update using SQLite concatenation operator (||) to avoid Read-Modify-Write
+            # COALESCE ensures we don't concatenate with NULL (which would result in NULL)
+            conn.execute(
+                "UPDATE sessions SET result = COALESCE(result, '') || ? || ?, updated_at = ? WHERE interaction_id = ?",
+                ("\n\n", new_content, datetime.now().isoformat(), interaction_id)
+            )
+            conn.commit()
 
     def get_children(self, session_id: int):
         with sqlite3.connect(self.db_path) as conn:
@@ -187,10 +195,18 @@ class SessionManager:
     def list_sessions(self, limit: int = 10):
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            sessions = conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+            # Use LEFT JOIN to fetch parent info in one go (fixes N+1 query problem)
+            query = """
+                SELECT s.*, p.status as parent_status, p.pid as parent_pid
+                FROM sessions s
+                LEFT JOIN sessions p ON s.parent_id = p.id
+                ORDER BY s.updated_at DESC LIMIT ?
+            """
+            sessions = conn.execute(query, (limit,)).fetchall()
             
             # Check for dead processes
             result = []
+            crashed_ids = []
             for s in sessions:
                 s_dict = dict(s)
                 if s['status'] == 'running':
@@ -203,28 +219,31 @@ class SessionManager:
                         except OSError:
                             is_dead = True
                     
-                    # 2. Check Parent Status/PID (if child has no own PID)
+                    # 2. Check Parent Status/PID (already fetched via JOIN)
                     elif s['parent_id']:
-                        # Recursive check up the chain? Or just direct parent?
-                        # Direct parent is usually the process owner for our architecture.
-                        parent = conn.execute("SELECT pid, status FROM sessions WHERE id = ?", (s['parent_id'],)).fetchone()
-                        if parent:
+                        if s['parent_status']:
                             # If parent is finished, child should be finished.
-                            if parent['status'] in ['completed', 'crashed', 'failed', 'cancelled']:
+                            if s['parent_status'] in ['completed', 'crashed', 'failed', 'cancelled']:
                                 is_dead = True
                             # If parent is running but dead PID
-                            elif parent['pid']:
+                            elif s['parent_pid']:
                                 try:
-                                    os.kill(parent['pid'], 0)
+                                    os.kill(s['parent_pid'], 0)
                                 except OSError:
                                     is_dead = True
                     
                     if is_dead:
                         s_dict['status'] = 'crashed'
-                        conn.execute("UPDATE sessions SET status = 'crashed' WHERE id = ?", (s['id'],))
-                        conn.commit()
+                        crashed_ids.append(s['id'])
                         
                 result.append(s_dict)
+
+            # Batch update crashed sessions (fixes redundant disk I/O)
+            if crashed_ids:
+                placeholders = ",".join(["?"] * len(crashed_ids))
+                conn.execute(f"UPDATE sessions SET status = 'crashed' WHERE id IN ({placeholders})", tuple(crashed_ids))
+                conn.commit()
+
             return result
 
     def get_session(self, session_id_or_interaction_id: str):
