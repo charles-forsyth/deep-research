@@ -96,7 +96,8 @@ def test_main_delete(mock_session_manager):
 
 @patch("sys.argv", ["deepresearch", "cleanup", "--force"])
 @patch("deepresearch.cli.commands.genai.Client")
-def test_main_cleanup(mock_client, mock_session_manager):
+@patch("deepresearch.cli.commands.DeepResearchConfig")
+def test_main_cleanup(mock_config, mock_client, mock_session_manager):
     client_instance = mock_client.return_value
     store_mock = MagicMock()
     store_mock.name = "stores/123"
