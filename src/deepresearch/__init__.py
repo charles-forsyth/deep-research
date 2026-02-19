@@ -852,7 +852,11 @@ class DeepResearchAgent:
         finally:
             if request.upload_paths:
                 self.file_manager.cleanup()
-        return interaction.id
+        return (
+            interaction.id
+            if "interaction" in locals() and hasattr(interaction, "id")
+            else None
+        )
 
     def follow_up(self, request: FollowUpRequest):
         self._log(f"[INFO] Sending follow-up to interaction: {request.interaction_id}")

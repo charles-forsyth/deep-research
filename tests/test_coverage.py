@@ -8,12 +8,14 @@ from deepresearch import (
     DeepResearchConfig,
     ResearchRequest,
     FollowUpRequest,
-    detach_process
+    detach_process,
 )
+
 
 @pytest.fixture
 def test_db(tmp_path):
     return str(tmp_path / "test_history.db")
+
 
 def test_session_manager_coverage(test_db):
     mgr = SessionManager(test_db)
@@ -44,13 +46,13 @@ def test_session_manager_coverage(test_db):
 
     # list_sessions dead checking via parent
     mgr.update_session("p1", "crashed")
-    mgr.update_session("c2", "running") # c2 has no pid, relies on parent
-    
+    mgr.update_session("c2", "running")  # c2 has no pid, relies on parent
+
     with patch("os.kill", side_effect=OSError):
         sessions = mgr.list_sessions()
         for s in sessions:
             if s["interaction_id"] == "c2":
-                assert s["status"] == "crashed" # Parent is crashed, so child crashed
+                assert s["status"] == "crashed"  # Parent is crashed, so child crashed
 
     # delete_session
     assert mgr.delete_session(sid_child1) is True
@@ -67,20 +69,20 @@ def test_data_exporter_coverage():
 
     # save_csv exception
     with patch("builtins.open", side_effect=Exception("Disk error")):
-        DataExporter.save_csv("csv,data", "out.csv") # Should print error but not raise
+        DataExporter.save_csv("csv,data", "out.csv")  # Should print error but not raise
 
     # export
     with (
         patch("deepresearch.DataExporter.save_json") as mock_json,
         patch("deepresearch.DataExporter.save_csv") as mock_csv,
-        patch("builtins.open", mock_open()) as mock_file
+        patch("builtins.open", mock_open()) as mock_file,
     ):
         DataExporter.export("json_data", "file.json")
         mock_json.assert_called_once()
-        
+
         DataExporter.export("csv_data", "file.csv")
         mock_csv.assert_called_once()
-        
+
         DataExporter.export("text_data", "file.txt")
         mock_file.assert_called_with("file.txt", "w")
 
@@ -88,16 +90,24 @@ def test_data_exporter_coverage():
 def test_file_manager_coverage():
     client = MagicMock()
     fm = FileManager(client)
-    
+
     # invalid path
-    with patch("os.path.isdir", return_value=False), patch("os.path.isfile", return_value=False):
+    with (
+        patch("os.path.isdir", return_value=False),
+        patch("os.path.isfile", return_value=False),
+    ):
         fm.create_store_from_paths(["invalid_path"])
         client.file_search_stores.create.assert_called_once()
         # Should skip invalid path
-    
+
     # upload exception
-    with patch("os.path.isdir", return_value=False), patch("os.path.isfile", return_value=True):
-        client.file_search_stores.upload_to_file_search_store.side_effect = Exception("Upload error")
+    with (
+        patch("os.path.isdir", return_value=False),
+        patch("os.path.isfile", return_value=True),
+    ):
+        client.file_search_stores.upload_to_file_search_store.side_effect = Exception(
+            "Upload error"
+        )
         with pytest.raises(Exception):
             fm.create_store_from_paths(["valid_path"])
 
@@ -105,50 +115,54 @@ def test_file_manager_coverage():
     fm.created_stores = ["store1"]
     client.file_search_stores.documents.list.side_effect = Exception("List error")
     client.file_search_stores.delete.side_effect = Exception("Delete error")
-    fm.cleanup() # Should swallow exceptions
+    fm.cleanup()  # Should swallow exceptions
 
 
 def test_deep_research_agent_error_coverage():
     config = DeepResearchConfig(api_key="fake")
     agent = DeepResearchAgent(config)
     agent.client = MagicMock()
-    
+
     req = ResearchRequest(prompt="Test")
-    
+
     # start_research_stream exception
     agent.client.interactions.create.side_effect = Exception("API Down")
     interaction_id = agent.start_research_stream(req)
     assert interaction_id is None
-    
+
     # start_research_poll exception
     agent.client.interactions.create.side_effect = Exception("API Down")
     interaction_id = agent.start_research_poll(req)
-    assert interaction_id is None # Or it might return MagicMock.id if it errored later, but here create fails
-    
+    assert (
+        interaction_id is None
+    )  # Or it might return MagicMock.id if it errored later, but here create fails
+
     # KeyboardInterrupt in stream
     agent.client.interactions.create.side_effect = KeyboardInterrupt()
-    agent.start_research_stream(req) # Should handle and return None
-    
+    agent.start_research_stream(req)  # Should handle and return None
+
     # KeyboardInterrupt in poll
     agent.client.interactions.create.side_effect = KeyboardInterrupt()
-    agent.start_research_poll(req) # Should handle
-    
+    agent.start_research_poll(req)  # Should handle
+
     # follow_up exception
     agent.client.interactions.create.side_effect = Exception("API Down")
-    agent.follow_up(FollowUpRequest(interaction_id="123", prompt="Test")) # Should handle
+    agent.follow_up(
+        FollowUpRequest(interaction_id="123", prompt="Test")
+    )  # Should handle
 
     # analyze_gaps exception
     agent.client.models.generate_content.side_effect = Exception("API Down")
     assert agent.analyze_gaps("prompt", "report") == []
-    
+
     # synthesize_findings exception
-    assert "ERROR: Synthesis failed" in agent.synthesize_findings("prompt", "main", ["sub"])
+    assert "ERROR: Synthesis failed" in agent.synthesize_findings(
+        "prompt", "main", ["sub"]
+    )
+
 
 def test_detach_process():
-    with (
-        patch("subprocess.Popen") as mock_popen,
-        patch("builtins.open", mock_open())
-    ):
+    with patch("subprocess.Popen") as mock_popen, patch("builtins.open", mock_open()):
         mock_popen.return_value.pid = 9999
         pid = detach_process(["arg1"], "/tmp/log.txt")
         assert pid == 9999
