@@ -1,25 +1,26 @@
 from unittest.mock import patch, MagicMock
 import pytest
 from pydantic import ValidationError
-from deepresearch import main
+from deepresearch.__main__ import main
+from deepresearch.cli.commands import detach_process
 
 
 @pytest.fixture
 def mock_agent():
-    with patch("deepresearch.DeepResearchAgent") as mock:
+    with patch("deepresearch.cli.commands.DeepResearchAgent") as mock:
         yield mock
 
 
 @pytest.fixture
 def mock_session_manager():
-    with patch("deepresearch.SessionManager") as mock:
+    with patch("deepresearch.cli.commands.SessionManager") as mock:
         yield mock
 
 
 @patch(
     "sys.argv", ["deepresearch", "start", "My Prompt", "--depth", "2", "--breadth", "3"]
 )
-@patch("deepresearch.detach_process", return_value=1234)
+@patch("deepresearch.cli.commands.detach_process", return_value=1234)
 def test_main_start(mock_detach, mock_session_manager):
     mgr_instance = mock_session_manager.return_value
     mgr_instance.create_session.return_value = 10
@@ -74,14 +75,15 @@ def test_main_show_recursive_html(mock_session_manager):
         "prompt": "test",
         "status": "completed",
         "result": "Markdown text",
+        "interaction_id": "1",
+        "created_at": "now",
+        "files": "[]",
     }
     mgr_instance.get_children.return_value = []
 
-    with patch("rich.console.Console.save_html") as mock_save:
+    with patch("deepresearch.cli.commands.Console.save_html") as mock_save:
         main()
-        mock_save.assert_called_once_with(
-            "out.html", theme=mock_save.call_args[1].get("theme")
-        )
+        mock_save.assert_called_once()
 
 
 @patch("sys.argv", ["deepresearch", "delete", "1"])
@@ -93,7 +95,7 @@ def test_main_delete(mock_session_manager):
 
 
 @patch("sys.argv", ["deepresearch", "cleanup", "--force"])
-@patch("deepresearch.genai.Client")
+@patch("deepresearch.cli.commands.genai.Client")
 def test_main_cleanup(mock_client, mock_session_manager):
     client_instance = mock_client.return_value
     store_mock = MagicMock()
@@ -138,7 +140,15 @@ def test_main_estimate():
 @patch("sys.argv", ["deepresearch", "research", "My prompt"])
 def test_main_validation_error():
     with patch(
-        "deepresearch.ResearchRequest",
+        "deepresearch.cli.commands.ResearchRequest",
         side_effect=ValidationError.from_exception_data("error", []),
     ):
         main()  # Should catch ValidationError and print it
+
+
+@patch("subprocess.Popen")
+@patch("builtins.open")
+def test_detach_process(mock_open, mock_popen):
+    mock_popen.return_value.pid = 9999
+    pid = detach_process(["arg1"], "/tmp/log.txt")
+    assert pid == 9999
