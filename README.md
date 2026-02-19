@@ -22,21 +22,18 @@ This tool unlocks the power of Google's most advanced autonomous research model,
 
 ## 🚀 Installation
 
-The recommended way to install is using `uv` (a modern Python package manager).
-
-### Option 1: Global Installation (Recommended)
-This makes the `deep-research` command available anywhere on your system.
-
 ```bash
-uv tool install git+https://github.com/charles-forsyth/deep-research.git
-```
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-### Option 2: Developer Setup (Clone & Run)
-
-```bash
-git clone https://github.com/charles-forsyth/deep-research.git
-cd deep-research
+# Sync dependencies and set up virtual environment
 uv sync
+
+# Run the test suite
+uv run pytest
+
+# Execute the application
+uv run deep-research
 ```
 
 ## ⚙️ Configuration
