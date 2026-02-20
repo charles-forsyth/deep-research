@@ -194,7 +194,7 @@ wheels = [
 
 [[package]]
 name = "deepresearch"
-version = "0.13.5"
+version = "0.14.1"
 source = { editable = "." }
 dependencies = [
     { name = "google-genai" },
@@ -202,6 +202,7 @@ dependencies = [
     { name = "pytest" },
     { name = "python-dotenv" },
     { name = "rich" },
+    { name = "tenacity" },
 ]
 
 [package.dev-dependencies]
@@ -218,6 +219,7 @@ requires-dist = [
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "rich", specifier = ">=14.2.0" },
+    { name = "tenacity", specifier = ">=9.1.2" },
 ]
 
 [package.metadata.requires-dev]

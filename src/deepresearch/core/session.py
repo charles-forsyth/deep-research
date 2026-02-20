@@ -1,3 +1,4 @@
+from deepresearch.utils.retry import db_retry
 import os
 import json
 import sqlite3
@@ -12,6 +13,7 @@ class SessionManager:
         self.db_path = db_path
         DatabaseSchema.init_db(self.db_path)
 
+    @db_retry()
     def create_session(
         self,
         interaction_id: str,
@@ -21,7 +23,7 @@ class SessionManager:
         parent_id: int | None = None,
         depth: int = 1,
     ) -> int:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
             cursor = conn.execute(
                 "INSERT INTO sessions (interaction_id, prompt, status, created_at, updated_at, files, pid, parent_id, depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -40,22 +42,23 @@ class SessionManager:
             return cursor.lastrowid or 0
 
     def update_session_pid(self, session_id: int, pid: int):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
             conn.execute("UPDATE sessions SET pid = ? WHERE id = ?", (pid, session_id))
             conn.commit()
 
     def update_session_interaction_id(self, session_id: int, interaction_id: str):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
             conn.execute(
                 "UPDATE sessions SET interaction_id = ?, status = 'running', updated_at = ? WHERE id = ?",
                 (interaction_id, datetime.now().isoformat(), session_id),
             )
             conn.commit()
 
+    @db_retry()
     def update_session(
         self, interaction_id: str, status: str, result: str | None = None
     ):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
             query = "UPDATE sessions SET status = ?, updated_at = ?"
             params = [status, datetime.now().isoformat()]
             if result:
@@ -68,7 +71,7 @@ class SessionManager:
             conn.commit()
 
     def append_to_result(self, interaction_id: str, new_content: str):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
             row = conn.execute(
                 "SELECT result FROM sessions WHERE interaction_id = ?",
                 (interaction_id,),
@@ -83,15 +86,16 @@ class SessionManager:
                 conn.commit()
 
     def get_children(self, session_id: int):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
             conn.row_factory = sqlite3.Row
             return conn.execute(
                 "SELECT * FROM sessions WHERE parent_id = ? ORDER BY id ASC",
                 (session_id,),
             ).fetchall()
 
+    @db_retry()
     def list_sessions(self, limit: int = 10):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
             conn.row_factory = sqlite3.Row
             sessions = conn.execute(
                 "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)
@@ -137,8 +141,9 @@ class SessionManager:
                 result.append(s_dict)
             return result
 
+    @db_retry()
     def get_session(self, session_id_or_interaction_id: str):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
             conn.row_factory = sqlite3.Row
             if str(session_id_or_interaction_id).isdigit():
                 return conn.execute(
@@ -151,7 +156,7 @@ class SessionManager:
             ).fetchone()
 
     def delete_session(self, session_id_or_interaction_id: str) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
             if str(session_id_or_interaction_id).isdigit():
                 cursor = conn.execute(
                     "DELETE FROM sessions WHERE id = ?", (session_id_or_interaction_id,)
@@ -165,7 +170,7 @@ class SessionManager:
             return cursor.rowcount > 0
 
     def update_embedding(self, session_id: int, embedding_json: str):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
             conn.execute(
                 "UPDATE sessions SET embedding = ?, updated_at = ? WHERE id = ?",
                 (embedding_json, datetime.now().isoformat(), session_id),
@@ -173,14 +178,14 @@ class SessionManager:
             conn.commit()
 
     def get_completed_sessions_without_embeddings(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
             conn.row_factory = sqlite3.Row
             return conn.execute(
                 "SELECT id, prompt, result FROM sessions WHERE status = 'completed' AND result IS NOT NULL AND embedding IS NULL"
             ).fetchall()
 
     def get_all_embeddings(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
             conn.row_factory = sqlite3.Row
             return conn.execute(
                 "SELECT id, prompt, result, embedding FROM sessions WHERE status = 'completed' AND result IS NOT NULL AND embedding IS NOT NULL"
