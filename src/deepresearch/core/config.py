@@ -7,6 +7,10 @@ xdg_config_home = os.getenv(
 )
 user_config_path = os.path.join(xdg_config_home, "deepresearch", ".env")
 user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
+
+# Load local .env if it exists, then fallback to user config
+if os.path.exists(".env"):
+    load_dotenv(".env")
 load_dotenv(user_config_path)
 
 
@@ -14,8 +18,16 @@ class DeepResearchConfig(BaseModel):
     api_key: str = Field(
         default_factory=lambda: os.getenv("GEMINI_API_KEY"), validate_default=True
     )
-    agent_name: str = "deep-research-pro-preview-12-2025"
-    followup_model: str = "gemini-3-pro-preview"
+    agent_name: str = Field(
+        default_factory=lambda: os.getenv(
+            "GEMINI_AGENT_NAME", "deep-research-pro-preview-12-2025"
+        )
+    )
+    followup_model: str = Field(
+        default_factory=lambda: os.getenv(
+            "GEMINI_FOLLOWUP_MODEL", "gemini-3-pro-preview"
+        )
+    )
     recursion_timeout: int = 600  # 10 minutes per child task
 
     @field_validator("api_key", mode="before")

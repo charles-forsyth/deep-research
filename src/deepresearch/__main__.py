@@ -34,13 +34,14 @@ Examples:
 ---------
 1. Basic Web Research (Streaming):
    %(prog)s research "History of the internet" --stream
+   %(prog)s search "History of the internet" --stream  # 'search' is an alias
 
 2. Research with Local Files (Smart Context):
    %(prog)s research "Summarize this contract" --upload ./contract.pdf --stream
 
 3. Formatted Output & Export:
-   %(prog)s research "Compare GPU prices" --format "Markdown table" --output prices.md
-   %(prog)s research "List top 5 cloud providers" --output market_data.json
+   %(prog)s search "Compare GPU prices" --format "Markdown table" --output prices.md
+   %(prog)s search "List top 5 cloud providers" --output market_data.json
 
 4. Headless Research (Fire & Forget):
    %(prog)s start "Detailed analysis of quantum computing"
@@ -73,7 +74,7 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     parser_research = subparsers.add_parser(
-        "research", help="Start a new research task"
+        "research", aliases=["search"], help="Start a new research task (alias: search)"
     )
     parser_research.add_argument("prompt", help="The research prompt or question")
     parser_research.add_argument(
@@ -171,6 +172,7 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
 
     known_commands = {
         "research",
+        "search",
         "start",
         "followup",
         "list",
@@ -198,7 +200,7 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     try:
         if args.command == "start":
             handle_start(args)
-        elif args.command == "research":
+        elif args.command in ("research", "search"):
             handle_research(args)
         elif args.command == "followup":
             handle_followup(args)

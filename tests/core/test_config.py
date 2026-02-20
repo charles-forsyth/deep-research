@@ -7,6 +7,8 @@ from deepresearch.cli.base import ResearchRequest, FollowUpRequest
 @pytest.fixture
 def mock_env_api_key(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "fake_key")
+    monkeypatch.delenv("GEMINI_AGENT_NAME", raising=False)
+    monkeypatch.delenv("GEMINI_FOLLOWUP_MODEL", raising=False)
 
 
 def test_config_initialization(mock_env_api_key):
