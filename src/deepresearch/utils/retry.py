@@ -11,10 +11,9 @@ from tenacity import (
 
 logger = logging.getLogger(__name__)
 
+
 def with_retry(
-    max_retries: int = 3,
-    base_delay: float = 2.0,
-    max_delay: float = 10.0
+    max_retries: int = 3, base_delay: float = 2.0, max_delay: float = 10.0
 ) -> Callable:
     """Decorator to retry network operations with exponential backoff."""
     return retry(
@@ -24,6 +23,7 @@ def with_retry(
         reraise=True,
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
+
 
 def db_retry() -> Callable:
     """Decorator to retry SQLite operational errors (locks)."""
