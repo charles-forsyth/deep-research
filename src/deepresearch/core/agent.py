@@ -1,3 +1,5 @@
+from deepresearch.utils.retry import with_retry
+import traceback
 import sys
 import time
 import json
@@ -295,6 +297,7 @@ class DeepResearchAgent:
             else None
         )
 
+    @with_retry()
     def follow_up(self, request: FollowUpRequest):
         self._log(f"[INFO] Sending follow-up to interaction: {request.interaction_id}")
         try:
@@ -315,6 +318,7 @@ class DeepResearchAgent:
         except Exception as e:
             self._log(f"[ERROR] Follow-up failed: {e}")
 
+    @with_retry()
     def analyze_gaps(
         self, original_prompt: str, report_text: str, limit: int = 3
     ) -> list[str]:
@@ -347,6 +351,7 @@ class DeepResearchAgent:
             self._log(f"[WARN] Failed to analyze gaps: {e}")
             return []
 
+    @with_retry()
     def synthesize_findings(
         self, original_prompt: str, main_report: str, sub_reports: list[str]
     ) -> str:
@@ -507,6 +512,8 @@ class DeepResearchAgent:
                         sub_reports.append(res)
                 except Exception as e:
                     self._log(f"{indent}[WARN] Child failed: {e}")
+                    if getattr(self.config, "debug", False):
+                        self._log(f"{indent}[DEBUG] {traceback.format_exc()}")
 
             if not_done:
                 self._log(f"{indent}[ERROR] {len(not_done)} child tasks timed out.")

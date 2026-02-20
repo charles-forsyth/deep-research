@@ -6,7 +6,7 @@ class DatabaseSchema:
     @staticmethod
     def init_db(db_path: str):
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        with sqlite3.connect(db_path) as conn:
+        with sqlite3.connect(db_path, timeout=10) as conn:
             conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS sessions (

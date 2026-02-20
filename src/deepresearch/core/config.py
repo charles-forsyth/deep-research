@@ -29,6 +29,7 @@ class DeepResearchConfig(BaseModel):
         )
     )
     recursion_timeout: int = 600  # 10 minutes per child task
+    debug: bool = False
 
     @field_validator("api_key", mode="before")
     @classmethod

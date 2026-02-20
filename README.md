@@ -16,7 +16,7 @@ This tool unlocks the power of Google's most advanced autonomous research model,
 *   **👻 Headless Mode:** Fire-and-forget research tasks (`start`) that run in the background. Perfect for long-running investigations.
 *   **🗄️ Session History:** Automatically saves your research history to a local database. List past tasks and retrieve old reports instantly.
 *   **⚡ Real-Time Streaming:** Watch the agent's "Thought Process" in real-time as it navigates the web.
-*   **🛡️ Robust & Resilient:** Auto-resumes sessions if the network drops. 
+*   **🛡️ Robust & Resilient:** Auto-resumes sessions if the network drops. Features exponential backoff, database retry logic, and an advanced debug mode for maximum stability. 
 *   **💬 Interactive Follow-ups:** Chat with the finished report to ask clarifying questions.
 *   **📦 Portable:** Auto-detects its environment. Install globally via `uv` or run locally.
 
