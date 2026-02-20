@@ -70,6 +70,106 @@ def handle_research(args):
         agent.start_research_poll(request)
 
 
+def handle_search(args):
+    import json
+    import math
+
+    config = DeepResearchConfig()
+    client = genai.Client(api_key=config.api_key)
+    mgr = SessionManager()
+
+    # 1. Backfill if needed
+    unembedded = mgr.get_completed_sessions_without_embeddings()
+    if unembedded:
+        console.print(
+            f"[bold yellow][INFO] Generating vector embeddings for {len(unembedded)} past sessions. This only happens once per new session...[/]"
+        )
+        for row in unembedded:
+            try:
+                # Truncate slightly to avoid huge token limits, though 004 handles up to 2k-10k usually
+                text_to_embed = (
+                    f"Objective: {row['prompt']}\n\nResult:\n{row['result']}"
+                )
+                text_to_embed = text_to_embed[:15000]
+                resp = client.models.embed_content(
+                    model="gemini-embedding-001", contents=text_to_embed
+                )
+                mgr.update_embedding(row["id"], json.dumps(resp.embeddings[0].values))
+            except Exception as e:
+                console.print(f"[red]Failed to embed session {row['id']}: {e}[/]")
+
+    console.print(f"[bold cyan][INFO] Searching knowledge graph for:[/] {args.query}")
+    try:
+        query_resp = client.models.embed_content(
+            model="gemini-embedding-001", contents=args.query
+        )
+        query_vec = query_resp.embeddings[0].values
+    except Exception as e:
+        console.print(f"[bold red][ERROR] Failed to embed query:[/] {e}")
+        return
+
+    all_docs = mgr.get_all_embeddings()
+    if not all_docs:
+        console.print(
+            "[yellow]No completed research sessions found in the database to search.[/]"
+        )
+        return
+
+    def cosine_sim(v1, v2):
+        dot = sum(a * b for a, b in zip(v1, v2))
+        mag1 = math.sqrt(sum(a * a for a in v1))
+        mag2 = math.sqrt(sum(b * b for b in v2))
+        return dot / (mag1 * mag2) if mag1 and mag2 else 0
+
+    scored = []
+    for doc in all_docs:
+        try:
+            doc_vec = json.loads(doc["embedding"])
+            score = cosine_sim(query_vec, doc_vec)
+            scored.append((score, doc))
+        except Exception:
+            pass
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top_k = scored[: args.limit]
+
+    if not top_k:
+        console.print("[yellow]No relevant matches found.[/]")
+        return
+
+    context = ""
+    console.print("\n[bold green]Top Matches Found:[/]")
+    for score, doc in top_k:
+        console.print(
+            f"  - Session [bold]#{doc['id']}[/] (Similarity: {score:.2f}) - {doc['prompt'][:60]}..."
+        )
+        context += f"--- SESSION {doc['id']} (Relevance Score: {score:.2f}) ---\nPROMPT: {doc['prompt']}\nRESULT:\n{doc['result']}\n\n"
+
+    console.print(
+        "\n[bold cyan][INFO] Synthesizing final answer from past research...[/]"
+    )
+    prompt = f"""User Question: {args.query}
+
+Search Results from Past Research:
+{context}
+
+INSTRUCTIONS:
+1. Answer the User Question using ONLY the information provided in the "Search Results from Past Research".
+2. You MUST cite the Session ID (e.g., "[Session #12]") for every fact you provide.
+3. If the answer cannot be found in the provided past research, clearly state that you don't have enough local data and suggest the user run a new deep research on the topic."""
+
+    try:
+        response = client.models.generate_content(
+            model=config.followup_model, contents=prompt
+        )
+        console.print("\n")
+        console.print(
+            Panel(Markdown(response.text), title="[bold]Semantic Search Result[/]")
+        )
+    except Exception as e:
+        console.print(f"[bold red][ERROR] Synthesis failed:[/] {e}")
+
+
 def handle_start(args):
     mgr = SessionManager()
     sid = mgr.create_session("pending_start", args.prompt, args.upload)
