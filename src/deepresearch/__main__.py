@@ -34,14 +34,13 @@ Examples:
 ---------
 1. Basic Web Research (Streaming):
    %(prog)s research "History of the internet" --stream
-   %(prog)s search "History of the internet" --stream  # 'search' is an alias
 
 2. Research with Local Files (Smart Context):
    %(prog)s research "Summarize this contract" --upload ./contract.pdf --stream
 
 3. Formatted Output & Export:
-   %(prog)s search "Compare GPU prices" --format "Markdown table" --output prices.md
-   %(prog)s search "List top 5 cloud providers" --output market_data.json
+   %(prog)s research "Compare GPU prices" --format "Markdown table" --output prices.md
+   %(prog)s research "List top 5 cloud providers" --output market_data.json
 
 4. Headless Research (Fire & Forget):
    %(prog)s start "Detailed analysis of quantum computing"
@@ -49,7 +48,10 @@ Examples:
    %(prog)s list
    %(prog)s show 1
 
-5. Follow-up Question:
+5. Semantic Local Database Search:
+   %(prog)s search "What did I research about quantum error correction?"
+
+6. Follow-up Question:
    %(prog)s followup 1 "Can you explain the error correction?"
 
 6. Manage History:
@@ -74,7 +76,7 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     parser_research = subparsers.add_parser(
-        "research", aliases=["search"], help="Start a new research task (alias: search)"
+        "research", help="Start a new research task"
     )
     parser_research.add_argument("prompt", help="The research prompt or question")
     parser_research.add_argument(
@@ -101,6 +103,16 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
         "--breadth", type=int, default=3, help="Max child tasks per recursion level"
     )
     parser_research.add_argument("--adopt-session", type=int, help=argparse.SUPPRESS)
+
+    parser_search = subparsers.add_parser(
+        "search", help="Semantic search over previously completed research sessions"
+    )
+    parser_search.add_argument(
+        "query", help="The query to search the knowledge graph for"
+    )
+    parser_search.add_argument(
+        "--limit", type=int, default=3, help="Max previous sessions to synthesize"
+    )
 
     parser_start = subparsers.add_parser(
         "start", help="Start a research task in the background"
@@ -200,8 +212,12 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     try:
         if args.command == "start":
             handle_start(args)
-        elif args.command in ("research", "search"):
+        elif args.command == "research":
             handle_research(args)
+        elif args.command == "search":
+            from deepresearch.cli.commands import handle_search
+
+            handle_search(args)
         elif args.command == "followup":
             handle_followup(args)
         elif args.command == "list":

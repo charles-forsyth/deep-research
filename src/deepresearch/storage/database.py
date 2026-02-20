@@ -29,5 +29,7 @@ class DatabaseSchema:
                 conn.execute("ALTER TABLE sessions ADD COLUMN parent_id INTEGER")
             if "depth" not in columns:
                 conn.execute("ALTER TABLE sessions ADD COLUMN depth INTEGER DEFAULT 1")
+            if "embedding" not in columns:
+                conn.execute("ALTER TABLE sessions ADD COLUMN embedding TEXT")
 
             conn.commit()

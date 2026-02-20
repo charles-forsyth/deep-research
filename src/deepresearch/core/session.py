@@ -163,3 +163,25 @@ class SessionManager:
                 )
             conn.commit()
             return cursor.rowcount > 0
+
+    def update_embedding(self, session_id: int, embedding_json: str):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE sessions SET embedding = ?, updated_at = ? WHERE id = ?",
+                (embedding_json, datetime.now().isoformat(), session_id),
+            )
+            conn.commit()
+
+    def get_completed_sessions_without_embeddings(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute(
+                "SELECT id, prompt, result FROM sessions WHERE status = 'completed' AND result IS NOT NULL AND embedding IS NULL"
+            ).fetchall()
+
+    def get_all_embeddings(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            return conn.execute(
+                "SELECT id, prompt, result, embedding FROM sessions WHERE status = 'completed' AND result IS NOT NULL AND embedding IS NOT NULL"
+            ).fetchall()
