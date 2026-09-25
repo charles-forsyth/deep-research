@@ -16,7 +16,6 @@ from deepresearch.utils.exporters import DataExporter
 from deepresearch.utils.logger import log_message, setup_logger
 
 
-
 def _final_text(interaction) -> str:
     """Final model text from an Interaction (steps schema, google-genai >= 2.0)."""
     text = getattr(interaction, "output_text", None)
@@ -78,13 +77,19 @@ class DeepResearchAgent:
                     content = getattr(delta, "content", None)
                     text = getattr(content, "text", None) or getattr(delta, "text", "")
                     self._log(f"\n[THOUGHT] {text}", flush=True)
-            if etype in ("interaction.completed", "interaction.complete", "error",
-                         "interaction.error", "interaction.failed",
-                         "interaction.cancelled"):
+            if etype in (
+                "interaction.completed",
+                "interaction.complete",
+                "error",
+                "interaction.error",
+                "interaction.failed",
+                "interaction.cancelled",
+            ):
                 is_complete_ref[0] = True
             elif etype == "interaction.status_update":
-                status = getattr(getattr(event, "interaction", None), "status", None) \
-                    or getattr(event, "status", None)
+                status = getattr(
+                    getattr(event, "interaction", None), "status", None
+                ) or getattr(event, "status", None)
                 if status in ("completed", "failed", "cancelled", "error"):
                     is_complete_ref[0] = True
 
@@ -182,7 +187,6 @@ class DeepResearchAgent:
                         )
                         final_text = _final_text(final_interaction)
                         if final_text:
-
                             if self.quiet:
                                 print(final_text)
 
@@ -237,25 +241,28 @@ class DeepResearchAgent:
 
         self._log("[INFO] Starting Research (Polling)...")
         try:
-            interaction = self.client.interactions.create(
+            created = self.client.interactions.create(
                 input=request.final_prompt,
                 agent=self.config.agent_name,
                 background=True,
                 tools=request.tools_config,  # type: ignore[arg-type]
             )  # type: ignore
-            self._log(f"[INFO] Started: {interaction.id}")
+            interaction_id_str = str(getattr(created, "id", "") or "")
+            if not interaction_id_str:
+                raise RuntimeError("Interactions API returned no interaction id.")
+            self._log(f"[INFO] Started: {interaction_id_str}")
 
             if hasattr(request, "adopt_session_id") and request.adopt_session_id:
                 self.session_manager.update_session_interaction_id(
-                    request.adopt_session_id, interaction.id
+                    request.adopt_session_id, interaction_id_str
                 )
             else:
                 self.session_manager.create_session(
-                    interaction.id, request.prompt, request.upload_paths
+                    interaction_id_str, request.prompt, request.upload_paths
                 )
 
             while True:
-                interaction = self.client.interactions.get(interaction.id)
+                interaction = self.client.interactions.get(interaction_id_str)
                 if interaction.status == "completed":
                     self._log("\n" + "=" * 40 + " REPORT " + "=" * 40)
                     final_text = _final_text(interaction)
