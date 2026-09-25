@@ -20,12 +20,12 @@ class DeepResearchConfig(BaseModel):
     )
     agent_name: str = Field(
         default_factory=lambda: os.getenv(
-            "GEMINI_AGENT_NAME", "deep-research-pro-preview-12-2025"
+            "GEMINI_AGENT_NAME", "deep-research-preview-04-2026"
         )
     )
     followup_model: str = Field(
         default_factory=lambda: os.getenv(
-            "GEMINI_FOLLOWUP_MODEL", "gemini-3-pro-preview"
+            "GEMINI_FOLLOWUP_MODEL", "gemini-3.1-pro-preview"
         )
     )
     recursion_timeout: int = 600  # 10 minutes per child task

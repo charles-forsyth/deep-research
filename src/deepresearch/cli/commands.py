@@ -513,7 +513,7 @@ def handle_estimate(args):
         total_output / 1_000_000 * COST_OUTPUT_1M
     )
 
-    table = Table(title="Cost Estimate (Gemini 3 Pro)")
+    table = Table(title="Cost Estimate (Gemini Deep Research)")
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="bold yellow")
 

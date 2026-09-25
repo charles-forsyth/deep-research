@@ -152,3 +152,28 @@ def test_process_stream_output(capsys):
     captured = capsys.readouterr()
     assert "Hello " in captured.out
     assert "[THOUGHT] Thinking..." in captured.out
+
+
+def test_process_stream_new_schema(capsys):
+    """google-genai >= 2.0 steps schema: step.delta + interaction.completed."""
+    agent = DeepResearchAgent(MagicMock())
+    start = MagicMock(event_type="interaction.created", event_id=None)
+    start.interaction.id = "int_1"
+    delta = MagicMock(event_type="step.delta", event_id="e2")
+    delta.delta.type = "text"
+    delta.delta.text = "Report body"
+    done = MagicMock(event_type="interaction.completed", event_id="e3")
+    ids, last, complete = [None], [None], [False]
+    agent._process_stream([start, delta, done], ids, last, complete)
+    assert ids[0] == "int_1" and last[0] == "e3" and complete[0] is True
+    assert "Report body" in capsys.readouterr().out
+
+
+def test_final_text_from_steps():
+    from deepresearch.core.agent import _final_text
+
+    step = MagicMock(type="model_output")
+    step.content = [MagicMock(text="Final "), MagicMock(text="answer")]
+    inter = MagicMock(output_text=None, steps=[MagicMock(type="thought"), step])
+    assert _final_text(inter) == "Final answer"
+    assert _final_text(MagicMock(output_text="direct")) == "direct"
