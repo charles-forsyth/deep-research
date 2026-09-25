@@ -16,6 +16,18 @@ from deepresearch.utils.exporters import DataExporter
 from deepresearch.utils.logger import log_message, setup_logger
 
 
+def _final_text(interaction) -> str:
+    """Final model text from an Interaction (steps schema, google-genai >= 2.0)."""
+    text = getattr(interaction, "output_text", None)
+    if text:
+        return str(text)
+    for step in reversed(getattr(interaction, "steps", None) or []):
+        if getattr(step, "type", None) == "model_output":
+            parts = [getattr(c, "text", "") for c in (step.content or [])]
+            return "".join(p for p in parts if p)
+    return ""
+
+
 class DeepResearchAgent:
     def __init__(
         self, config: DeepResearchConfig | None = None, logger=None, quiet: bool = False
@@ -42,7 +54,8 @@ class DeepResearchAgent:
         adopt_session_id: int | None = None,
     ):
         for event in event_stream:
-            if event.event_type == "interaction.start":
+            etype = getattr(event, "event_type", None) or getattr(event, "type", None)
+            if etype in ("interaction.created", "interaction.start"):
                 interaction_id_ref[0] = event.interaction.id
                 self._log(f"\n[INFO] Interaction started: {event.interaction.id}")
                 if adopt_session_id:
@@ -54,15 +67,31 @@ class DeepResearchAgent:
                         event.interaction.id, request_prompt, upload_paths
                     )
 
-            if event.event_id:
+            if getattr(event, "event_id", None):
                 last_event_id_ref[0] = event.event_id
-            if event.event_type == "content.delta":
-                if event.delta.type == "text":
-                    self._log(event.delta.text, end="")
-                elif event.delta.type == "thought_summary":
-                    self._log(f"\n[THOUGHT] {event.delta.content.text}", flush=True)
-            if event.event_type in ["interaction.complete", "error"]:
+            if etype in ("step.delta", "content.delta"):
+                delta = event.delta
+                if delta.type == "text":
+                    self._log(delta.text, end="")
+                elif delta.type == "thought_summary":
+                    content = getattr(delta, "content", None)
+                    text = getattr(content, "text", None) or getattr(delta, "text", "")
+                    self._log(f"\n[THOUGHT] {text}", flush=True)
+            if etype in (
+                "interaction.completed",
+                "interaction.complete",
+                "error",
+                "interaction.error",
+                "interaction.failed",
+                "interaction.cancelled",
+            ):
                 is_complete_ref[0] = True
+            elif etype == "interaction.status_update":
+                status = getattr(
+                    getattr(event, "interaction", None), "status", None
+                ) or getattr(event, "status", None)
+                if status in ("completed", "failed", "cancelled", "error"):
+                    is_complete_ref[0] = True
 
     def start_research_stream(
         self, request: ResearchRequest, auto_update_status: bool = True
@@ -156,11 +185,8 @@ class DeepResearchAgent:
                         final_interaction = self.client.interactions.get(
                             id=interaction_id[0]
                         )
-                        if final_interaction.outputs:
-                            final_text = str(
-                                getattr(final_interaction.outputs[-1], "text", "")
-                            )
-
+                        final_text = _final_text(final_interaction)
+                        if final_text:
                             if self.quiet:
                                 print(final_text)
 
@@ -215,32 +241,31 @@ class DeepResearchAgent:
 
         self._log("[INFO] Starting Research (Polling)...")
         try:
-            interaction = self.client.interactions.create(
+            created = self.client.interactions.create(
                 input=request.final_prompt,
                 agent=self.config.agent_name,
                 background=True,
                 tools=request.tools_config,  # type: ignore[arg-type]
             )  # type: ignore
-            self._log(f"[INFO] Started: {interaction.id}")
+            interaction_id_str = str(getattr(created, "id", "") or "")
+            if not interaction_id_str:
+                raise RuntimeError("Interactions API returned no interaction id.")
+            self._log(f"[INFO] Started: {interaction_id_str}")
 
             if hasattr(request, "adopt_session_id") and request.adopt_session_id:
                 self.session_manager.update_session_interaction_id(
-                    request.adopt_session_id, interaction.id
+                    request.adopt_session_id, interaction_id_str
                 )
             else:
                 self.session_manager.create_session(
-                    interaction.id, request.prompt, request.upload_paths
+                    interaction_id_str, request.prompt, request.upload_paths
                 )
 
             while True:
-                interaction = self.client.interactions.get(interaction.id)
+                interaction = self.client.interactions.get(interaction_id_str)
                 if interaction.status == "completed":
                     self._log("\n" + "=" * 40 + " REPORT " + "=" * 40)
-                    final_text = (
-                        str(getattr(interaction.outputs[-1], "text", ""))
-                        if interaction.outputs
-                        else ""
-                    )
+                    final_text = _final_text(interaction)
 
                     if len(final_text) > 2000:
                         self._log(
@@ -306,8 +331,8 @@ class DeepResearchAgent:
                 model=self.config.followup_model,
                 previous_interaction_id=request.interaction_id,
             )
-            if interaction.outputs:
-                response_text = str(getattr(interaction.outputs[-1], "text", ""))
+            response_text = _final_text(interaction)
+            if response_text:
                 self._log(response_text)
 
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")

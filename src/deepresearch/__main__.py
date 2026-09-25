@@ -25,7 +25,7 @@ def main():
     desc = """
 Gemini Deep Research Agent CLI
 ==============================
-A powerful tool to conduct autonomous, multi-step research using Gemini 3 Pro.
+A powerful tool to conduct autonomous, multi-step research using the Gemini Deep Research agent.
 Support web search, local file ingestion, streaming thoughts, and follow-ups.
     """
 

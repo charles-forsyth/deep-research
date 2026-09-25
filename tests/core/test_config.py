@@ -14,7 +14,7 @@ def mock_env_api_key(monkeypatch):
 def test_config_initialization(mock_env_api_key):
     config = DeepResearchConfig()
     assert config.api_key == "fake_key"
-    assert config.agent_name == "deep-research-pro-preview-12-2025"
+    assert config.agent_name == "deep-research-preview-04-2026"
 
 
 def test_config_missing_key(monkeypatch):

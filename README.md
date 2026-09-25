@@ -10,7 +10,7 @@ This tool unlocks the power of Google's most advanced autonomous research model,
 
 ## ✨ Key Features
 
-*   **🚀 Autonomous Deep Research:** Powered by Gemini 3 Pro, it plans, searches, reads, and synthesizes complex topics.
+*   **🚀 Autonomous Deep Research:** Powered by the Gemini Deep Research agent (deep-research-preview-04-2026; set GEMINI_AGENT_NAME=deep-research-max-preview-04-2026 for maximum depth), it plans, searches, reads, and synthesizes complex topics.
 *   **📂 Smart Context Ingestion:** Instantly analyze local PDFs, text files, or folders. The tool handles cloud upload/cleanup automatically.
 *   **💾 Structured Data Export:** Save reports directly to JSON or CSV files with automatic schema enforcement (`--output`).
 *   **👻 Headless Mode:** Fire-and-forget research tasks (`start`) that run in the background. Perfect for long-running investigations.
