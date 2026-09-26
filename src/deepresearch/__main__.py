@@ -21,51 +21,95 @@ def get_version():
     return __version__
 
 
-def main():
-    desc = """
+DESCRIPTION = """
 Gemini Deep Research Agent CLI
 ==============================
-A powerful tool to conduct autonomous, multi-step research using the Gemini Deep Research agent.
-Support web search, local file ingestion, streaming thoughts, and follow-ups.
-    """
+Conduct autonomous, multi-step research with the Gemini Deep Research agent.
+Supports web search, local file ingestion, streaming thoughts, recursive
+research, and follow-up questions.
 
-    epilog = """
+A bare prompt runs `research`:  %(prog)s "History of the internet"
+"""
+
+EPILOG = """
 Examples:
 ---------
-1. Basic Web Research (Streaming):
+1. Basic web research (streaming):
    %(prog)s research "History of the internet" --stream
 
-2. Research with Local Files (Smart Context):
+2. Research with local files:
    %(prog)s research "Summarize this contract" --upload ./contract.pdf --stream
 
-3. Formatted Output & Export:
+3. Formatted output and export (format is chosen by file extension):
    %(prog)s research "Compare GPU prices" --format "Markdown table" --output prices.md
    %(prog)s research "List top 5 cloud providers" --output market_data.json
 
-4. Headless Research (Fire & Forget):
+4. Recursive research (check the cost first):
+   %(prog)s estimate "State of solid-state batteries" --depth 2 --breadth 3
+   %(prog)s research "State of solid-state batteries" --depth 2 --breadth 3
+
+5. Headless research (fire and forget):
    %(prog)s start "Detailed analysis of quantum computing"
-   # ... process detaches ...
    %(prog)s list
    %(prog)s show 1
 
-5. Semantic Local Database Search:
+6. Semantic search over past research:
    %(prog)s search "What did I research about quantum error correction?"
 
-6. Follow-up Question:
+7. Follow-up question on session #1:
    %(prog)s followup 1 "Can you explain the error correction?"
 
-6. Manage History:
-   %(prog)s list
-   %(prog)s show 1
+8. Manage history:
+   %(prog)s tree 1                      # session #1 and its child tasks
+   %(prog)s show 1 --recursive --save report.html
+   %(prog)s delete 1
 
 Configuration:
 --------------
-Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
-    """
+GEMINI_API_KEY is read from ./.env first, then ~/.config/deepresearch/.env
+(or $XDG_CONFIG_HOME/deepresearch/.env). `%(prog)s auth login` writes the
+key to that user file. Session history lives in history.db in the same folder.
+"""
 
+ID_HELP = "Session ID (integer, from `list`) or Interaction ID"
+DEPTH_HELP = (
+    "Recursion depth; 1 = a single research task, no recursion (default: %(default)s)"
+)
+BREADTH_HELP = (
+    "Max follow-up child tasks per recursion level. Total tasks grow as "
+    "1 + B + B^2 + ... for depth levels (default: %(default)s)"
+)
+UPLOAD_HELP = (
+    "Local files or folders to upload into a temporary File Search Store "
+    "(deleted when the task finishes)"
+)
+STORES_HELP = (
+    "Names of existing File Search Stores to search (e.g. fileSearchStores/abc123)"
+)
+FORMAT_HELP = 'Extra output instructions for the report, e.g. "Markdown table"'
+OUTPUT_HELP = (
+    "Save the report to a file. .json is parsed and pretty-printed "
+    "(raw text goes to <file>.raw if it is not valid JSON); .csv takes the CSV "
+    "code block; anything else is saved as plain text"
+)
+
+
+def _add_research_options(p: argparse.ArgumentParser) -> None:
+    """Options shared by `research` and `start`."""
+    p.add_argument("prompt", help="The research prompt or question")
+    p.add_argument("--stores", nargs="+", help=STORES_HELP)
+    p.add_argument("--upload", nargs="+", help=UPLOAD_HELP)
+    p.add_argument("--format", help=FORMAT_HELP)
+    p.add_argument("--output", help=OUTPUT_HELP)
+    p.add_argument("--depth", type=int, default=1, help=DEPTH_HELP)
+    p.add_argument("--breadth", type=int, default=3, help=BREADTH_HELP)
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=desc,
-        epilog=epilog,
+        prog="deep-research",
+        description=DESCRIPTION,
+        epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -76,111 +120,149 @@ Set GEMINI_API_KEY in a local .env file or at ~/.config/deepresearch/.env
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     parser_research = subparsers.add_parser(
-        "research", help="Start a new research task"
+        "research",
+        help="Run a research task in the foreground",
+        description="Run a research task in the foreground and print the report.",
     )
-    parser_research.add_argument("prompt", help="The research prompt or question")
+    _add_research_options(parser_research)
     parser_research.add_argument(
         "-q",
         "--quiet",
         action="store_true",
-        help="Suppress logs, output only final report",
+        help="Suppress logs, output only the final report",
     )
     parser_research.add_argument(
-        "--stream", action="store_true", help="Stream the agent's thought process"
-    )
-    parser_research.add_argument(
-        "--stores", nargs="+", help="Existing Cloud File Search Store names"
-    )
-    parser_research.add_argument(
-        "--upload", nargs="+", help="Local file/folder paths to upload"
-    )
-    parser_research.add_argument("--format", help="Specific output instructions")
-    parser_research.add_argument("--output", help="Save report to file")
-    parser_research.add_argument(
-        "--depth", type=int, default=1, help="Recursive research depth"
-    )
-    parser_research.add_argument(
-        "--breadth", type=int, default=3, help="Max child tasks per recursion level"
+        "--stream",
+        action="store_true",
+        help="Stream the agent's thought process (ignored when --depth > 1)",
     )
     parser_research.add_argument("--adopt-session", type=int, help=argparse.SUPPRESS)
 
     parser_search = subparsers.add_parser(
-        "search", help="Semantic search over previously completed research sessions"
+        "search",
+        help="Semantic search over past research sessions",
+        description=(
+            "Embed the query, find the most similar completed sessions in the "
+            "local history, and synthesize a cited answer from them. The first "
+            "run embeds any sessions that have no embedding yet."
+        ),
     )
+    parser_search.add_argument("query", help="The question to search past research for")
     parser_search.add_argument(
-        "query", help="The query to search the knowledge graph for"
-    )
-    parser_search.add_argument(
-        "--limit", type=int, default=3, help="Max previous sessions to synthesize"
+        "--limit",
+        type=int,
+        default=3,
+        help="Number of best-matching sessions to synthesize from (default: %(default)s)",
     )
 
     parser_start = subparsers.add_parser(
-        "start", help="Start a research task in the background"
+        "start",
+        help="Run a research task in the background",
+        description=(
+            "Start a research task as a detached background process. Logs go to "
+            "~/.config/deepresearch/logs/session_<id>.log; check progress with "
+            "`list` and read the result with `show`."
+        ),
     )
-    parser_start.add_argument("prompt", help="The research prompt or question")
-    parser_start.add_argument(
-        "--upload", nargs="+", help="Local file/folder paths to upload"
-    )
-    parser_start.add_argument("--format", help="Specific output instructions")
-    parser_start.add_argument("--output", help="Save report to file")
-    parser_start.add_argument(
-        "--depth", type=int, default=1, help="Recursive research depth"
-    )
-    parser_start.add_argument(
-        "--breadth", type=int, default=3, help="Max child tasks per recursion level"
-    )
+    _add_research_options(parser_start)
 
-    parser_followup = subparsers.add_parser("followup", help="Ask a follow-up question")
-    parser_followup.add_argument(
-        "id", help="The Interaction ID from a previous research task"
+    parser_followup = subparsers.add_parser(
+        "followup",
+        help="Ask a follow-up question on a previous session",
+        description="Ask a follow-up question in the context of a previous session.",
     )
+    parser_followup.add_argument("id", help=ID_HELP)
     parser_followup.add_argument("prompt", help="The follow-up question")
 
     parser_list = subparsers.add_parser("list", help="List recent research sessions")
     parser_list.add_argument(
-        "--limit", type=int, default=10, help="Number of sessions to show"
+        "--limit",
+        type=int,
+        default=10,
+        help="Number of sessions to show (default: %(default)s)",
     )
 
     parser_show = subparsers.add_parser(
-        "show", help="Show details of a previous session"
+        "show", help="Show the report and details of a previous session"
     )
-    parser_show.add_argument("id", help="Session ID (integer) or Interaction ID")
+    parser_show.add_argument("id", help=ID_HELP)
     parser_show.add_argument(
-        "--save", help="Save the colorful report to HTML or Text file"
+        "--save",
+        metavar="FILE",
+        help="Also save the output; .html keeps the colors, any other extension is plain text",
     )
     parser_show.add_argument(
         "--recursive", action="store_true", help="Include all child session reports"
     )
 
     parser_delete = subparsers.add_parser(
-        "delete", help="Delete a session from history"
+        "delete",
+        help="Delete a session from local history",
+        description=(
+            "Delete a session from the local history database. There is no "
+            "confirmation prompt. Child sessions are not deleted."
+        ),
     )
-    parser_delete.add_argument("id", help="Session ID (integer) or Interaction ID")
+    parser_delete.add_argument("id", help=ID_HELP)
 
     parser_cleanup = subparsers.add_parser(
-        "cleanup", help="Delete stale cloud resources (GC)"
+        "cleanup",
+        help="Delete ALL File Search Stores on this API key",
+        description=(
+            "Delete ALL File Search Stores on this API key, with their "
+            "documents. That includes stores you pass with --stores, "
+            "not only temporary ones left behind by crashed uploads. Asks for "
+            "confirmation unless --force is given."
+        ),
     )
     parser_cleanup.add_argument(
         "--force", action="store_true", help="Delete without confirmation"
     )
 
-    parser_tree = subparsers.add_parser("tree", help="Visualize session hierarchy")
-    parser_tree.add_argument("id", nargs="?", help="Root Session ID (optional)")
+    parser_tree = subparsers.add_parser(
+        "tree",
+        help="Show sessions and their recursive child tasks as a tree",
+    )
+    parser_tree.add_argument(
+        "id",
+        nargs="?",
+        help="Root session ID (integer). Omit to show the 10 most recent trees",
+    )
 
-    parser_auth = subparsers.add_parser("auth", help="Manage authentication")
+    parser_auth = subparsers.add_parser(
+        "auth",
+        help="Save or remove the Gemini API key",
+        description=(
+            "login: prompt for a Gemini API key and write it to "
+            "~/.config/deepresearch/.env (overwrites that file). "
+            "logout: delete that file. A ./.env in the current directory still "
+            "takes precedence."
+        ),
+    )
     parser_auth.add_argument(
         "action", choices=["login", "logout"], help="Action to perform"
     )
 
     parser_estimate = subparsers.add_parser(
-        "estimate", help="Estimate cost of a research task"
+        "estimate",
+        help="Estimate the cost of a research task (no API calls)",
+        description=(
+            "Rough cost estimate from the recursion shape and upload size, using "
+            "fixed per-task token averages. Makes no API calls."
+        ),
     )
     parser_estimate.add_argument("prompt", help="The research prompt or question")
-    parser_estimate.add_argument("--depth", type=int, default=1, help="Recursive depth")
+    parser_estimate.add_argument("--depth", type=int, default=1, help=DEPTH_HELP)
+    parser_estimate.add_argument("--breadth", type=int, default=3, help=BREADTH_HELP)
     parser_estimate.add_argument(
-        "--breadth", type=int, default=3, help="Recursive breadth"
+        "--upload", nargs="+", help="Files or folders you plan to upload"
     )
-    parser_estimate.add_argument("--upload", nargs="+", help="Files to upload")
+
+    return parser
+
+
+def main():
+    parser = build_parser()
 
     known_commands = {
         "research",
