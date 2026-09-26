@@ -177,3 +177,39 @@ def test_final_text_from_steps():
     inter = MagicMock(output_text=None, steps=[MagicMock(type="thought"), step])
     assert _final_text(inter) == "Final answer"
     assert _final_text(MagicMock(output_text="direct")) == "direct"
+
+
+def test_recursive_root_adopts_precreated_row(monkeypatch, tmp_path):
+    """`start --depth 2` / dashboard runs must fill the row they pre-created."""
+    from unittest.mock import MagicMock
+
+    from deepresearch.cli.base import ResearchRequest
+    from deepresearch.core import agent as agent_mod
+    from deepresearch.core.config import DeepResearchConfig
+    from deepresearch.core.session import SessionManager
+
+    db = str(tmp_path / "h.db")
+    monkeypatch.setattr(agent_mod, "SessionManager", lambda: SessionManager(db))
+    monkeypatch.setattr(agent_mod.genai, "Client", MagicMock())
+    a = agent_mod.DeepResearchAgent(config=DeepResearchConfig(api_key="k"), quiet=True)
+    seen = {}
+
+    def fake_stream(req, auto_update_status=True):
+        seen["adopt"] = req.adopt_session_id
+        a.session_manager.update_session_interaction_id(
+            req.adopt_session_id, "iid-root"
+        )
+        a.session_manager.update_session("iid-root", "completed", "root report")
+        return "iid-root"
+
+    monkeypatch.setattr(a, "start_research_stream", fake_stream)
+    monkeypatch.setattr(a, "analyze_gaps", lambda *x, **k: [])
+    sid = a.session_manager.create_session("pending_start", "q")
+    a.start_recursive_research(
+        ResearchRequest(prompt="q", depth=2, adopt_session_id=sid)
+    )
+    assert seen["adopt"] == sid
+    row = a.session_manager.get_session(sid)
+    assert row["interaction_id"] == "iid-root" and row["result"] == "root report"
+    with __import__("sqlite3").connect(db) as c:
+        assert c.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1

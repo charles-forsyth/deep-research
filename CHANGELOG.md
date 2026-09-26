@@ -13,6 +13,14 @@ releases.
   upload-artifact v7. Dependabot groups minor/patch updates; ruff and mypy upgrades are taken
   deliberately because they change lint and type rules.
 
+## [0.17.5] - 2026-09-26
+
+### Fixed
+- Recursive runs (`--depth 2+`) started from the dashboard or `deep-research start`
+  wrote the report into a new row and left the pre-created row empty; after the
+  run the empty row showed as "crashed" and the real report looked like a second
+  run. The root node now adopts the pre-created row.
+
 ## [0.17.4] - 2026-09-26
 
 ### Fixed

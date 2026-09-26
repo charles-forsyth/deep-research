@@ -1,6 +1,6 @@
 [project]
 name = "deepresearch"
-version = "0.17.4"
+version = "0.17.5"
 description = "CLI and self-hosted web workstation for Google's Gemini Deep Research agent: launch, watch, read, annotate, search and listen to cited research reports."
 readme = "README.md"
 requires-python = ">=3.12"
