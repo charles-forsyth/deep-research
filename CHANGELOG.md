@@ -13,6 +13,16 @@ releases.
   upload-artifact v7. Dependabot groups minor/patch updates; ruff and mypy upgrades are taken
   deliberately because they change lint and type rules.
 
+## [0.17.4] - 2026-09-26
+
+### Fixed
+- Follow-up questions failed with "API key not valid" when the dashboard had
+  been started from a folder containing an old `.env`: the CLI had already
+  loaded that key before the child process started, so changing the child's
+  folder was not enough. Background dashboard processes now build their
+  environment with the user settings file taking precedence over a folder
+  `.env` (keys exported in the real shell still win).
+
 ## [0.17.3] - 2026-09-26
 
 ### Fixed
