@@ -7,6 +7,10 @@ releases.
 
 ## [Unreleased]
 
+### Added
+- `docs/SPEC.md`: complete system specification (requirements with test mapping, architecture,
+  data model, CLI, HTTP API, cost model, security model, 19 known gaps).
+
 ### Changed
 - Dependencies: pydantic 2.13.5, python-dotenv 1.2.3, tenacity 9.1.4, pytest 9.1.1, pytest-cov 7.1.0,
   plus security patches for urllib3, idna, pyasn1 and anyio. GitHub Actions: checkout v7,

@@ -170,8 +170,9 @@ flowchart LR
 ```
 
 The dashboard adds no Python dependencies: it is a standard-library `ThreadingHTTPServer` serving
-vanilla JavaScript (with vendored `marked` and `DOMPurify`). See [ARCHITECTURE.md](ARCHITECTURE.md)
-and [docs/DASHBOARD_DESIGN.md](docs/DASHBOARD_DESIGN.md).
+vanilla JavaScript (with vendored `marked` and `DOMPurify`). See [ARCHITECTURE.md](ARCHITECTURE.md),
+[docs/DASHBOARD_DESIGN.md](docs/DASHBOARD_DESIGN.md) and the full system specification in
+[docs/SPEC.md](docs/SPEC.md).
 
 ## Development
 
