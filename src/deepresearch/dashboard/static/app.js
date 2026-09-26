@@ -967,7 +967,18 @@ $("#palette-input").addEventListener("keydown", (e) => {
 $("#palette-back").addEventListener("click", (e) => { if (e.target.id === "palette-back") $("#palette-back").hidden = true; });
 
 // ---------------------------------------------------------------- wiring
-$("#btn-new").onclick = () => openLaunch();
+// Drawers for narrow screens (archive left, inspector right).
+function drawer(side) {
+  const b = document.body, cls = `show-${side}`, other = side === "left" ? "show-right" : "show-left";
+  b.classList.remove(other);
+  b.classList.toggle(cls);
+  if (side === "right" && b.classList.contains(cls)) renderRight();
+}
+function closeDrawers() { document.body.classList.remove("show-left", "show-right"); }
+$("#btn-left").onclick = () => drawer("left");
+$("#btn-right").onclick = () => drawer("right");
+$("#scrim").onclick = closeDrawers;
+$("#btn-new").onclick = () => { closeDrawers(); openLaunch(); };
 $("#btn-palette").onclick = openPalette;
 $("#q").addEventListener("input", debounce((e) => { S.q = e.target.value.trim(); loadSessions(); }, 250));
 $("#roots-only").onchange = (e) => { S.rootsOnly = e.target.checked; renderSessionList(); };
@@ -975,7 +986,7 @@ $("#filter-seg").addEventListener("click", (e) => {
   const b = e.target.closest("button"); if (!b) return;
   S.filter = b.dataset.f; $$("#filter-seg button").forEach((x) => x.classList.toggle("on", x === b)); renderSessionList();
 });
-$("#session-list").addEventListener("click", (e) => { const el = e.target.closest(".sess"); if (el) openSession(el.dataset.id); });
+$("#session-list").addEventListener("click", (e) => { const el = e.target.closest(".sess"); if (el) { closeDrawers(); openSession(el.dataset.id); } });
 $("#tabs").addEventListener("click", (e) => {
   const x = e.target.closest("[data-close]"); if (x) { e.stopPropagation(); return closeTab(x.dataset.close); }
   const t = e.target.closest(".tab"); if (t) { if (NB.dirty) NB.saveNow(); S.active = t.dataset.key; saveTabs(); renderTabs(); renderStage(); }

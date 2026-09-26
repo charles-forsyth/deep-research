@@ -11,6 +11,7 @@
 <div id="app">
 
   <header class="topbar">
+    <button class="btn ghost mnav l" id="btn-left" title="Archive" aria-label="Show archive">&#9776;</button>
     <div class="brand">
       <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
         <circle cx="16" cy="16" r="13" /><circle cx="16" cy="16" r="8" />
@@ -28,7 +29,8 @@
       <button class="btn ghost" id="btn-palette" title="Command palette (Ctrl+K)">
         <span class="kbd">Ctrl K</span> Commands
       </button>
-      <button class="btn primary" id="btn-new">+ New research</button>
+      <button class="btn ghost mnav r" id="btn-right" title="Inspector" aria-label="Show inspector">Intel</button>
+      <button class="btn primary" id="btn-new">+<span class="lbl"> New research</span></button>
     </div>
   </header>
 
@@ -73,6 +75,8 @@
     </aside>
 
   </div>
+
+  <div class="scrim" id="scrim"></div>
 
   <footer class="statusbar">
     <span id="sb-left">ready</span>
