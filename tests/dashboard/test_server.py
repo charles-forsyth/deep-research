@@ -269,4 +269,8 @@ def test_unknown_route_and_method(app):
 def test_estimate_matches_cli_model():
     e = estimate(depth=2, breadth=3)
     assert e["nodes"] == 4  # 1 + 3
-    assert e["cost_usd"] == round(4 * 60_000 / 1e6 * 2 + 4 * 4_000 / 1e6 * 12, 2)
+    cached = 4 * 250_000 * 0.6
+    expected = (4 * 250_000 - cached) / 1e6 * 2 + cached / 1e6 * 0.2
+    expected += 4 * 60_000 / 1e6 * 12
+    assert e["cost_usd"] == round(expected, 2)
+    assert 0.8 < estimate(1, 3)["cost_usd"] < 1.2  # ~$0.95 per agent run

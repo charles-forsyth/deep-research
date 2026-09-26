@@ -40,20 +40,29 @@ ask -> watch -> read -> mark up -> collect -> reuse
   Launches use the same detached `--adopt-session` path as the CLI, so the two never drift.
 - **Honest status.** Runs whose process died show as crashed, never "running" forever.
 
-## Next: five improvements
+## Shipped in v0.17
 
-1. **Citation hover cards.** Hovering or tapping `[cite: 34]` shows the source title, domain and
-   the passage that supports the claim, with a link out. Uncited paragraphs get a faint margin
-   mark so unsupported claims are visible at a glance.
-2. **Research map.** A zoomable graph of the whole archive: sessions as nodes, linked by shared
-   sources and topic similarity (from the existing embeddings). Clusters show what you already
-   know; clicking a node opens the report.
-3. **Re-run and compare.** One click re-runs an old question. The two reports are shown side by
-   side with what changed highlighted: new findings, claims that no longer hold, new sources.
-   This turns one-off research into tracked topics.
-4. **Live run timeline.** Replace the raw log with a visual timeline: each sub-task as a lane,
-   sources appearing as they are found, a running elapsed time and cost against the estimate, and
-   a browser notification when the run finishes.
-5. **Brief builder.** Turn a notebook into a finished product: one-page executive brief, slide
-   outline, or email, with every quote keeping its citation back to the source session. Optional
-   read-aloud audio version of any report or brief for listening on the go.
+1. **Citation cards.** `[cite: 34]` markers become chips; hover or tap shows the claim and the
+   numbered source it points to, with a link out. Paragraphs that contain numbers or names but no
+   citation get an amber edge. (The reports do not store the passage on the source page, so the
+   card shows the source and the sentence it supports.)
+2. **Research map.** Every indexed report as a dot, placed by embedding similarity and linked to
+   its closest neighbours; clusters are coloured. Pan, zoom, highlight by keyword, click to open.
+3. **Re-run and compare.** One click re-runs a question (with a cost estimate first) and links the
+   two runs. Compare shows sources dropped/added, marks new paragraphs in green, and can ask Gemini
+   for a "what changed" summary.
+4. **Live timeline.** Replaces the raw log (still available underneath): elapsed time, agent
+   lanes, sources, the agent's thought stream with timestamps, errors, and a browser notification
+   when a run finishes. **Actual cost** comes from Google's own token usage for the run and sits
+   next to the estimate.
+5. **Brief builder.** A report or notebook becomes an executive brief, slide outline or email,
+   saved as a new notebook with citations kept.
+6. **Read aloud.** "Listen" reads the report word for word in the browser's own voice (free,
+   offline), highlighting each paragraph, with speed, voice, skip and pause.
+7. **Audio export.** Export -> Audio makes an MP3 with a Gemini voice (8 voices): the full text
+   word for word, or an AI-written 2-3 minute spoken summary. Cost is shown before you create it;
+   audio is cached and listed on the report.
+
+Estimates were recalibrated in v0.17: the old model assumed 60k in / 4k out per agent run, about
+10x below real runs. It now uses Google's published figures (~250k in, ~60% cached, ~60k out),
+which match measured runs.
