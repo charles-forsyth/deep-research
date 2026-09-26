@@ -130,9 +130,33 @@ deep-research show 1 --save report.html
 # Delete a session
 deep-research delete 1
 
-# Garbage Collection (Cleanup Stale Cloud Files)
+# Delete ALL File Search Stores on this API key (asks first)
 deep-research cleanup
 ```
+
+### 8. Web Dashboard (Research Workstation)
+A dark, browser-based workstation for everything the CLI does, plus a work area for the results.
+
+```bash
+deep-research dashboard --start      # background, http://<this-host>:7420
+deep-research dashboard --status
+deep-research dashboard --restart
+deep-research dashboard --stop
+deep-research dashboard --start --host 127.0.0.1 --port 8080   # local only
+```
+
+- **Launch** research with depth/breadth sliders, a live cost estimate, prompt templates, drag-and-drop document upload, and existing File Search Stores. Runs are ordinary background sessions, so they show up in `deep-research list` and survive a dashboard restart.
+- **Watch** runs think in real time in the live log panel. Cancel a run from the toolbar.
+- **Read** reports in a typeset reader with outline navigation, find-in-report, a source list (grounding redirects grouped by their real domain), and the sub-task tree for recursive runs.
+- **Annotate**: select any passage to highlight it in one of four colors, attach a note, copy it, send it to a notebook as a cited quote, or ask a follow-up about it.
+- **Notebooks**: a Markdown editor with a live preview that autosaves. Collect quotes from many sessions into one working document.
+- **Semantic search** over past research, with a cited, synthesized answer.
+- **Export** Markdown (with annotations, optionally with every sub-report), standalone HTML, JSON, or print to PDF.
+- Star and tag sessions, a command palette (`Ctrl+K`), and keyboard shortcuts.
+
+Notebooks, annotations, stars and tags are stored in extra tables in `~/.config/deepresearch/history.db`. The server log is `~/.config/deepresearch/logs/dashboard.log`.
+
+**Security:** the dashboard has no login. By default it binds `0.0.0.0`, so anyone who can reach port 7420 can read your research and launch runs on your API key. Use `--host 127.0.0.1` (or a firewall/Tailscale) if the machine is on an untrusted network.
 
 ## 💡 Use Case Gallery
 

@@ -32,4 +32,4 @@ A strategic vision to transform `deep-research` into a specialized, high-integri
 - [x] **Smart Context Ingestion:** Auto-upload local files/folders (`--upload`).
 - [x] **Headless Mode:** Fire-and-forget background execution with robust PID tracking.
 - [x] **Session Management:** SQLite history with WAL mode concurrency and `tree` visualization.
-- [x] **Garbage Collection:** Auto-cleanup of cloud resources (`cleanup`).
+- [x] **Garbage Collection:** Auto-cleanup of cloud resources (`cleanup`).- [x] **Web Dashboard (v0.16.0):** `deep-research dashboard --start/--stop/--restart`, a dark browser workstation on port 7420 with launch, live logs, annotation, notebooks, semantic search and export.
