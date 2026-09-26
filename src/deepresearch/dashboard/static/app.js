@@ -141,13 +141,13 @@ async function loadNotebooks() {
 function renderTelemetry() {
   const st = S.stats?.by_status || {};
   const live = S.sessions.filter((s) => s.status === "running").length;
-  const key = S.health?.api_key;
+  const key = S.health?.api_key && S.health?.api_key_valid !== false;
   $("#telemetry").innerHTML = `
     <span class="chip ${live ? "live" : ""}"><span class="dot"></span>LIVE <b>${live}</b></span>
     <span class="chip ok"><span class="dot"></span>COMPLETE <b>${fmtN(st.completed)}</b></span>
     <span class="chip ${(st.failed || 0) + (st.crashed || 0) ? "bad" : ""}"><span class="dot"></span>FAILED <b>${fmtN((st.failed || 0) + (st.crashed || 0))}</b></span>
     <span class="chip"><span class="dot"></span>CORPUS <b>${fmtN(Math.round((S.stats?.result_chars || 0) / 1000))}k</b> chars</span>
-    <span class="chip ${key ? "ok" : "bad"}"><span class="dot"></span>API KEY <b>${key ? "OK" : "MISSING"}</b></span>`;
+    <span class="chip ${key ? "ok" : "bad"}"><span class="dot"></span>API KEY <b>${key ? "OK" : S.health?.api_key ? "INVALID" : "MISSING"}</b></span>`;
   $("#sb-right").textContent = `${fmtN(S.stats?.total)} sessions \u00b7 ${fmtN(S.stats?.notebooks)} notebooks \u00b7 ${fmtN(S.stats?.annotations)} annotations`;
 }
 
@@ -691,14 +691,14 @@ const TEMPLATES = [
 ];
 function renderLaunch(v) {
   const pre = S.launchPrefill || {};
-  const noKey = S.health && !S.health.api_key;
+  const noKey = S.health && (!S.health.api_key || S.health.api_key_valid === false);
   v.innerHTML = `
   <div class="pad" style="max-width:860px">
     <div class="hero" style="grid-template-columns:1fr;margin-bottom:14px">
       <div><h2>New <span>deep research</span></h2>
       <p>Runs in the background as a normal <span class="mono">deep-research</span> session, so it survives closing this page and shows up in <span class="mono">deep-research list</span>.</p></div>
     </div>
-    ${noKey ? `<p class="warn">GEMINI_API_KEY is not visible to the dashboard process. Run <span class="mono">deep-research auth login</span>, then <span class="mono">deep-research dashboard --restart</span>.</p>` : ""}
+    ${noKey ? `<p class="warn">${S.health?.api_key ? "Google rejected the dashboard's GEMINI_API_KEY." : "GEMINI_API_KEY is not visible to the dashboard process."} Run <span class="mono">deep-research auth login</span>, then <span class="mono">deep-research dashboard --restart</span>.</p>` : ""}
     <div class="templates">${TEMPLATES.map(([n], i) => `<button data-t="${i}">${esc(n)}</button>`).join("")}</div>
     <div class="field"><label>Research objective</label>
       <textarea id="l-prompt" placeholder="What do you want to know? Be specific about scope, timeframe, and what the output should contain.">${esc(pre.prompt || "")}</textarea></div>
@@ -1054,7 +1054,7 @@ window.addEventListener("beforeunload", (e) => { if (NB.dirty) { NB.saveNow(); e
 
 // ---------------------------------------------------------------- boot
 (async function boot() {
-  try { S.health = await api("/api/health"); $("#version").textContent = "v" + S.health.version; }
+  try { S.health = await api("/api/health?check=1"); $("#version").textContent = "v" + S.health.version; }
   catch { toast("Dashboard API unreachable", "err"); }
   await Promise.all([loadSessions(), loadStats(), loadNotebooks()]).catch((e) => toast(e.message, "err"));
   try {

@@ -214,6 +214,12 @@ class DeepResearchAgent:
                 self.session_manager.update_session(
                     interaction_id[0], "failed", result=f"Exception: {e}"
                 )
+            elif request.adopt_session_id:
+                # Failed before Google returned an interaction (bad key, quota...):
+                # the pre-created row would otherwise sit at "running".
+                self.session_manager.fail_session_id(
+                    request.adopt_session_id, f"Exception: {e}"
+                )
         finally:
             if request.upload_paths:
                 self.file_manager.cleanup()
@@ -312,6 +318,10 @@ class DeepResearchAgent:
             if "interaction" in locals() and hasattr(interaction, "id"):
                 self.session_manager.update_session(
                     interaction.id, "failed", result=f"Exception: {e}"
+                )
+            elif request.adopt_session_id:
+                self.session_manager.fail_session_id(
+                    request.adopt_session_id, f"Exception: {e}"
                 )
         finally:
             if request.upload_paths:

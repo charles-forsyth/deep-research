@@ -13,6 +13,20 @@ releases.
   upload-artifact v7. Dependabot groups minor/patch updates; ruff and mypy upgrades are taken
   deliberately because they change lint and type rules.
 
+## [0.17.3] - 2026-09-26
+
+### Fixed
+- The dashboard and the research runs it starts no longer run in the folder
+  they were launched from. A stale `.env` in that folder (loaded before the
+  user settings file) silently replaced the saved API key, so runs failed with
+  "API key not valid".
+- A run that fails before Google creates an interaction (bad key, quota,
+  network) is now marked failed instead of sitting at "running".
+
+### Added
+- `/api/health?check=1` verifies the key with Google (cached 10 minutes). The
+  header chip shows INVALID and launching is blocked when Google rejects it.
+
 ## [0.17.2] - 2026-09-26
 
 ### Changed

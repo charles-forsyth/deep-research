@@ -73,6 +73,17 @@ class SessionManager:
             conn.execute(query, tuple(params))
             conn.commit()
 
+    @db_retry()
+    def fail_session_id(self, session_id: int, message: str):
+        """Mark a row failed by its local id (used before an interaction id exists)."""
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
+            conn.execute(
+                "UPDATE sessions SET status = 'failed', result = ?, updated_at = ? "
+                "WHERE id = ? AND status = 'running'",
+                (message, datetime.now().isoformat(), session_id),
+            )
+            conn.commit()
+
     def append_to_result(self, interaction_id: str, new_content: str):
         with sqlite3.connect(self.db_path, timeout=10) as conn:
             row = conn.execute(

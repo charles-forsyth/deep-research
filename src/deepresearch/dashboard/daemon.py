@@ -108,6 +108,9 @@ def start(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> int:
             stderr=log,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
+            # config.py loads ./.env before the user file, so a checkout with an
+            # old .env would silently replace the saved key. Run from the state dir.
+            cwd=str(STATE_DIR),
         )
     PID_FILE.write_text(json.dumps({"pid": proc.pid, "host": host, "port": port}))
 
