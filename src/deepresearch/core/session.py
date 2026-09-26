@@ -2,7 +2,7 @@ from deepresearch.utils.retry import db_retry
 import os
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from deepresearch.storage.database import DatabaseSchema
 from deepresearch.core.config import user_db_path
@@ -33,7 +33,9 @@ class SessionManager:
                     datetime.now().isoformat(),
                     datetime.now().isoformat(),
                     json.dumps(files or []),
-                    pid,
+                    pid
+                    if pid is not None
+                    else (os.getpid() if parent_id is None else None),
                     parent_id,
                     depth,
                 ),
@@ -49,8 +51,9 @@ class SessionManager:
     def update_session_interaction_id(self, session_id: int, interaction_id: str):
         with sqlite3.connect(self.db_path, timeout=10) as conn:
             conn.execute(
-                "UPDATE sessions SET interaction_id = ?, status = 'running', updated_at = ? WHERE id = ?",
-                (interaction_id, datetime.now().isoformat(), session_id),
+                "UPDATE sessions SET interaction_id = ?, status = 'running', updated_at = ?, "
+                "pid = CASE WHEN parent_id IS NULL THEN COALESCE(pid, ?) ELSE pid END WHERE id = ?",
+                (interaction_id, datetime.now().isoformat(), os.getpid(), session_id),
             )
             conn.commit()
 
@@ -93,6 +96,45 @@ class SessionManager:
                 (session_id,),
             ).fetchall()
 
+    # A Deep Research interaction is capped at 60 minutes by the API; a row with no process to
+    # check that has shown no activity for this long cannot still be running.
+    STALE_AFTER = timedelta(hours=3)
+
+    @staticmethod
+    def _pid_alive(pid) -> bool:
+        try:
+            os.kill(int(pid), 0)
+        except (OSError, ValueError, TypeError):
+            return False
+        return True
+
+    @classmethod
+    def _stale(cls, row) -> bool:
+        stamp = row["updated_at"] or row["created_at"]
+        try:
+            last = datetime.fromisoformat(str(stamp))
+        except (TypeError, ValueError):
+            return True
+        if last.tzinfo is not None:
+            last = last.replace(tzinfo=None)
+        return datetime.now() - last > cls.STALE_AFTER
+
+    def _is_dead(self, conn, s) -> bool:
+        if s["pid"]:
+            return not self._pid_alive(s["pid"])
+        if s["parent_id"]:
+            parent = conn.execute(
+                "SELECT pid, status, updated_at, created_at FROM sessions WHERE id = ?",
+                (s["parent_id"],),
+            ).fetchone()
+            if parent:
+                if parent["status"] in ("completed", "crashed", "failed", "cancelled"):
+                    return True
+                if parent["pid"]:
+                    return not self._pid_alive(parent["pid"])
+        # No process recorded (runs started before pids were tracked): judge by activity.
+        return self._stale(s)
+
     @db_retry()
     def list_sessions(self, limit: int = 10):
         with sqlite3.connect(self.db_path, timeout=10) as conn:
@@ -104,39 +146,13 @@ class SessionManager:
             result = []
             for s in sessions:
                 s_dict = dict(s)
-                if s["status"] == "running":
-                    is_dead = False
-                    if s["pid"]:
-                        try:
-                            os.kill(s["pid"], 0)
-                        except OSError:
-                            is_dead = True
-                    elif s["parent_id"]:
-                        parent = conn.execute(
-                            "SELECT pid, status FROM sessions WHERE id = ?",
-                            (s["parent_id"],),
-                        ).fetchone()
-                        if parent:
-                            if parent["status"] in [
-                                "completed",
-                                "crashed",
-                                "failed",
-                                "cancelled",
-                            ]:
-                                is_dead = True
-                            elif parent["pid"]:
-                                try:
-                                    os.kill(parent["pid"], 0)
-                                except OSError:
-                                    is_dead = True
-
-                    if is_dead:
-                        s_dict["status"] = "crashed"
-                        conn.execute(
-                            "UPDATE sessions SET status = 'crashed' WHERE id = ?",
-                            (s["id"],),
-                        )
-                        conn.commit()
+                if s["status"] == "running" and self._is_dead(conn, s):
+                    s_dict["status"] = "crashed"
+                    conn.execute(
+                        "UPDATE sessions SET status = 'crashed' WHERE id = ?",
+                        (s["id"],),
+                    )
+                    conn.commit()
 
                 result.append(s_dict)
             return result
