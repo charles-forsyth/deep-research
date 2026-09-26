@@ -52,3 +52,20 @@ def test_stop_when_not_running(isolated, capsys):
 def test_stale_pid_file_is_ignored(isolated):
     daemon.PID_FILE.write_text('{"pid": 999999, "host": "127.0.0.1", "port": 1}')
     assert daemon.read_state() is None
+
+
+def test_children_run_isolated_from_cwd():
+    """A shadow ./deepresearch in the cwd must not be imported by children."""
+    from deepresearch.dashboard.server import _cli_cmd
+
+    assert _cli_cmd()[1] == "-I"
+
+
+def test_start_from_dir_with_shadow_package(isolated, tmp_path, monkeypatch):
+    shadow = tmp_path / "cwd" / "deepresearch"
+    shadow.mkdir(parents=True)
+    (shadow / "__init__.py").write_text("raise SystemExit('shadow package imported')\n")
+    monkeypatch.chdir(tmp_path / "cwd")
+    port = _free_port()
+    assert daemon.start("127.0.0.1", port) == 0
+    assert daemon._probe("127.0.0.1", port)["ok"] is True
