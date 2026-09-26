@@ -106,3 +106,40 @@ def test_session_manager_coverage(test_db):
     assert mgr.delete_session("c2") is True
     assert mgr.get_session(sid_child1) is None
     assert mgr.get_session("c2") is None
+
+
+def test_running_row_without_pid_goes_stale(test_db):
+    """Rows left 'running' by old terminal runs (no pid, no parent) must not stay live forever."""
+    import sqlite3
+    from datetime import datetime, timedelta
+
+    mgr = SessionManager(test_db)
+    sid = mgr.create_session("v1_old", "old terminal run")
+    old = (datetime.now() - timedelta(days=30)).isoformat()
+    with sqlite3.connect(test_db) as conn:
+        conn.execute(
+            "UPDATE sessions SET pid = NULL, created_at = ?, updated_at = ? WHERE id = ?",
+            (old, old, sid),
+        )
+    sessions = mgr.list_sessions()
+    assert sessions[0]["status"] == "crashed"
+    assert mgr.get_session(sid)["status"] == "crashed"
+
+
+def test_recent_running_row_without_pid_stays_running(test_db):
+    import sqlite3
+
+    mgr = SessionManager(test_db)
+    sid = mgr.create_session("v1_new", "fresh run")
+    with sqlite3.connect(test_db) as conn:
+        conn.execute("UPDATE sessions SET pid = NULL WHERE id = ?", (sid,))
+    assert mgr.list_sessions()[0]["status"] == "running"
+
+
+def test_create_session_records_owning_process(test_db):
+    """A foreground 'research' run records its own pid so a killed run is detected."""
+    mgr = SessionManager(test_db)
+    sid = mgr.create_session("v1_fg", "foreground")
+    assert mgr.get_session(sid)["pid"] == os.getpid()
+    child = mgr.create_session("v1_child", "sub", parent_id=sid)
+    assert mgr.get_session(child)["pid"] is None  # children use parent liveness
