@@ -50,9 +50,9 @@ ignore = ["E402"]
 
 [dependency-groups]
 dev = [
-    "mypy>=1.19.1",
+    "mypy>=1.20.2",
     "pre-commit>=4.0.0",
     "pytest>=9.0.3",
     "pytest-cov>=7.0.0",
-    "ruff>=0.14.9",
+    "ruff>=0.14.14",
 ]
