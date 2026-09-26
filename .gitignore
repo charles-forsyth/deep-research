@@ -47,3 +47,16 @@ dmypy.json
 .vscode/
 *.swp
 *.swo
+
+# Local research data, audio and scratch (never commit)
+*.db
+*.db-shm
+*.db-wal
+*.wav
+*.mp3
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.squad/

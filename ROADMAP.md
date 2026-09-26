@@ -1,6 +1,14 @@
-# 🗺️ Product Roadmap: Academic Research Edition
+# Roadmap
 
-A strategic vision to transform `deep-research` into a specialized, high-integrity instrument for academic researchers.
+Where the project is heading. Items are ideas, not commitments; open an issue to discuss or pick one up.
+
+## Next up
+- [ ] **Optional dashboard login** (shared token) for use beyond a trusted network.
+- [ ] **Deep Research Max** toggle in the dashboard launcher.
+- [ ] **Scheduled re-runs** of saved questions, with the compare view as a change digest.
+- [ ] **Collaborative planning** (review the agent's research plan before it runs).
+
+## Longer term: academic research edition
 
 ## 🏆 Phase 1: Foundation & Integrity (The Trust Architecture)
 *   [ ] **Citation Integrity Engine (CIE):** Real-time validation of every generated citation against the Crossref API.
@@ -32,5 +40,6 @@ A strategic vision to transform `deep-research` into a specialized, high-integri
 - [x] **Smart Context Ingestion:** Auto-upload local files/folders (`--upload`).
 - [x] **Headless Mode:** Fire-and-forget background execution with robust PID tracking.
 - [x] **Session Management:** SQLite history with WAL mode concurrency and `tree` visualization.
-- [x] **Garbage Collection:** Auto-cleanup of cloud resources (`cleanup`).- [x] **Web Dashboard (v0.16.0):** `deep-research dashboard --start/--stop/--restart`, a dark browser workstation on port 7420 with launch, live logs, annotation, notebooks, semantic search and export.
+- [x] **Garbage Collection:** Auto-cleanup of cloud resources (`cleanup`).
+- [x] **Web Dashboard (v0.16.0):** `deep-research dashboard --start/--stop/--restart`, a dark browser workstation on port 7420 with launch, live logs, annotation, notebooks, semantic search and export.
 - [x] **Dashboard v0.17:** citation cards, research map, re-run and compare, live timeline with actual cost and notifications, brief builder, read-aloud and AI-voice audio export (full text or summary).

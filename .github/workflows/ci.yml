@@ -1,20 +1,28 @@
-name: Python CI
+name: CI
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   gauntlet:
+    name: gauntlet
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -34,5 +42,39 @@ jobs:
       - name: Type check with mypy
         run: uv run mypy src/
 
-      - name: Test with pytest
-        run: uv run pytest
+      - name: Check dashboard JavaScript syntax
+        run: for f in src/deepresearch/dashboard/static/*.js; do node --check "$f"; done
+
+      - name: Test with pytest (coverage)
+        run: uv run pytest --cov=deepresearch --cov-report=term-missing:skip-covered
+
+  python-matrix:
+    name: tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Test
+        run: uv run --python ${{ matrix.python }} pytest -q
+
+  build:
+    name: build package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Check the wheel ships the dashboard assets
+        run: python3 -c "import zipfile,glob; n=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); assert any(x.endswith('static/index.html') for x in n) and any(x.endswith('static/features.js') for x in n), n"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
