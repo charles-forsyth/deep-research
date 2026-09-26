@@ -463,6 +463,11 @@ class DeepResearchAgent:
             stores=original_request.stores,
             stream=(current_depth == 1),
             depth=current_depth,
+            # The root must take over the row `start`/the dashboard pre-created,
+            # otherwise the report lands in a new row and that one reads "crashed".
+            adopt_session_id=(
+                original_request.adopt_session_id if current_depth == 1 else None
+            ),
         )
 
         is_leaf = current_depth >= max_depth
