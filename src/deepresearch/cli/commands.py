@@ -177,6 +177,8 @@ def handle_start(args):
     child_args = ["research", args.prompt, "--adopt-session", str(sid)]
     if args.upload:
         child_args += ["--upload"] + args.upload
+    if args.stores:
+        child_args += ["--stores"] + args.stores
     if args.format:
         child_args += ["--format", args.format]
     if args.output:
