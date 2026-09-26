@@ -118,6 +118,7 @@ const LS_TABS = "dr.tabs.v1";
 async function loadSessions() {
   const qs = S.q ? `?q=${encodeURIComponent(S.q)}` : "";
   const data = await api(`/api/sessions${qs}`);
+  NOTIFY.diff(S.sessions, data.sessions);
   S.sessions = data.sessions;
   renderSessionList();
   renderTelemetry();
@@ -205,7 +206,7 @@ function closeTab(key) {
   if (!S.tabs.length) { S.tabs.push({ key: "home", kind: "home", title: "Mission control" }); S.active = "home"; }
   saveTabs(); renderTabs(); renderStage();
 }
-const ICONS = { home: "\u25CE", session: "\u00a7", notebook: "\u270E", launch: "+", search: "\u2315", tree: "\u2937" };
+const ICONS = { home: "\u25CE", session: "\u00a7", notebook: "\u270E", launch: "+", search: "\u2315", tree: "\u2937", map: "\u2B21", compare: "\u21C4" };
 function renderTabs() {
   $("#tabs").innerHTML = S.tabs.map((t) => `
     <div class="tab ${t.key === S.active ? "on" : ""}" data-key="${esc(t.key)}" title="${esc(t.title)}">
@@ -220,6 +221,8 @@ function openNotebook(id, title) { openTab({ key: `n${id}`, kind: "notebook", id
 function openLaunch(prefill) { S.launchPrefill = prefill || null; openTab({ key: "launch", kind: "launch", title: "New research" }); }
 function openSearch() { openTab({ key: "search", kind: "search", title: "Semantic search" }); }
 function openTree(id) { openTab({ key: `t${id}`, kind: "tree", id: Number(id), title: `Tree #${id}` }); }
+function openMap() { openTab({ key: "map", kind: "map", title: "Research map" }); }
+function openCompare(a, b) { openTab({ key: `c${a}-${b}`, kind: "compare", a: Number(a), b: Number(b), title: `#${a} \u21C4 #${b}` }); }
 
 function renderStage() {
   const t = currentTab();
@@ -227,10 +230,12 @@ function renderStage() {
   stage.innerHTML = "";
   hideSelbar();
   if (!t) return;
+  READER.stop();
+  document.querySelectorAll(".cite-card").forEach((c) => (c.hidden = true));
   const v = document.createElement("div");
   v.className = "view";
   stage.appendChild(v);
-  const renderers = { home: renderHome, session: renderSession, notebook: renderNotebook, launch: renderLaunch, search: renderSearch, tree: renderTree };
+  const renderers = { home: renderHome, session: renderSession, notebook: renderNotebook, launch: renderLaunch, search: renderSearch, tree: renderTree, map: renderMap, compare: renderCompare };
   (renderers[t.kind] || renderHome)(v, t);
   renderRight();
 }
@@ -250,6 +255,7 @@ function renderHome(v) {
           <button class="btn" data-go="launch">+ Launch</button>
           <button class="btn" data-go="search">\u2315 Search past research</button>
           <button class="btn" data-go="notebook">\u270E New notebook</button>
+          <button class="btn" data-go="map">\u2B21 Research map</button>
         </div>
       </div>
       <div class="card">
@@ -286,6 +292,7 @@ function renderHome(v) {
   v.querySelector('[data-go="launch"]').onclick = () => openLaunch();
   v.querySelector('[data-go="search"]').onclick = openSearch;
   v.querySelector('[data-go="notebook"]').onclick = () => NB.create();
+  v.querySelector('[data-go="map"]').onclick = openMap;
   v.querySelectorAll(".rcard[data-id]").forEach((c) => (c.onclick = () => openSession(c.dataset.id)));
   loadNotebooks().then(() => {
     const el = v.querySelector("#nb-cards");
@@ -315,7 +322,10 @@ async function renderSession(v, t) {
       <button class="btn small" data-a="copy">Copy report</button>
       <button class="btn small" data-a="to-nb">\u2192 Notebook</button>
       <button class="btn small" data-a="find">Find</button>
+      ${s.result ? `<button class="btn small" data-a="listen" title="Read the report aloud, word for word">\u25B6 Listen</button>` : ""}
       ${s.children.length ? `<button class="btn small" data-a="tree">\u2937 Tree (${s.children.length})</button>` : ""}
+      ${s.result && !s.parent_id ? `<button class="btn small" data-a="rerun" title="Run this question again and compare">\u21BB Re-run</button>` : ""}
+      ${s.reruns?.length || s.run?.rerun_of ? `<button class="btn small" data-a="compare">\u21C4 Compare</button>` : ""}
       <span class="grow"></span>
       <select class="btn small" data-a="export">
         <option value="">Export\u2026</option>
@@ -324,6 +334,9 @@ async function renderSession(v, t) {
         <option value="html">Standalone HTML</option>
         <option value="json">JSON</option>
         <option value="print">Print / PDF</option>
+        <option value="audio-full">Audio: full report (AI voice)</option>
+        <option value="audio-summary">Audio: AI voice summary</option>
+        <option value="brief">Brief: executive / slides / email</option>
       </select>
       ${running ? `<button class="btn small danger" data-a="cancel">Cancel run</button>` : ""}
       <button class="btn small danger" data-a="delete" title="Delete session">Delete</button>
@@ -341,6 +354,7 @@ async function renderSession(v, t) {
           ${s.files.length ? `<span>FILES <b>${s.files.length}</b></span>` : ""}
         </div>
       </div>
+      <div class="listenbar" hidden></div>
       <div class="findbar" hidden>
         <input class="inline-input" placeholder="Find in report\u2026" style="max-width:320px">
         <span class="mono dim find-count" style="align-self:center"></span>
@@ -349,7 +363,7 @@ async function renderSession(v, t) {
     </div>
     <div class="dock">
       <div class="dock-inner">
-        <textarea rows="1" placeholder="${running ? "Follow-ups unlock when the run finishes\u2026" : "Ask a follow-up about this research\u2026 (Enter to send, Shift+Enter for newline)"}" ${running ? "disabled" : ""}></textarea>
+        <textarea rows="1" placeholder="${running ? "Follow-ups unlock when the run finishes\u2026" : (window.innerWidth < 820 ? "Ask a follow-up about this research\u2026" : "Ask a follow-up about this research\u2026 (Enter to send, Shift+Enter for newline)")}" ${running ? "disabled" : ""}></textarea>
         <button class="btn primary" data-a="ask" ${running ? "disabled" : ""}>Ask</button>
       </div>
     </div>`;
@@ -359,6 +373,7 @@ async function renderSession(v, t) {
     art.querySelectorAll("a[href^='http']").forEach((a) => { a.target = "_blank"; a.rel = "noopener noreferrer"; });
     art.querySelectorAll("h1,h2,h3,h4").forEach((h, i) => (h.id = `h-${i}-${slug(h.textContent)}`));
     applyAnnotations(art, s.annotations);
+    CITE.decorate(art, s.result);
   } else {
     art.innerHTML = `<div class="empty-result ${running ? "scan" : ""}">${running ? "Research in progress. The live log is streaming in the right panel." : "No result stored for this session."}</div>`;
   }
@@ -373,11 +388,28 @@ async function renderSession(v, t) {
   v.querySelector('[data-a="copy"]').onclick = () => copyText(s.result || "");
   v.querySelector('[data-a="to-nb"]').onclick = () => NB.append(`## ${s.prompt}\n\n${s.result || ""}\n\n*Source: Session #${s.id}*\n`);
   v.querySelector('[data-a="tree"]')?.addEventListener("click", () => openTree(s.id));
+  v.querySelector('[data-a="listen"]')?.addEventListener("click", () => READER.toggle(v, art, s));
+  v.querySelector('[data-a="rerun"]')?.addEventListener("click", async () => {
+    const d = s.run?.depth || s.depth || 1, b = s.run?.breadth || 3;
+    let est = null; try { est = await api("/api/estimate", { method: "POST", body: { depth: d, breadth: b } }); } catch { /* ignore */ }
+    if (!(await confirmBox(`Re-run #${s.id}?`, `Runs the same question again (depth ${d}) so you can compare what changed.${est ? ` Estimated cost about $${est.cost_usd.toFixed(2)}.` : ""}`, "Re-run"))) return;
+    try {
+      const r = await api("/api/research", { method: "POST", body: { prompt: s.prompt, depth: d, breadth: b, rerun_of: s.id } });
+      toast(`Re-run #${r.id} launched`, "ok"); S.rtab = "log"; await loadSessions(); openSession(r.id);
+    } catch (e) { toast(e.message, "err"); }
+  });
+  v.querySelector('[data-a="compare"]')?.addEventListener("click", () => {
+    const other = s.run?.rerun_of || s.reruns[s.reruns.length - 1];
+    const [a, b] = [Math.min(s.id, other), Math.max(s.id, other)];
+    openCompare(a, b);
+  });
   v.querySelector("[data-open]")?.addEventListener("click", (e) => { e.preventDefault(); openSession(e.target.dataset.open); });
   v.querySelector('[data-a="export"]').onchange = async (e) => {
     const f = e.target.value; e.target.value = "";
     if (!f) return;
     if (f === "print") return window.print();
+    if (f === "audio-full" || f === "audio-summary") return AUDIO.exportDialog("session", s.id, f.slice(6), s.prompt);
+    if (f === "brief") return BRIEF.dialog("session", s.id, s.prompt);
     if (f === "html") return download(`session_${s.id}.html`, standaloneHtml(s.prompt, v.querySelector(".dossier").outerHTML + art.outerHTML), "text/html");
     const rec = f === "md-rec" ? "&recursive=1" : "";
     const fmt = f === "json" ? "json" : "md";
@@ -599,6 +631,7 @@ async function renderNotebook(v, t) {
       <button class="btn small" data-a="copy">Copy</button>
       <select class="btn small" data-a="export">
         <option value="">Export\u2026</option><option value="md">Markdown</option><option value="html">Standalone HTML</option><option value="print">Print / PDF</option>
+        <option value="brief">Brief: executive / slides / email</option><option value="audio-full">Audio: read notebook (AI voice)</option><option value="audio-summary">Audio: AI voice summary</option>
       </select>
       <button class="btn small danger" data-a="del">Delete</button>
     </div>
@@ -629,6 +662,9 @@ async function renderNotebook(v, t) {
     if (f === "md") download(`${name}.md`, ta.value);
     else if (f === "html") download(`${name}.html`, standaloneHtml(ti.value, `<div class="md">${renderMd(ta.value)}</div>`), "text/html");
     else if (f === "print") { v.querySelector(".nb").className = "nb mode-preview"; setTimeout(() => window.print(), 50); }
+    else if (f === "brief" || f.startsWith("audio")) {
+      NB.saveNow().then(() => f === "brief" ? BRIEF.dialog("notebook", nb.id, ti.value) : AUDIO.exportDialog("notebook", nb.id, f.slice(6), ti.value));
+    }
   };
   v.querySelector('[data-a="del"]').onclick = async () => {
     if (!(await confirmBox(`Delete notebook \u201c${ti.value}\u201d?`, "This cannot be undone.", "Delete"))) return;
@@ -725,6 +761,7 @@ function renderLaunch(v) {
         uploads: uploads.map((u) => u.path), stores: $("#l-stores").value.split(/\s+/).filter(Boolean),
       } });
       toast(`Research #${r.id} launched`, "ok");
+      NOTIFY.ask();
       S.launchPrefill = null;
       closeTab("launch"); S.rtab = "log";
       await loadSessions(); loadStats();
@@ -830,7 +867,10 @@ function renderRight() {
         ${s.status === "running" && s.pid ? `<span class="k">pid</span><span class="v">${s.pid}</span>` : ""}
         <span class="k">words</span><span class="v">${fmtN((s.result || "").split(/\s+/).filter(Boolean).length)}</span>
         <span class="k">sources</span><span class="v">${fmtN(extractSources(s.result || "").length)} unique</span>
+        <span class="k">cost</span><span class="v" id="cost-v"><span class="dim">\u2026</span></span>
       </div>
+      <div id="cost-detail" class="mono dim" style="font-size:10.5px;margin-top:4px"></div>
+      <div class="section label">Audio</div><div id="audio-list" class="dim" style="font-size:11.5px">\u2026</div>
       <div class="section label">Tags</div>
       <div class="tags-edit" id="tags">${s.meta.tags.map((tg, i) => `<span class="tagpill">${esc(tg)}<button data-i="${i}">\u00d7</button></span>`).join("")}
         <input placeholder="+ tag" id="tag-in"></div>
@@ -841,6 +881,8 @@ function renderRight() {
     const srcs = extractSources(s.result || "");
     $("#srcs").innerHTML = srcs.slice(0, 120).map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer" class="src" title="${esc(x.url)}"><span>${esc(x.label)}</span>${x.n > 1 ? `<i>${x.n}</i>` : ""}</a>`).join("") || '<div class="dim">No links found in the report.</div>';
     $("#copy-iid").onclick = () => copyText(s.interaction_id || "");
+    COST.fill(s);
+    AUDIO.fillList("session", s.id);
     $$(".children a", body).forEach((a) => (a.onclick = () => openSession(a.dataset.id)));
     const saveTags = async (tags) => { s.meta = await api(`/api/sessions/${s.id}/meta`, { method: "PATCH", body: { tags } }); renderRight(); loadSessions(); };
     $("#tag-in").onkeydown = (e) => { if (e.key === "Enter" && e.target.value.trim()) saveTags([...s.meta.tags, e.target.value.trim()]); };
@@ -879,7 +921,9 @@ function renderRight() {
     body.innerHTML = `<div class="outline">${hs.map((h) => `<a href="#" data-h="${h.id}" style="--lvl:${+h.tagName[1] - 1}">${esc(h.textContent)}</a>`).join("") || '<div class="dim">No headings in this report.</div>'}</div>`;
     $$(".outline a", body).forEach((a) => (a.onclick = (e) => { e.preventDefault(); document.getElementById(a.dataset.h)?.scrollIntoView({ behavior: "smooth", block: "start" }); }));
   } else if (S.rtab === "log") {
-    body.innerHTML = `<div class="label" style="margin-bottom:8px">session_${s.id}.log ${s.status === "running" ? '<span class="spinner" style="margin-left:6px"></span>' : ""}</div><div class="log" id="log"></div>`;
+    body.innerHTML = `<div id="timeline"></div>
+      <details class="rawlog" ${s.status === "running" ? "" : ""}><summary class="label">Raw log: session_${s.id}.log ${s.status === "running" ? '<span class="spinner" style="margin-left:6px"></span>' : ""}</summary><div class="log" id="log"></div></details>`;
+    TIMELINE.start(s);
     startLog(s);
   }
 }
@@ -890,7 +934,7 @@ function colorLog(text) {
     .replace(/^(.*\[(?:ERROR|CRITICAL ERROR)\].*)$/gm, '<span class="er">$1</span>')
     .replace(/^(.*\[WARN\].*)$/gm, '<span class="wa">$1</span>');
 }
-function stopLog() { clearTimeout(LOG.timer); LOG.sid = null; }
+function stopLog() { clearTimeout(LOG.timer); LOG.sid = null; TIMELINE.stop(); }
 async function startLog(s) {
   stopLog();
   LOG = { sid: s.id, offset: 0, timer: null };
@@ -939,6 +983,7 @@ function paletteItems(q) {
     ["cmd", "New research", () => openLaunch()],
     ["cmd", "Semantic search", openSearch],
     ["cmd", "New notebook", () => NB.create()],
+    ["cmd", "Research map", openMap],
     ["cmd", "Mission control", () => openTab({ key: "home", kind: "home", title: "Mission control" })],
     ["cmd", "Refresh archive", () => { loadSessions(); loadStats(); }],
     ...S.notebooks.map((n) => ["notebook", n.title, () => openNotebook(n.id, n.title)]),

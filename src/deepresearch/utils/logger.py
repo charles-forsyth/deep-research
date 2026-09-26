@@ -1,5 +1,7 @@
 import logging
+import os
 import sys
+from datetime import datetime
 from rich.console import Console
 
 console = Console(width=120)
@@ -29,6 +31,13 @@ def log_message(
 ):
     if logger.level > level:
         return
+
+    if os.getenv("DR_LOG_TIMESTAMPS") and any(
+        t in message for t in ("[INFO]", "[THOUGHT]", "[ERROR]", "[WARN]")
+    ):
+        stripped = message.lstrip("\n")
+        lead = message[: len(message) - len(stripped)]
+        message = f"{lead}[{datetime.now():%H:%M:%S}] {stripped}"
 
     msg = message
     if "[INFO]" in message:

@@ -188,8 +188,10 @@ class SessionManager:
     def update_embedding(self, session_id: int, embedding_json: str):
         with sqlite3.connect(self.db_path, timeout=10) as conn:
             conn.execute(
-                "UPDATE sessions SET embedding = ?, updated_at = ? WHERE id = ?",
-                (embedding_json, datetime.now().isoformat(), session_id),
+                # Indexing is not activity: leave updated_at alone so run
+                # timing and ordering stay truthful.
+                "UPDATE sessions SET embedding = ? WHERE id = ?",
+                (embedding_json, session_id),
             )
             conn.commit()
 

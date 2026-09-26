@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import traceback
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -26,18 +27,33 @@ from urllib.parse import parse_qs, urlparse
 from deepresearch import __version__
 from deepresearch.core.config import user_db_path, xdg_config_home
 from deepresearch.core.session import SessionManager
+from deepresearch.dashboard.features import VOICES, Features
 from deepresearch.dashboard.store import DashboardStore
 
 MAX_BODY = 25 * 1024 * 1024  # uploads are base64 in JSON
 LOG_DIR = Path(xdg_config_home) / "deepresearch" / "logs"
 UPLOAD_DIR = Path(xdg_config_home) / "deepresearch" / "uploads"
+AUDIO_DIR = Path(xdg_config_home) / "deepresearch" / "audio"
 STATIC = resources.files("deepresearch.dashboard") / "static"
 
 # Estimate constants mirror `deep-research estimate` (cli/commands.py).
+# Per agent run, from Google's Deep Research docs ("~250k input tokens (~50-70%
+# cached), ~60k output") and matching measured runs (2026-09: $0.37-$2.04).
 COST_INPUT_1M = 2.00
+COST_CACHED_1M = 0.20
 COST_OUTPUT_1M = 12.00
-AVG_INPUT_TOKENS = 60_000
-AVG_OUTPUT_TOKENS = 4_000
+AVG_INPUT_TOKENS = 250_000
+CACHED_FRACTION = 0.6
+AVG_OUTPUT_TOKENS = 60_000
+
+
+class RawResponse:
+    """Binary payload (audio) instead of JSON."""
+
+    def __init__(self, data: bytes, ctype: str, filename: str | None = None):
+        self.data = data
+        self.ctype = ctype
+        self.filename = filename
 
 
 class ApiError(Exception):
@@ -63,7 +79,12 @@ def detach(args: list[str], log_path: Path) -> int:
             stderr=log,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
-            env={**os.environ, "PYTHONUNBUFFERED": "1", "COLUMNS": "120"},
+            env={
+                **os.environ,
+                "PYTHONUNBUFFERED": "1",
+                "COLUMNS": "120",
+                "DR_LOG_TIMESTAMPS": "1",  # timeline needs times on log lines
+            },
         )
     return proc.pid
 
@@ -73,7 +94,12 @@ def estimate(depth: int, breadth: int, file_bytes: int = 0) -> dict:
     nodes = sum(pow(breadth, d) for d in range(max(depth, 1)))
     total_in = nodes * AVG_INPUT_TOKENS + nodes * file_tokens
     total_out = nodes * AVG_OUTPUT_TOKENS
-    cost = total_in / 1e6 * COST_INPUT_1M + total_out / 1e6 * COST_OUTPUT_1M
+    cached = nodes * AVG_INPUT_TOKENS * CACHED_FRACTION
+    cost = (
+        (total_in - cached) / 1e6 * COST_INPUT_1M
+        + cached / 1e6 * COST_CACHED_1M
+        + total_out / 1e6 * COST_OUTPUT_1M
+    )
     return {
         "nodes": nodes,
         "input_tokens": int(total_in),
@@ -97,6 +123,20 @@ class Api:
         self.store = DashboardStore(db_path)
         self.spawn = spawn
         self._embed_lock = threading.Lock()
+        self.fx = Features(db_path, self._config, AUDIO_DIR)
+        self._jobs: dict[int, dict] = {}
+        self._job_seq = 0
+        self._jobs_lock = threading.Lock()
+        with sqlite3.connect(db_path, timeout=10) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS run_meta (
+                    session_id INTEGER PRIMARY KEY,
+                    depth INTEGER, breadth INTEGER, estimate_usd REAL,
+                    rerun_of INTEGER, launched_at TEXT
+                );
+                """
+            )
         self.routes: list[tuple[str, re.Pattern, Callable]] = []
         r = self._route
         r("GET", r"/api/health", self.health)
@@ -124,6 +164,16 @@ class Api:
         r("PUT", r"/api/notebooks/(\d+)", self.update_notebook)
         r("DELETE", r"/api/notebooks/(\d+)", self.delete_notebook)
         r("GET", r"/api/stores", self.list_stores)
+        r("GET", r"/api/sessions/(\d+)/usage", self.session_usage)
+        r("GET", r"/api/sessions/(\d+)/timeline", self.session_timeline)
+        r("GET", r"/api/map", self.research_map)
+        r("POST", r"/api/compare", self.compare)
+        r("POST", r"/api/brief", self.brief)
+        r("POST", r"/api/audio/estimate", self.audio_estimate)
+        r("POST", r"/api/audio", self.audio_start)
+        r("GET", r"/api/audio", self.audio_list)
+        r("GET", r"/api/audio/jobs/(\d+)", self.audio_job)
+        r("GET", r"/api/audio/(\d+)/file", self.audio_file)
 
     def _route(self, method: str, pattern: str, fn: Callable) -> None:
         self.routes.append((method, re.compile(f"^{pattern}$"), fn))
@@ -205,7 +255,24 @@ class Api:
         ]
         s["annotations"] = self.store.list_annotations(int(sid))
         s["log_available"] = (LOG_DIR / f"session_{sid}.log").exists()
+        s["run"] = self._run_meta(int(sid))
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
+            s["reruns"] = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT session_id FROM run_meta WHERE rerun_of = ? ORDER BY session_id",
+                    (int(sid),),
+                )
+            ]
         return s
+
+    def _run_meta(self, sid: int) -> dict | None:
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM run_meta WHERE session_id = ?", (sid,)
+            ).fetchone()
+        return dict(row) if row else None
 
     def delete_session(self, sid, query, body):
         self._session(sid)
@@ -368,6 +435,20 @@ class Api:
             args.append("--stream")  # thought summaries land in the live log
         pid = self.spawn(args, LOG_DIR / f"session_{sid}.log")
         self.sessions.update_session_pid(sid, pid)
+        rerun_of = body.get("rerun_of")
+        size = sum(Path(p).stat().st_size for p in uploads if Path(p).exists())
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO run_meta VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    sid,
+                    depth,
+                    breadth,
+                    estimate(depth, breadth, size)["cost_usd"],
+                    int(rerun_of) if rerun_of else None,
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
         return {"id": sid, "pid": pid}
 
     def estimate(self, query, body):
@@ -551,6 +632,166 @@ class Api:
             ]
         }
 
+    # ---- v0.17: cost, timeline, map, compare, briefs, audio -----------------
+
+    def session_usage(self, sid, query, body):
+        s = self._session(sid)
+        refresh = (query.get("refresh") or ["0"])[0] == "1"
+        out = self.fx.usage(
+            int(sid), s.get("interaction_id") or "", s["status"], refresh=refresh
+        )
+        out["estimate_usd"] = (self._run_meta(int(sid)) or {}).get("estimate_usd")
+        return out
+
+    def session_timeline(self, sid, query, body):
+        root = self._session(sid)
+        lanes = []
+
+        def walk(node_id: int, seen: set) -> None:
+            s = self._session(str(node_id))
+            seen.add(node_id)
+            lanes.append(
+                {
+                    "id": s["id"],
+                    "depth": s.get("depth") or 1,
+                    "parent_id": s.get("parent_id"),
+                    "status": s["status"],
+                    "prompt": s["prompt"],
+                    "created_at": s["created_at"],
+                    "updated_at": s["updated_at"],
+                    "chars": len(s.get("result") or ""),
+                }
+            )
+            for c in self.sessions.get_children(node_id):
+                if c["id"] not in seen:
+                    walk(c["id"], seen)
+
+        walk(int(sid), set())
+        events = []
+        path = LOG_DIR / f"session_{sid}.log"
+        if path.exists():
+            text = re.sub(
+                r"\x1b\[[0-9;]*[A-Za-z]", "", path.read_text("utf-8", "replace")
+            )
+            for line in text.splitlines():
+                m = re.match(
+                    r"^(?:\[(\d\d:\d\d:\d\d)\] )?\[(THOUGHT|INFO|ERROR|WARN)\] (.*)$",
+                    line.strip(),
+                )
+                if m:
+                    events.append(
+                        {
+                            "t": m.group(1),
+                            "kind": m.group(2).lower(),
+                            "text": m.group(3)[:400],
+                        }
+                    )
+        return {
+            "root": root["id"],
+            "status": root["status"],
+            "lanes": lanes,
+            "events": events[-400:],
+            "run": self._run_meta(int(sid)),
+        }
+
+    def research_map(self, query, body):
+        return self.fx.research_map()
+
+    def compare(self, query, body):
+        body = body or {}
+        a = self._session(str(body.get("a")))
+        b = self._session(str(body.get("b")))
+        try:
+            return self.fx.compare(a, b, bool(body.get("summarize")))
+        except Exception as e:
+            raise ApiError(502, f"Compare failed: {e}") from e
+
+    def _doc(self, kind: str, ref: int) -> tuple[str, str]:
+        if kind == "session":
+            s = self._session(str(ref))
+            return s["prompt"], s.get("result") or ""
+        if kind == "notebook":
+            nb = self.store.get_notebook(ref)
+            if not nb:
+                raise ApiError(404, "Notebook not found")
+            return nb["title"], nb["content"]
+        raise ApiError(400, "kind must be session or notebook")
+
+    def brief(self, query, body):
+        body = body or {}
+        title, content = self._doc(body.get("kind", ""), int(body.get("id") or 0))
+        if not content.strip():
+            raise ApiError(400, "Nothing to summarize")
+        try:
+            return self.fx.brief(title, content, body.get("style") or "brief")
+        except ValueError as e:
+            raise ApiError(400, str(e)) from e
+        except Exception as e:
+            raise ApiError(502, f"Brief failed: {e}") from e
+
+    def audio_estimate(self, query, body):
+        body = body or {}
+        _, content = self._doc(body.get("kind", ""), int(body.get("id") or 0))
+        mode = body.get("mode") or "full"
+        text = self.fx.speakable(content)
+        out = self.fx.estimate_audio(text, mode)
+        out["voices"] = VOICES
+        return out
+
+    def audio_start(self, query, body):
+        body = body or {}
+        kind = body.get("kind", "")
+        ref = int(body.get("id") or 0)
+        title, content = self._doc(kind, ref)
+        mode = body.get("mode") or "full"
+        voice = body.get("voice") or "Charon"
+        if mode not in ("full", "summary") or voice not in VOICES:
+            raise ApiError(400, "bad mode or voice")
+        if not content.strip():
+            raise ApiError(400, "Nothing to read")
+        with self._jobs_lock:
+            self._job_seq += 1
+            jid = self._job_seq
+            self._jobs[jid] = {
+                "id": jid,
+                "status": "running",
+                "result": None,
+                "error": None,
+            }
+
+        def work():
+            try:
+                res = self.fx.make_audio(kind, ref, title, content, mode, voice)
+                res.pop("path", None)
+                self._jobs[jid].update(status="done", result=res)
+            except Exception as e:
+                traceback.print_exc()
+                self._jobs[jid].update(status="error", error=str(e)[:300])
+
+        threading.Thread(target=work, daemon=True).start()
+        return {"job": jid}
+
+    def audio_job(self, jid, query, body):
+        job = self._jobs.get(int(jid))
+        if not job:
+            raise ApiError(404, "No such job")
+        return job
+
+    def audio_list(self, query, body):
+        kind = (query.get("kind") or ["session"])[0]
+        ref = int((query.get("id") or ["0"])[0])
+        rows = self.fx.list_audio(kind, ref)
+        for r in rows:
+            r.pop("path", None)
+        return {"audio": rows}
+
+    def audio_file(self, aid, query, body):
+        try:
+            data, ctype, name = self.fx.audio_file(int(aid))
+        except FileNotFoundError as e:
+            raise ApiError(404, "Audio not found") from e
+        return RawResponse(data, ctype, name)
+
 
 def make_handler(api: Api):
     class Handler(BaseHTTPRequestHandler):
@@ -599,12 +840,47 @@ def make_handler(api: Api):
                     return self._json(400, {"error": "Invalid JSON"})
             try:
                 status, obj = api.dispatch(method, url.path, parse_qs(url.query), body)
+                if isinstance(obj, RawResponse):
+                    return self._raw(obj)
                 self._json(status, obj)
             except ApiError as e:
                 self._json(e.status, {"error": e.message})
             except Exception as e:
                 traceback.print_exc()
                 self._json(500, {"error": f"{type(e).__name__}: {e}"})
+
+        def _raw(self, obj: "RawResponse") -> None:
+            data, total = obj.data, len(obj.data)
+            start, end, status = 0, total - 1, 200
+            m = re.match(r"bytes=(\d*)-(\d*)$", self.headers.get("Range") or "")
+            if m and total:
+                if m.group(1):
+                    start = int(m.group(1))
+                    end = int(m.group(2)) if m.group(2) else total - 1
+                else:  # suffix range: last N bytes
+                    start = max(0, total - int(m.group(2) or 0))
+                end = min(end, total - 1)
+                if start > end:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{total}")
+                    self.end_headers()
+                    return
+                status = 206
+            chunk = data[start : end + 1]
+            self.send_response(status)
+            self.send_header("Content-Type", obj.ctype)
+            self.send_header("Content-Length", str(len(chunk)))
+            self.send_header("Accept-Ranges", "bytes")
+            if status == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
+            if obj.filename:
+                disp = "attachment" if "download=1" in self.path else "inline"
+                self.send_header(
+                    "Content-Disposition", f'{disp}; filename="{obj.filename}"'
+                )
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(chunk)
 
         def _static(self, path: str) -> None:
             rel = path.lstrip("/") or "index.html"

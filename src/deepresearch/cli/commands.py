@@ -483,10 +483,14 @@ def handle_auth(args):
 
 
 def handle_estimate(args):
+    # Per agent run, from Google's Deep Research docs: ~250k input tokens
+    # (~50-70% cached) and ~60k output. Matches measured runs ($0.37-$2.04).
     COST_INPUT_1M = 2.00
+    COST_CACHED_1M = 0.20
     COST_OUTPUT_1M = 12.00
-    AVG_INPUT_TOKENS = 60_000
-    AVG_OUTPUT_TOKENS = 4_000
+    AVG_INPUT_TOKENS = 250_000
+    CACHED_FRACTION = 0.6
+    AVG_OUTPUT_TOKENS = 60_000
 
     file_tokens = 0
     if args.upload:
@@ -511,8 +515,11 @@ def handle_estimate(args):
     total_input = (total_nodes * AVG_INPUT_TOKENS) + (total_nodes * file_tokens)
     total_output = total_nodes * AVG_OUTPUT_TOKENS
 
-    cost = (total_input / 1_000_000 * COST_INPUT_1M) + (
-        total_output / 1_000_000 * COST_OUTPUT_1M
+    cached = total_nodes * AVG_INPUT_TOKENS * CACHED_FRACTION
+    cost = (
+        (total_input - cached) / 1_000_000 * COST_INPUT_1M
+        + cached / 1_000_000 * COST_CACHED_1M
+        + total_output / 1_000_000 * COST_OUTPUT_1M
     )
 
     table = Table(title="Cost Estimate (Gemini Deep Research)")
