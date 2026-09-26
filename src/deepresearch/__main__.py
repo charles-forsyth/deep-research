@@ -59,7 +59,12 @@ Examples:
 7. Follow-up question on session #1:
    %(prog)s followup 1 "Can you explain the error correction?"
 
-8. Manage history:
+8. Web dashboard (research workstation in the browser):
+   %(prog)s dashboard --start           # http://<host>:7420
+   %(prog)s dashboard --status
+   %(prog)s dashboard --stop
+
+9. Manage history:
    %(prog)s tree 1                      # session #1 and its child tasks
    %(prog)s show 1 --recursive --save report.html
    %(prog)s delete 1
@@ -258,7 +263,63 @@ def build_parser() -> argparse.ArgumentParser:
         "--upload", nargs="+", help="Files or folders you plan to upload"
     )
 
+    parser_dash = subparsers.add_parser(
+        "dashboard",
+        help="Run the web dashboard (research workstation) in the background",
+        description=(
+            "Start, stop or restart the web dashboard: a browser workstation "
+            "for launching research, watching live logs, reading and annotating "
+            "reports, a notebook for collecting and editing findings, semantic "
+            "search, follow-ups, and export. It has no login: it binds "
+            "0.0.0.0 by default, so anyone who can reach the port can use it "
+            "and spend your API credits. Use --host 127.0.0.1 to keep it local."
+        ),
+    )
+    action = parser_dash.add_mutually_exclusive_group()
+    action.add_argument("--start", action="store_true", help="Start in the background")
+    action.add_argument(
+        "--stop", action="store_true", help="Stop the running dashboard"
+    )
+    action.add_argument(
+        "--restart",
+        action="store_true",
+        help="Stop and start again (keeps the previous host/port unless given)",
+    )
+    action.add_argument(
+        "--status", action="store_true", help="Show whether it is running"
+    )
+    action.add_argument(
+        "--foreground",
+        action="store_true",
+        help="Run in this terminal instead of detaching (Ctrl-C to stop)",
+    )
+    parser_dash.add_argument(
+        "--host", default=None, help="Bind address (default: 0.0.0.0)"
+    )
+    parser_dash.add_argument(
+        "--port", type=int, default=None, help="Port (default: 7420)"
+    )
+
     return parser
+
+
+def handle_dashboard(args) -> int:
+    from deepresearch.dashboard import daemon
+
+    if args.stop:
+        return daemon.stop()
+    if args.restart:
+        return daemon.restart(args.host, args.port)
+    if args.foreground:
+        from deepresearch.dashboard.server import serve
+
+        serve(args.host or daemon.DEFAULT_HOST, args.port or daemon.DEFAULT_PORT)
+        return 0
+    if args.start:
+        return daemon.start(
+            args.host or daemon.DEFAULT_HOST, args.port or daemon.DEFAULT_PORT
+        )
+    return daemon.status()
 
 
 def main():
@@ -276,6 +337,7 @@ def main():
         "tree",
         "auth",
         "estimate",
+        "dashboard",
         "-h",
         "--help",
         "-v",
@@ -316,6 +378,10 @@ def main():
             handle_auth(args)
         elif args.command == "estimate":
             handle_estimate(args)
+        elif args.command == "dashboard":
+            code = handle_dashboard(args)
+            if code:
+                sys.exit(code)
         else:
             parser.print_help()
 
