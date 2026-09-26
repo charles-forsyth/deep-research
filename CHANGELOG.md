@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Versions before 1.0 may change behaviour between minor
 releases.
 
+## [Unreleased]
+
+### Changed
+- Dependencies: pydantic 2.13.5, python-dotenv 1.2.3, tenacity 9.1.4, pytest 9.1.1, pytest-cov 7.1.0,
+  plus security patches for urllib3, idna, pyasn1 and anyio. GitHub Actions: checkout v7,
+  upload-artifact v7. Dependabot groups minor/patch updates; ruff and mypy upgrades are taken
+  deliberately because they change lint and type rules.
+
 ## [0.17.2] - 2026-09-26
 
 ### Changed
