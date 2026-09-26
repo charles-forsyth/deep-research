@@ -31,7 +31,13 @@ class DeepResearchConfig(BaseModel):
             "GEMINI_FOLLOWUP_MODEL", "gemini-3.1-pro-preview"
         )
     )
-    recursion_timeout: int = 600  # 10 minutes per child task
+    # Safety limit for one research task (root or child), in minutes. Runs are
+    # not cut off early: a task only stops if it is still going after this long,
+    # and then its Google interaction is cancelled so it stops billing.
+    # 0 disables the limit.
+    task_timeout_min: int = Field(
+        default_factory=lambda: int(os.getenv("DR_TASK_TIMEOUT_MIN", "180")), ge=0
+    )
     debug: bool = False
 
     @field_validator("api_key", mode="before")

@@ -213,3 +213,134 @@ def test_recursive_root_adopts_precreated_row(monkeypatch, tmp_path):
     assert row["interaction_id"] == "iid-root" and row["result"] == "root report"
     with __import__("sqlite3").connect(db) as c:
         assert c.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+
+
+def _agent(monkeypatch, tmp_path, **cfg):
+    from deepresearch.core import agent as agent_mod
+    from deepresearch.core.session import SessionManager
+
+    db = str(tmp_path / "h.db")
+    monkeypatch.setattr(agent_mod, "SessionManager", lambda: SessionManager(db))
+    monkeypatch.setattr(agent_mod.genai, "Client", MagicMock())
+    monkeypatch.setattr(agent_mod.time, "sleep", lambda s: None)
+    return agent_mod.DeepResearchAgent(
+        config=DeepResearchConfig(api_key="k", **cfg), quiet=True
+    )
+
+
+def test_slow_child_report_is_kept_in_synthesis(monkeypatch, tmp_path):
+    """K3: a child that finished late used to be dropped from the synthesis."""
+    import threading
+
+    a = _agent(monkeypatch, tmp_path)
+    sm = a.session_manager
+    release = threading.Event()
+
+    def fake_stream(req, auto_update_status=True):
+        sm.create_session("iid-root", req.prompt)
+        sm.update_session("iid-root", "running", "root report")
+        return "iid-root"
+
+    def fake_child(self, q, d, max_d, b, req, pid):
+        if q == "slow":
+            release.wait(5)
+        return f"report for {q}"
+
+    monkeypatch.setattr(a, "start_research_stream", fake_stream)
+    monkeypatch.setattr(a, "analyze_gaps", lambda *x, **k: ["fast", "slow"])
+    monkeypatch.setattr(type(a), "_run_recursive_child_safe", fake_child, raising=True)
+    got = {}
+
+    def fake_synth(prompt, main, subs):
+        got["subs"] = sorted(subs)
+        return "final"
+
+    monkeypatch.setattr(a, "synthesize_findings", fake_synth)
+    threading.Timer(0.3, release.set).start()
+    a.start_recursive_research(ResearchRequest(prompt="q", depth=2, breadth=2))
+    assert got["subs"] == ["report for fast", "report for slow"]
+    assert sm.get_session("iid-root")["result"] == "final"
+
+
+def test_gap_questions_are_capped_at_breadth(monkeypatch, tmp_path):
+    a = _agent(monkeypatch, tmp_path)
+    sm = a.session_manager
+
+    def fake_stream(req, auto_update_status=True):
+        sm.create_session("iid-root", req.prompt)
+        sm.update_session("iid-root", "running", "root report")
+        return "iid-root"
+
+    calls = []
+    monkeypatch.setattr(a, "start_research_stream", fake_stream)
+    monkeypatch.setattr(a, "analyze_gaps", lambda *x, **k: ["a", "b", "c", "d", "e"])
+    monkeypatch.setattr(
+        type(a),
+        "_run_recursive_child_safe",
+        lambda self, q, *rest: calls.append(q) or f"r-{q}",
+    )
+    monkeypatch.setattr(a, "synthesize_findings", lambda *x: "final")
+    a.start_recursive_research(ResearchRequest(prompt="q", depth=2, breadth=2))
+    assert sorted(calls) == ["a", "b"]
+
+
+def test_poll_times_out_and_cancels_at_google(monkeypatch, tmp_path):
+    a = _agent(monkeypatch, tmp_path, task_timeout_min=1)
+    from deepresearch.core import agent as agent_mod
+
+    clock = iter(range(0, 100000, 30))  # each monotonic() call advances 30 s
+    monkeypatch.setattr(agent_mod.time, "monotonic", lambda: next(clock))
+    a.client.interactions.create.return_value = MagicMock(id="iid-slow")
+    a.client.interactions.get.return_value = MagicMock(
+        id="iid-slow", status="in_progress"
+    )
+    a.start_research_poll(ResearchRequest(prompt="q"))
+    a.client.interactions.cancel.assert_called_once_with("iid-slow")
+    row = a.session_manager.get_session("iid-slow")
+    assert row["status"] == "failed" and "Timed out" in row["result"]
+
+
+def test_poll_stops_on_any_terminal_status(monkeypatch, tmp_path):
+    """K5: 'cancelled' or 'incomplete' used to poll forever."""
+    a = _agent(monkeypatch, tmp_path)
+    a.client.interactions.create.return_value = MagicMock(id="iid-c")
+    a.client.interactions.get.return_value = MagicMock(
+        id="iid-c", status="cancelled", error=None
+    )
+    a.start_research_poll(ResearchRequest(prompt="q"))
+    assert a.session_manager.get_session("iid-c")["status"] == "cancelled"
+
+
+def test_poll_survives_transient_status_errors(monkeypatch, tmp_path):
+    a = _agent(monkeypatch, tmp_path)
+    done = MagicMock(id="iid-t", status="completed", output_text="the report")
+    a.client.interactions.create.return_value = MagicMock(id="iid-t")
+    a.client.interactions.get.side_effect = [
+        ConnectionError("blip"),
+        ConnectionError("blip"),
+        done,
+    ]
+    a.start_research_poll(ResearchRequest(prompt="q"))
+    row = a.session_manager.get_session("iid-t")
+    assert row["status"] == "completed" and row["result"] == "the report"
+
+
+def test_stream_end_without_final_event_checks_status(monkeypatch, tmp_path):
+    """Google closes long streams; a finished run must not reconnect forever."""
+    a = _agent(monkeypatch, tmp_path)
+    created = MagicMock(event_type="interaction.created", event_id="e1")
+    created.interaction.id = "iid-s"
+    a.client.interactions.create.return_value = iter([created])
+    a.client.interactions.get.return_value = MagicMock(
+        status="completed", output_text="streamed report"
+    )
+    a.start_research_stream(ResearchRequest(prompt="q"))
+    row = a.session_manager.get_session("iid-s")
+    assert row["status"] == "completed" and row["result"] == "streamed report"
+
+
+def test_task_timeout_setting(monkeypatch):
+    monkeypatch.setenv("DR_TASK_TIMEOUT_MIN", "0")
+    assert DeepResearchConfig(api_key="k").task_timeout_min == 0
+    monkeypatch.delenv("DR_TASK_TIMEOUT_MIN")
+    assert DeepResearchConfig(api_key="k").task_timeout_min == 180

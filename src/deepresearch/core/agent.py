@@ -16,6 +16,18 @@ from deepresearch.utils.exporters import DataExporter
 from deepresearch.utils.logger import log_message, setup_logger
 
 
+# Interaction states after which Google will not produce more output.
+TERMINAL_STATUSES = (
+    "completed",
+    "failed",
+    "cancelled",
+    "incomplete",
+    "budget_exceeded",
+)
+# Consecutive failed status checks tolerated while polling (10 s apart).
+MAX_POLL_ERRORS = 30
+
+
 def _final_text(interaction) -> str:
     """Final model text from an Interaction (steps schema, google-genai >= 2.0)."""
     text = getattr(interaction, "output_text", None)
@@ -42,6 +54,32 @@ class DeepResearchAgent:
     def _log(self, message: str, end: str = "\n", **kwargs):
         """Internal logging helper that respects the custom logger."""
         log_message(self.logger, message, end=end, **kwargs)
+
+    def _deadline(self) -> float | None:
+        minutes = self.config.task_timeout_min
+        return time.monotonic() + minutes * 60 if minutes else None
+
+    @staticmethod
+    def _expired(deadline: float | None) -> bool:
+        return deadline is not None and time.monotonic() > deadline
+
+    def _time_out(self, interaction_id: str) -> None:
+        """Stop a task that ran past the safety limit, locally and at Google."""
+        minutes = self.config.task_timeout_min
+        self._log(
+            f"\n[ERROR] Task still running after {minutes} minutes "
+            "(DR_TASK_TIMEOUT_MIN); cancelling it."
+        )
+        try:
+            self.client.interactions.cancel(interaction_id)
+        except Exception as e:
+            self._log(f"[WARN] Could not cancel interaction {interaction_id}: {e}")
+        self.session_manager.update_session(
+            interaction_id,
+            "failed",
+            result=f"Timed out: still running after {minutes} minutes "
+            "(raise DR_TASK_TIMEOUT_MIN, or set it to 0 for no limit).",
+        )
 
     def _process_stream(
         self,
@@ -130,6 +168,7 @@ class DeepResearchAgent:
 
         try:
             self._log("[INFO] Starting Research Stream...")
+            deadline = self._deadline()
             if not hasattr(self.client, "interactions"):
                 import google.genai
 
@@ -156,12 +195,22 @@ class DeepResearchAgent:
                 request.adopt_session_id,
             )
 
+            failures = 0
             while not is_complete[0] and interaction_id[0]:
-                self._log(
-                    f"\n[INFO] Connection lost. Resuming from {last_event_id[0]}..."
-                )
-                time.sleep(2)
+                if self._expired(deadline):
+                    self._time_out(interaction_id[0])
+                    return interaction_id[0]
+                time.sleep(min(2 * (failures + 1), 30))
                 try:
+                    # The stream can end without a final event (Google closes
+                    # long connections); check before reconnecting.
+                    state = self.client.interactions.get(id=interaction_id[0])
+                    if getattr(state, "status", None) in TERMINAL_STATUSES:
+                        is_complete[0] = True
+                        break
+                    self._log(
+                        f"\n[INFO] Connection lost. Resuming from {last_event_id[0]}..."
+                    )
                     resume_stream = self.client.interactions.get(
                         id=interaction_id[0],
                         stream=True,
@@ -174,7 +223,9 @@ class DeepResearchAgent:
                         is_complete,
                         adopt_session_id=request.adopt_session_id,
                     )
+                    failures = 0
                 except Exception as e:
+                    failures += 1
                     self._log(f"[ERROR] Reconnection failed: {e}")
 
             if is_complete[0]:
@@ -186,6 +237,14 @@ class DeepResearchAgent:
                             id=interaction_id[0]
                         )
                         final_text = _final_text(final_interaction)
+                        status = getattr(final_interaction, "status", None)
+                        if not final_text and status != "completed":
+                            err = getattr(final_interaction, "error", None)
+                            self.session_manager.update_session(
+                                interaction_id[0],
+                                "cancelled" if status == "cancelled" else "failed",
+                                result=f"Interaction ended with status {status}: {err}",
+                            )
                         if final_text:
                             if self.quiet:
                                 print(final_text)
@@ -267,8 +326,20 @@ class DeepResearchAgent:
                     interaction_id_str, request.prompt, request.upload_paths
                 )
 
+            deadline = self._deadline()
+            errors = 0
             while True:
-                interaction = self.client.interactions.get(interaction_id_str)
+                try:
+                    interaction = self.client.interactions.get(interaction_id_str)
+                    errors = 0
+                except Exception as e:
+                    # One failed status check must not fail an hour-long run.
+                    errors += 1
+                    if errors >= MAX_POLL_ERRORS:
+                        raise
+                    self._log(f"[WARN] Status check failed ({errors}): {e}")
+                    time.sleep(10)
+                    continue
                 if interaction.status == "completed":
                     self._log("\n" + "=" * 40 + " REPORT " + "=" * 40)
                     final_text = _final_text(interaction)
@@ -296,12 +367,18 @@ class DeepResearchAgent:
                     if request.output_file:
                         DataExporter.export(final_text, request.output_file)
                     break
-                elif interaction.status == "failed":
-                    error_msg = f"API Error: {getattr(interaction, 'error', None)}"
-                    self._log(f"[ERROR] Failed: {getattr(interaction, 'error', None)}")
+                elif interaction.status in TERMINAL_STATUSES:
+                    err = getattr(interaction, "error", None)
+                    error_msg = f"API Error ({interaction.status}): {err}"
+                    self._log(f"[ERROR] {interaction.status}: {err}")
                     self.session_manager.update_session(
-                        interaction.id, "failed", result=error_msg
+                        interaction.id,
+                        "cancelled" if interaction.status == "cancelled" else "failed",
+                        result=error_msg,
                     )
+                    break
+                if self._expired(deadline):
+                    self._time_out(interaction_id_str)
                     break
 
                 # Check quiet vs normal print polling
@@ -498,7 +575,9 @@ class DeepResearchAgent:
         status = session["status"]
         result = session["result"]
 
-        if status != "completed" and not result:
+        # A report is a completed result, or the interim report a non-leaf node
+        # keeps while its children run. A failed row's result is an error message.
+        if not result or status not in ("completed", "running"):
             self._log(
                 f"{indent}[ERROR] Research failed or incomplete. Status: {status}"
             )
@@ -514,7 +593,7 @@ class DeepResearchAgent:
             return report
 
         self._log(f"{indent}[INFO] Analyzing gaps...")
-        questions = self.analyze_gaps(prompt, report, limit=breadth)
+        questions = self.analyze_gaps(prompt, report, limit=breadth)[:breadth]
         self._log(f"{indent}[INFO] Gaps found: {len(questions)}")
 
         if not questions:
@@ -525,27 +604,24 @@ class DeepResearchAgent:
 
         self._log(f"{indent}[INFO] Spawning {len(questions)} sub-tasks...")
 
+        # Wait for every child. Each child bounds itself (task_timeout_min) and
+        # cancels its own interaction if it overruns, so no report that finishes
+        # is thrown away and nothing keeps billing after it is abandoned.
         sub_reports = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=breadth) as executor:
-            futures = []
-            for q in questions:
-                futures.append(
-                    executor.submit(
-                        self._run_recursive_child_safe,
-                        q,
-                        current_depth + 1,
-                        max_depth,
-                        breadth,
-                        original_request,
-                        current_id,
-                    )
+            futures = [
+                executor.submit(
+                    self._run_recursive_child_safe,
+                    q,
+                    current_depth + 1,
+                    max_depth,
+                    breadth,
+                    original_request,
+                    current_id,
                 )
-
-            done, not_done = concurrent.futures.wait(
-                futures, timeout=self.config.recursion_timeout
-            )
-
-            for f in done:
+                for q in questions
+            ]
+            for f in futures:
                 try:
                     res = f.result()
                     if res:
@@ -554,9 +630,11 @@ class DeepResearchAgent:
                     self._log(f"{indent}[WARN] Child failed: {e}")
                     if getattr(self.config, "debug", False):
                         self._log(f"{indent}[DEBUG] {traceback.format_exc()}")
-
-            if not_done:
-                self._log(f"{indent}[ERROR] {len(not_done)} child tasks timed out.")
+        if len(sub_reports) < len(questions):
+            self._log(
+                f"{indent}[WARN] {len(questions) - len(sub_reports)} of "
+                f"{len(questions)} child tasks returned no report."
+            )
 
         if not sub_reports:
             return report

@@ -107,8 +107,8 @@ class SessionManager:
                 (session_id,),
             ).fetchall()
 
-    # A Deep Research interaction is capped at 60 minutes by the API; a row with no process to
-    # check that has shown no activity for this long cannot still be running.
+    # Matches the default task limit (DR_TASK_TIMEOUT_MIN, 180 min): a row with no process to
+    # check that has shown no activity for this long is treated as dead.
     STALE_AFTER = timedelta(hours=3)
 
     @staticmethod

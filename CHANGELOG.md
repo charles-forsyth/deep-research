@@ -7,11 +7,32 @@ releases.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-26
+
+### Fixed
+- Security: any web page open in the same browser could cancel a running research run
+  by sending an empty form POST to the dashboard. Every write request must now be JSON
+  (with or without a body), writes from another origin are refused, and requests whose
+  Host is a public domain name are refused (DNS rebinding). IP addresses, machine names,
+  `.local`/`.lan`/`.home.arpa` and tailnet `.ts.net` names keep working; add other
+  names with `DR_ALLOWED_HOSTS`.
+- Recursive runs dropped every child report that took longer than 10 minutes from the
+  final synthesis, although the run still waited for (and paid for) those children.
+  Nearly all real child runs take longer than that. Every child report is now used.
+- A research task that Google ended as `cancelled`, `incomplete` or `budget_exceeded`
+  made the worker poll forever; a lost stream reconnected forever. Both now stop.
+- One failed status check no longer fails a long polled run (30 in a row do).
+- Gap analysis could spawn more child tasks than `--breadth`.
+
 ### Added
+- `DR_TASK_TIMEOUT_MIN` (default 180, 0 = no limit): safety limit per research task.
+  A task still running after that is cancelled at Google, so it stops billing, and is
+  marked failed with a clear message. Runs are never cut short before the limit.
 - `docs/SPEC.md`: complete system specification (requirements with test mapping, architecture,
-  data model, CLI, HTTP API, cost model, security model, 19 known gaps).
+  data model, CLI, HTTP API, cost model, security model, known gaps).
 
 ### Changed
+- `DeepResearchConfig.recursion_timeout` is replaced by `task_timeout_min`.
 - Dependencies: pydantic 2.13.5, python-dotenv 1.2.3, tenacity 9.1.4, pytest 9.1.1, pytest-cov 7.1.0,
   plus security patches for urllib3, idna, pyasn1 and anyio. GitHub Actions: checkout v7,
   upload-artifact v7. Dependabot groups minor/patch updates; ruff and mypy upgrades are taken

@@ -30,11 +30,13 @@ def app(tmp_path, monkeypatch):
     t.start()
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
 
-    def call(method, path, body=None, ctype="application/json"):
+    def call(method, path, body=None, ctype="application/json", headers=None):
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(base + path, data=data, method=method)
-        if data is not None:
+        if method != "GET" and ctype:
             req.add_header("Content-Type", ctype)
+        for k, v in (headers or {}).items():
+            req.add_header(k, v)
         try:
             with urllib.request.urlopen(req) as r:
                 raw = r.read()
@@ -46,7 +48,13 @@ def app(tmp_path, monkeypatch):
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b"null")
 
-    yield {"call": call, "api": api, "spawned": spawned, "tmp": tmp_path}
+    yield {
+        "call": call,
+        "api": api,
+        "spawned": spawned,
+        "tmp": tmp_path,
+        "port": httpd.server_address[1],
+    }
     httpd.shutdown()
     httpd.server_close()
 
@@ -274,3 +282,80 @@ def test_estimate_matches_cli_model():
     expected += 4 * 60_000 / 1e6 * 12
     assert e["cost_usd"] == round(expected, 2)
     assert 0.8 < estimate(1, 3)["cost_usd"] < 1.2  # ~$0.95 per agent run
+
+
+def _running(api):
+    return api.sessions.create_session("pending_start", "still running", pid=None)
+
+
+def test_bodyless_cross_site_post_cannot_cancel(app):
+    """K2: a page on another site could cancel runs with an empty form post."""
+    api = app["api"]
+    sid = _running(api)
+    status, _ = app["call"](
+        "POST",
+        f"/api/sessions/{sid}/cancel",
+        ctype="application/x-www-form-urlencoded",
+    )
+    assert status == 415
+    status, _ = app["call"]("POST", f"/api/sessions/{sid}/cancel", ctype=None)
+    assert status == 415
+    assert api.sessions.get_session(str(sid))["status"] == "running"
+
+
+def test_foreign_origin_write_refused(app):
+    api = app["api"]
+    sid = _running(api)
+    status, err = app["call"](
+        "POST",
+        f"/api/sessions/{sid}/cancel",
+        headers={"Origin": "http://evil.example"},
+    )
+    assert status == 403 and "Cross-origin" in err["error"]
+    assert api.sessions.get_session(str(sid))["status"] == "running"
+
+
+def test_same_origin_json_cancel_still_works(app):
+    api = app["api"]
+    sid = _running(api)
+    status, r = app["call"](
+        "POST",
+        f"/api/sessions/{sid}/cancel",
+        headers={"Origin": f"http://127.0.0.1:{app['port']}"},
+    )
+    assert status == 200 and r["status"] == "cancelled"
+
+
+def test_dns_rebinding_host_refused(app):
+    status, err = app["call"](
+        "GET", "/api/health", headers={"Host": "evil.example.com"}
+    )
+    assert status == 403 and "DR_ALLOWED_HOSTS" in err["error"]
+    status, _ = app["call"]("GET", "/", headers={"Host": "attacker.com:7420"})
+    assert status == 403
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "localhost:7420",
+        "127.0.0.1:7420",
+        "192.168.1.50:7420",
+        "[::1]:7420",
+        "[fe80::1]:7420",
+        "chuck-laptop:7420",
+        "chuck-laptop.tail9eb9b1.ts.net:7420",
+        "chuck-laptop.tail9eb9b1.ts.net.:7420",
+        "desk.local",
+        "desk.home.arpa",
+    ],
+)
+def test_local_host_names_allowed(host):
+    assert srv.host_allowed(host)
+
+
+def test_allowed_hosts_env(monkeypatch):
+    assert not srv.host_allowed("research.example.org")
+    monkeypatch.setenv("DR_ALLOWED_HOSTS", "research.example.org, other.example")
+    assert srv.host_allowed("research.example.org:443")
+    assert not srv.host_allowed("")
