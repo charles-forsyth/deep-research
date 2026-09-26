@@ -79,6 +79,7 @@ def detach(args: list[str], log_path: Path) -> int:
             stderr=log,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
+            cwd=str(LOG_DIR.parent),  # never pick up a stray ./.env
             env={
                 **os.environ,
                 "PYTHONUNBUFFERED": "1",
@@ -211,9 +212,38 @@ class Api:
 
     # ---- handlers --------------------------------------------------------
 
+    def _key_valid(self) -> bool | None:
+        """Check the key with Google once every 10 minutes (None = could not check)."""
+        import time
+        import urllib.error
+        import urllib.request
+
+        key = os.getenv("GEMINI_API_KEY") or ""
+        if not key:
+            return False
+        cached = getattr(self, "_key_check", None)
+        if cached and cached[0] == key and time.time() - cached[1] < 600:
+            return cached[2]
+        req = urllib.request.Request(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
+            headers={"x-goog-api-key": key},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5):
+                ok: bool | None = True
+        except urllib.error.HTTPError as e:
+            ok = False if e.code in (400, 401, 403) else None
+        except Exception:
+            ok = None  # offline: don't claim either way
+        self._key_check = (key, time.time(), ok)
+        return ok
+
     def health(self, query, body):
         key = bool(os.getenv("GEMINI_API_KEY"))
-        return {"ok": True, "version": __version__, "api_key": key}
+        out = {"ok": True, "version": __version__, "api_key": key}
+        if (query.get("check") or ["0"])[0] == "1":
+            out["api_key_valid"] = self._key_valid()
+        return out
 
     def stats(self, query, body):
         self._refresh_liveness()

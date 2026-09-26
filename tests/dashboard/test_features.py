@@ -251,3 +251,51 @@ def test_log_timestamps_env(monkeypatch, capsys):
     log_message(setup_logger(), "\n[THOUGHT] hello")
     out = capsys.readouterr().out
     assert "] [THOUGHT] hello" in out and out.startswith("\n[")
+
+
+def test_research_failure_before_interaction_marks_adopted_row_failed(
+    tmp_path, monkeypatch
+):
+    """A bad key fails before Google returns an interaction id; the row must not stay running."""
+    from unittest.mock import MagicMock
+
+    from deepresearch.cli.base import ResearchRequest
+    from deepresearch.core import agent as agent_mod
+    from deepresearch.core.config import DeepResearchConfig
+    from deepresearch.core.session import SessionManager
+
+    db = str(tmp_path / "h.db")
+    monkeypatch.setattr(agent_mod, "SessionManager", lambda: SessionManager(db))
+    monkeypatch.setattr(agent_mod.genai, "Client", MagicMock())
+    a = agent_mod.DeepResearchAgent(
+        config=DeepResearchConfig(api_key="bad"), quiet=True
+    )
+    a.client.interactions.create.side_effect = RuntimeError("400 API key not valid")
+    sid = a.session_manager.create_session("pending_start", "q")
+    import sqlite3
+
+    for start in (a.start_research_stream, a.start_research_poll):
+        with sqlite3.connect(db) as c:
+            c.execute(
+                "UPDATE sessions SET status='running', result=NULL WHERE id=?", (sid,)
+            )
+        start(ResearchRequest(prompt="q", adopt_session_id=sid))
+        row = a.session_manager.get_session(sid)
+        assert row["status"] == "failed" and "API key not valid" in row["result"]
+
+
+def test_health_reports_invalid_key(app, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(app["api"], "_key_valid", lambda: False)
+    st, h = app["call"]("GET", "/api/health?check=1")
+    assert st == 200 and h["api_key"] is True and h["api_key_valid"] is False
+    st, h = app["call"]("GET", "/api/health")
+    assert "api_key_valid" not in h  # cheap default, no network
+
+
+def test_children_and_server_do_not_run_in_callers_cwd():
+    import inspect
+
+    from deepresearch.dashboard import daemon, server
+
+    assert "cwd=str(STATE_DIR)" in inspect.getsource(daemon.start)
+    assert "cwd=str(LOG_DIR.parent)" in inspect.getsource(server.detach)
