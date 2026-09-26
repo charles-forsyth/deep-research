@@ -4,7 +4,7 @@
 Launch autonomous research, watch it think, then read, annotate, search, compare and listen to
 the cited reports it produces. Everything lives in a local SQLite history on your own machine.
 
-[![CI](https://github.com/charles-forsyth/deep-research/actions/workflows/ci.yml/badge.svg)](https://github.com/charles-forsyth/deep-research/actions/workflows/ci.yml)
+[![CI](https://github.com/charles-forsyth/deep-research/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/charles-forsyth/deep-research/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/charles-forsyth/deep-research)](https://github.com/charles-forsyth/deep-research/releases)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
