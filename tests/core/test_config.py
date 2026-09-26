@@ -58,3 +58,30 @@ def test_followup_request_validation():
 def test_followup_request_missing_field():
     with pytest.raises(ValidationError):
         FollowUpRequest(prompt="Just prompt")
+
+
+def test_service_env_prefers_user_file_over_folder_env(tmp_path, monkeypatch):
+    """A ./.env loaded by the CLI must not replace the saved key for the dashboard."""
+    from deepresearch.core import config
+
+    user = tmp_path / "user.env"
+    user.write_text("GEMINI_API_KEY=user-key\nDR_ONLY_IN_FILE=x\n")
+    monkeypatch.setattr(config, "user_config_path", str(user))
+    monkeypatch.setattr(config, "SHELL_ENV", frozenset({"PATH", "SHELL_SET"}))
+    monkeypatch.setenv("GEMINI_API_KEY", "stale-folder-key")  # came from ./.env
+    monkeypatch.setenv("SHELL_SET", "from-shell")
+    env = config.service_env()
+    assert env["GEMINI_API_KEY"] == "user-key"
+    assert env["DR_ONLY_IN_FILE"] == "x"
+    assert env["SHELL_SET"] == "from-shell"
+
+
+def test_service_env_keeps_real_shell_export(tmp_path, monkeypatch):
+    from deepresearch.core import config
+
+    user = tmp_path / "user.env"
+    user.write_text("GEMINI_API_KEY=user-key\n")
+    monkeypatch.setattr(config, "user_config_path", str(user))
+    monkeypatch.setattr(config, "SHELL_ENV", frozenset({"GEMINI_API_KEY"}))
+    monkeypatch.setenv("GEMINI_API_KEY", "exported-in-shell")
+    assert config.service_env()["GEMINI_API_KEY"] == "exported-in-shell"

@@ -946,6 +946,11 @@ def make_handler(api: Api):
 
 
 def serve(host: str, port: int, db_path: str = user_db_path) -> None:
+    # Also covers `dashboard --foreground` run from a folder with an old .env:
+    # the user settings file wins for everything this process and its runs do.
+    from deepresearch.core.config import service_env
+
+    os.environ.update(service_env())
     api = Api(db_path)
     httpd = ThreadingHTTPServer((host, port), make_handler(api))
     httpd.daemon_threads = True

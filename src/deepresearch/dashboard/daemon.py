@@ -10,6 +10,7 @@ import urllib.request
 from pathlib import Path
 
 from deepresearch.core.config import xdg_config_home
+from deepresearch.core.config import service_env
 
 STATE_DIR = Path(xdg_config_home) / "deepresearch"
 PID_FILE = STATE_DIR / "dashboard.pid"
@@ -108,9 +109,11 @@ def start(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> int:
             stderr=log,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
-            # config.py loads ./.env before the user file, so a checkout with an
-            # old .env would silently replace the saved key. Run from the state dir.
+            # The parent CLI already loaded ./.env from wherever it was run; hand
+            # the child an env where the user settings file wins, and run it from
+            # the state dir so nothing folder-specific leaks in.
             cwd=str(STATE_DIR),
+            env=service_env(),
         )
     PID_FILE.write_text(json.dumps({"pid": proc.pid, "host": host, "port": port}))
 
