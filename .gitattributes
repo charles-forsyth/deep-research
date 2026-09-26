@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.png binary
+*.mp3 binary
+*.wav binary
+src/deepresearch/dashboard/static/vendor/* linguist-vendored
+uv.lock linguist-generated

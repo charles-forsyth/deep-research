@@ -148,11 +148,13 @@ class Features:
                     _updated=str(d.get("updated") or ""),
                 )
         except Exception as e:  # expired interactions return 404
-            err = (
-                "not available from Google (interaction expired)"
-                if "404" in str(e)
-                else str(e)[:200]
-            )
+            msg = str(e)
+            if "404" in msg:
+                err = "not available from Google (interaction expired)"
+            elif "API key not valid" in msg or "401" in msg or "403" in msg:
+                err = "unavailable (API key rejected)"
+            else:
+                err = "unavailable (" + msg.split(" - ")[0][:80] + ")"
         definitive = u is not None or (err or "").startswith("not available")
         if status != "running" and definitive:
             with self._conn() as conn:

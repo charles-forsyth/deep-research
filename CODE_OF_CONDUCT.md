@@ -51,8 +51,12 @@ an individual is officially representing the community in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement.
-All complaints will be reviewed and investigated promptly and fairly.
+reported privately to the project maintainer through GitHub's private
+vulnerability reporting form
+(<https://github.com/charles-forsyth/deep-research/security/advisories/new>,
+mark the report "Code of Conduct") or by contacting @charles-forsyth on GitHub.
+All complaints will be reviewed and investigated promptly and fairly, and the
+privacy and security of the reporter will be respected.
 
 ## Attribution
 

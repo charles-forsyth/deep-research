@@ -20,7 +20,7 @@ logging.getLogger("google_genai").setLevel(logging.ERROR)
 
 from importlib.metadata import version, PackageNotFoundError
 
-__version__ = "0.13.3"
+__version__ = "0.0.0+unknown"
 
 try:
     __version__ = version("deepresearch")

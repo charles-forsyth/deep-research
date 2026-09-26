@@ -63,3 +63,39 @@ A SQLite wrapper handling persistence.
 *   **Pydantic V2:** Used for strict configuration and input validation.
 *   **Rich:** Used for all terminal output to provide a modern, readable DX (Developer Experience).
 *   **No AsyncIO:** The project uses `threading` instead of `asyncio` because the `google-genai` synchronous client is robust and easier to debug in a CLI context, and `ThreadPoolExecutor` sufficiently handles I/O-bound API calls.
+
+## 5. Package Layout
+
+```
+src/deepresearch/
+  __main__.py        argparse CLI and help text
+  cli/               command handlers and request models
+  core/              DeepResearchAgent, SessionManager, configuration
+  storage/           SQLite schema, File Search Store uploads
+  utils/             logging, retry decorators, exporters
+  dashboard/
+    daemon.py        --start/--stop/--restart/--status (detached process, PID file)
+    server.py        stdlib ThreadingHTTPServer, JSON API, static files
+    store.py         notebooks, annotations, stars/tags (extra SQLite tables)
+    features.py      actual cost, research map, compare, briefs, audio (Gemini TTS)
+    static/          index.html, app.js, features.js, app.css, vendored marked + DOMPurify
+```
+
+## 6. The Dashboard
+
+The dashboard is a thin layer over the same history database and the same CLI:
+
+*   **Launching** a run creates a session row and spawns `deep-research research ... --adopt-session N`
+    as a detached process, exactly like `deep-research start`. Runs survive dashboard restarts and
+    show up in `deep-research list`.
+*   **Liveness** comes from the PID recorded for each top-level run; `list_sessions` marks rows whose
+    process is gone as crashed.
+*   **Live timeline** reads the per-session log (`~/.config/deepresearch/logs/session_N.log`), whose
+    lines carry timestamps when started from the dashboard (`DR_LOG_TIMESTAMPS`).
+*   **Actual cost** is fetched from the Interactions API usage record and cached once a run finishes.
+*   **Research map** projects the stored `gemini-embedding-001` vectors to 2-D (power-iteration PCA
+    on the server, a small force layout in the browser) and links nearest neighbours.
+*   **Audio** is synthesized in chunks with Gemini TTS on a background thread, joined into one WAV,
+    converted to MP3 with `ffmpeg` when available, cached on disk and served with HTTP Range support.
+*   **Frontend** is vanilla JavaScript with no build step; Markdown is rendered with `marked` and
+    sanitized with `DOMPurify` before insertion.
