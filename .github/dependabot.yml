@@ -7,6 +7,13 @@ updates:
     groups:
       python-deps:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # Major bumps of dev tooling change lint/type rules; take them deliberately.
+      - dependency-name: "ruff"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "mypy"
+        update-types: ["version-update:semver-major"]
     open-pull-requests-limit: 5
   - package-ecosystem: "github-actions"
     directory: "/"

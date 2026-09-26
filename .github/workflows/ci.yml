@@ -19,7 +19,7 @@ jobs:
     name: gauntlet
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -56,7 +56,7 @@ jobs:
       matrix:
         python: ["3.13"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
@@ -68,13 +68,13 @@ jobs:
     name: build package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - name: Build sdist and wheel
         run: uv build
       - name: Check the wheel ships the dashboard assets
         run: python3 -c "import zipfile,glob; n=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); assert any(x.endswith('static/index.html') for x in n) and any(x.endswith('static/features.js') for x in n), n"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
