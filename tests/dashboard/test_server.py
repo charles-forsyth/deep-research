@@ -24,7 +24,11 @@ def app(tmp_path, monkeypatch):
         spawned.append((args, log_path))
         return 4242
 
-    api = Api(str(tmp_path / "history.db"), spawn=fake_spawn)
+    from deepresearch.dashboard.lab import Lab
+
+    db = str(tmp_path / "history.db")
+    # the lab never reads the real ~/.config/deepresearch/lab_targets.json in tests
+    api = Api(db, spawn=fake_spawn, lab=Lab(db, lambda: None, tmp_path, targets={}))
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(api))
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()

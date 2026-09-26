@@ -359,6 +359,7 @@ async function renderSession(v, t) {
         <span class="mono dim find-count" style="align-self:center"></span>
       </div>
       <article class="md" id="report"></article>
+      ${s.result && !running ? '<section class="lab-panel" id="lab-panel"></section>' : ""}
     </div>
     <div class="dock">
       <div class="dock-inner">
@@ -373,6 +374,7 @@ async function renderSession(v, t) {
     art.querySelectorAll("h1,h2,h3,h4").forEach((h, i) => (h.id = `h-${i}-${slug(h.textContent)}`));
     applyAnnotations(art, s.annotations);
     CITE.decorate(art, s.result);
+    const lp = v.querySelector("#lab-panel"); if (lp) LAB.mount(lp, s);
   } else {
     art.innerHTML = `<div class="empty-result ${running ? "scan" : ""}">${running ? "Research in progress. The live log is streaming in the right panel." : "No result stored for this session."}</div>`;
   }
@@ -538,7 +540,7 @@ document.addEventListener("mouseup", (e) => {
     SEL = { text, occurrence: occ, inNotebook: !$("#report") };
     const bar = $("#selbar");
     bar.hidden = false;
-    $$('[data-act="hl"],[data-act="note"],[data-act="ask"]', bar).forEach((b) => (b.style.display = SEL.inNotebook ? "none" : ""));
+    $$('[data-act="hl"],[data-act="note"],[data-act="ask"],[data-act="lab"]', bar).forEach((b) => (b.style.display = SEL.inNotebook ? "none" : ""));
     bar.querySelector(".sep").style.display = SEL.inNotebook ? "none" : "";
     const bw = bar.offsetWidth;
     bar.style.left = Math.max(8, Math.min(window.innerWidth - bw - 8, rect.left + rect.width / 2 - bw / 2)) + "px";
@@ -555,6 +557,9 @@ $("#selbar").addEventListener("click", async (e) => {
   else if (act === "quote") {
     const src = sid ? `\n>\n> *Session #${sid}*` : "";
     await NB.append("> " + SEL.text.replace(/\n+/g, "\n> ") + src + "\n");
+  } else if (act === "lab" && sid) {
+    const s = S.cache[sid];
+    if (s) LAB.startDialog(s, { scope: "selection", selection: SEL.text });
   } else if (act === "ask" && sid) {
     S.pendingAsk = `Regarding this passage: "${clip(SEL.text, 600)}"\n\n`;
     const ta = $(".dock textarea"); if (ta) { ta.value = S.pendingAsk; S.pendingAsk = null; ta.dispatchEvent(new Event("input")); ta.focus(); }
@@ -853,7 +858,7 @@ function renderRight() {
         <span class="k">Ctrl K</span><span class="v">command palette</span>
         <span class="k">Ctrl F</span><span class="v">find in report</span>
         <span class="k">Ctrl S</span><span class="v">save notebook</span>
-        <span class="k">select</span><span class="v">highlight, note, quote to notebook, ask</span>
+        <span class="k">select</span><span class="v">highlight, note, quote to notebook, ask, lab run</span>
       </div>
       <div class="dim" style="margin-top:16px;font-size:11.5px">Open a session to see its intel, annotations, outline and live log.</div>`;
     $$(".children a", body).forEach((a) => (a.onclick = () => openSession(a.dataset.id)));
@@ -1055,7 +1060,7 @@ window.addEventListener("beforeunload", (e) => { if (NB.dirty) { NB.saveNow(); e
 (async function boot() {
   try { S.health = await api("/api/health?check=1"); $("#version").textContent = "v" + S.health.version; }
   catch { toast("Dashboard API unreachable", "err"); }
-  await Promise.all([loadSessions(), loadStats(), loadNotebooks()]).catch((e) => toast(e.message, "err"));
+  await Promise.all([loadSessions(), loadStats(), loadNotebooks(), LAB.loadTargets()]).catch((e) => toast(e.message, "err"));
   try {
     const saved = JSON.parse(localStorage.getItem(LS_TABS) || "null");
     if (saved?.tabs?.length) { S.tabs = saved.tabs; S.active = saved.active; }
