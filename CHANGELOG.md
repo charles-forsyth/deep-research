@@ -7,6 +7,34 @@ releases.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-26
+
+### Added
+- Lab runs: run a real computation on an HPC cluster to test something a report says,
+  and keep the results with the report.
+  - Every report has a Lab runs section. "Suggest computations" proposes up to three
+    computations the report makes possible (Gemini with Google Search, a few cents).
+  - Start a run from a suggestion, from highlighted text ("Lab run" on the selection
+    bar) or from the whole report. Gemini researches the method and software and writes
+    a job plan and Slurm script.
+  - Nothing runs until you review it: the dialog shows the plan, the full script, the
+    resources and the estimated cluster cost; parameters and resources are editable.
+  - The job installs its own software (module, cached Pixi environment, pip, or an
+    Apptainer image), runs, and is watched in the background with live stage and log.
+  - Outputs are fetched to the laptop and shown on the report (images inline, files as
+    links) with an AI note: result, key numbers, what it means, limits, next run.
+  - Rerun copies a plan into a new draft so you can change parameters.
+  - Targets live in `lab_targets.json` in the config folder (not in the repository).
+    The first target type is Slurm over SSH through `gcloud` IAP with a persistent
+    connection.
+- `docs/SPEC.md` section 20 describes the design.
+
+### Tested
+- Real runs on Ursa Major: a Qiskit CHSH Bell test (S = 2.84 against the 2.83 bound,
+  CPU node, 1 min 48 s) and vLLM on an L4 GPU. Failures found on the way are fixed in
+  the harness: pip without pip in the environment, libstdc++ too old for pip wheels,
+  and missing Apptainer on compute nodes.
+
 ## [0.18.0] - 2026-09-26
 
 ### Fixed

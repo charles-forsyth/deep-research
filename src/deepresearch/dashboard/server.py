@@ -28,12 +28,14 @@ from deepresearch import __version__
 from deepresearch.core.config import user_db_path, xdg_config_home
 from deepresearch.core.session import SessionManager
 from deepresearch.dashboard.features import VOICES, Features
+from deepresearch.dashboard.lab import Lab, TargetError
 from deepresearch.dashboard.store import DashboardStore
 
 MAX_BODY = 25 * 1024 * 1024  # uploads are base64 in JSON
 LOG_DIR = Path(xdg_config_home) / "deepresearch" / "logs"
 UPLOAD_DIR = Path(xdg_config_home) / "deepresearch" / "uploads"
 AUDIO_DIR = Path(xdg_config_home) / "deepresearch" / "audio"
+STATE_DIR = Path(xdg_config_home) / "deepresearch"
 STATIC = resources.files("deepresearch.dashboard") / "static"
 
 # Estimate constants mirror `deep-research estimate` (cli/commands.py).
@@ -156,13 +158,19 @@ def _safe_name(name: str) -> str:
 class Api:
     """Route table + handlers. Kept separate from the HTTP plumbing for tests."""
 
-    def __init__(self, db_path: str = user_db_path, spawn: Callable = detach):
+    def __init__(
+        self,
+        db_path: str = user_db_path,
+        spawn: Callable = detach,
+        lab: Lab | None = None,
+    ):
         self.db_path = db_path
         self.sessions = SessionManager(db_path)
         self.store = DashboardStore(db_path)
         self.spawn = spawn
         self._embed_lock = threading.Lock()
         self.fx = Features(db_path, self._config, AUDIO_DIR)
+        self.lab = lab or Lab(db_path, self._config, STATE_DIR)
         self._jobs: dict[int, dict] = {}
         self._job_seq = 0
         self._jobs_lock = threading.Lock()
@@ -213,6 +221,18 @@ class Api:
         r("GET", r"/api/audio", self.audio_list)
         r("GET", r"/api/audio/jobs/(\d+)", self.audio_job)
         r("GET", r"/api/audio/(\d+)/file", self.audio_file)
+        r("GET", r"/api/lab/targets", self.lab_targets)
+        r("GET", r"/api/sessions/(\d+)/lab", self.lab_list)
+        r("POST", r"/api/sessions/(\d+)/lab/suggestions", self.lab_suggestions)
+        r("POST", r"/api/sessions/(\d+)/lab", self.lab_create)
+        r("GET", r"/api/lab/(\d+)", self.lab_get)
+        r("PUT", r"/api/lab/(\d+)/plan", self.lab_edit)
+        r("POST", r"/api/lab/(\d+)/submit", self.lab_submit)
+        r("POST", r"/api/lab/(\d+)/cancel", self.lab_cancel)
+        r("POST", r"/api/lab/(\d+)/rerun", self.lab_rerun)
+        r("GET", r"/api/lab/(\d+)/log", self.lab_log)
+        r("GET", r"/api/lab/(\d+)/file", self.lab_file)
+        r("DELETE", r"/api/lab/(\d+)", self.lab_delete)
 
     def _route(self, method: str, pattern: str, fn: Callable) -> None:
         self.routes.append((method, re.compile(f"^{pattern}$"), fn))
@@ -350,6 +370,7 @@ class Api:
         for i in ids:
             self.sessions.delete_session(str(i))
         self.store.purge_session_workspace(ids)
+        self.lab.purge_session(ids)
         return {"deleted": ids}
 
     def patch_meta(self, sid, query, body):
@@ -860,6 +881,183 @@ class Api:
             raise ApiError(404, "Audio not found") from e
         return RawResponse(data, ctype, name)
 
+    # ---- lab runs: real computations on an HPC cluster ------------------------
+
+    def _lab_run(self, rid) -> dict:
+        run = self.lab.get(int(rid))
+        if not run:
+            raise ApiError(404, "Lab run not found")
+        return run
+
+    def _lab_view(self, run: dict) -> dict:
+        tgt = self.lab.target(run.get("target"))
+        run["target_label"] = tgt.label if tgt else None
+        return run
+
+    def lab_targets(self, query, body):
+        return {
+            "targets": [
+                {
+                    "name": t.name,
+                    "label": t.label,
+                    "partitions": t.partitions,
+                    "default_partition": t.default_partition,
+                }
+                for t in self.lab.targets.values()
+            ]
+        }
+
+    def lab_list(self, sid, query, body):
+        self._session(sid)
+        self.lab.ensure_watcher()
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
+            sug = conn.execute(
+                "SELECT data, cost_usd, created_at FROM lab_suggestions WHERE session_id = ?",
+                (int(sid),),
+            ).fetchone()
+        return {
+            "runs": [self._lab_view(r) for r in self.lab.runs_for(int(sid))],
+            "suggestions": (
+                {**json.loads(sug[0]), "cost_usd": sug[1], "created_at": sug[2]}
+                if sug
+                else None
+            ),
+            "configured": bool(self.lab.targets),
+        }
+
+    def lab_suggestions(self, sid, query, body):
+        s = self._session(sid)
+        if not (s.get("result") or "").strip():
+            raise ApiError(400, "This session has no report yet")
+        try:
+            return self.lab.suggestions(
+                int(sid),
+                s["prompt"],
+                s["result"],
+                refresh=bool((body or {}).get("refresh")),
+            )
+        except Exception as e:
+            raise ApiError(502, f"Suggestions failed: {e}") from e
+
+    def lab_create(self, sid, query, body):
+        s = self._session(sid)
+        body = body or {}
+        if not self.lab.targets:
+            raise ApiError(400, "No compute target configured (lab_targets.json)")
+        scope = body.get("scope") or "document"
+        if scope not in ("selection", "document", "suggestion"):
+            raise ApiError(400, "scope must be selection, document or suggestion")
+        text = (body.get("selection") or "").strip() if scope == "selection" else ""
+        if scope == "selection" and not text:
+            raise ApiError(400, "Nothing selected")
+        if scope != "selection":
+            text = s.get("result") or ""
+            if not text.strip():
+                raise ApiError(400, "This session has no report yet")
+        request = (body.get("request") or "").strip()[:4000]
+        run = self.lab.create(
+            int(sid), scope, text[:120000], request, body.get("target")
+        )
+        threading.Thread(
+            target=self.lab.make_plan, args=(run["id"], s["prompt"]), daemon=True
+        ).start()
+        return self._lab_view(run)
+
+    def lab_get(self, rid, query, body):
+        return self._lab_view(self._lab_run(rid))
+
+    def lab_edit(self, rid, query, body):
+        self._lab_run(rid)
+        plan = (body or {}).get("plan")
+        if not isinstance(plan, dict):
+            raise ApiError(400, "plan must be an object")
+        try:
+            return self._lab_view(self.lab.edit_plan(int(rid), plan))
+        except ValueError as e:
+            raise ApiError(409, str(e)) from e
+
+    def lab_submit(self, rid, query, body):
+        self._lab_run(rid)
+        try:
+            return self._lab_view(self.lab.submit(int(rid)))
+        except ValueError as e:
+            raise ApiError(409, str(e)) from e
+        except TargetError as e:
+            raise ApiError(502, str(e)) from e
+
+    def lab_cancel(self, rid, query, body):
+        self._lab_run(rid)
+        try:
+            return self._lab_view(self.lab.cancel(int(rid)))
+        except ValueError as e:
+            raise ApiError(409, str(e)) from e
+        except TargetError as e:
+            raise ApiError(502, str(e)) from e
+
+    def lab_rerun(self, rid, query, body):
+        run = self._lab_run(rid)
+        plan = (body or {}).get("plan") or run.get("plan")
+        if not isinstance(plan, dict):
+            raise ApiError(409, "The original run has no plan to copy")
+        new = self.lab.create(
+            run["session_id"],
+            run["scope"],
+            run.get("selection") or "",
+            run.get("request") or "",
+            run.get("target"),
+            rerun_of=run["id"],
+            plan=plan,
+        )
+        return self._lab_view(new)
+
+    def lab_log(self, rid, query, body):
+        self._lab_run(rid)
+        offset = int((query.get("offset") or ["0"])[0])
+        try:
+            return self.lab.log(int(rid), offset)
+        except TargetError as e:
+            raise ApiError(502, str(e)) from e
+
+    def lab_file(self, rid, query, body):
+        self._lab_run(rid)
+        rel = (query.get("path") or [""])[0]
+        try:
+            p = self.lab.file_path(int(rid), rel)
+        except FileNotFoundError as e:
+            raise ApiError(404, "File not found") from e
+        ctype = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+        if ctype.startswith("text/") or p.suffix.lower() in (
+            ".csv",
+            ".tsv",
+            ".log",
+            ".out",
+            ".dat",
+            ".xvg",
+            ".json",
+            ".md",
+            ".sbatch",
+            ".sh",
+        ):
+            ctype = "text/plain; charset=utf-8"
+        return RawResponse(p.read_bytes(), ctype, p.name)
+
+    def lab_delete(self, rid, query, body):
+        run = self._lab_run(rid)
+        if run["status"] in (
+            "submitting",
+            "queued",
+            "running",
+            "fetching",
+            "analyzing",
+        ):
+            raise ApiError(409, "Cancel the run before deleting it")
+        import shutil
+
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
+            conn.execute("DELETE FROM lab_runs WHERE id = ?", (int(rid),))
+        shutil.rmtree(self.lab.results_dir / f"run_{int(rid)}", ignore_errors=True)
+        return {"deleted": int(rid)}
+
 
 def make_handler(api: Api):
     class Handler(BaseHTTPRequestHandler):
@@ -1008,6 +1206,7 @@ def serve(host: str, port: int, db_path: str = user_db_path) -> None:
 
     os.environ.update(service_env())
     api = Api(db_path)
+    api.lab.ensure_watcher()  # pick up lab runs still active from before a restart
     httpd = ThreadingHTTPServer((host, port), make_handler(api))
     httpd.daemon_threads = True
     print(f"[INFO] Deep Research dashboard {__version__} on http://{host}:{port}")

@@ -34,6 +34,7 @@ in [section 17](#17-known-gaps-and-limitations).
 17. [Known gaps and limitations](#17-known-gaps-and-limitations)
 18. [Build, release and operations](#18-build-release-and-operations)
 19. [Extension guide](#19-extension-guide)
+20. [Lab runs](#20-lab-runs)
 
 ---
 
@@ -547,6 +548,8 @@ strings (K16).
 | `run_meta` | server | `session_id` PK, `depth`, `breadth`, `estimate_usd`, `rerun_of`, `launched_at` | Launch parameters and estimate for dashboard runs; re-run links. |
 | `session_usage` | features | `session_id` PK, `usage` (JSON), `fetched_at`, `error` | Cached usage block or definitive "not available" (REQ-COST-3). |
 | `audio_exports` | features | `id`, `kind` (`session`/`notebook`), `ref_id`, `mode` (`full`/`summary`), `voice`, `path`, `seconds`, `cost_usd`, `script`, `created_at` | One row per generated audio file. |
+| `lab_runs` | lab | `id`, `session_id`, `scope` (`selection`/`document`), `selection`, `request`, `target`, `status`, `stage`, `plan` (JSON), `script`, `job_id`, `slurm_state`, `node`, `elapsed`, `exit_code`, `error`, `result_md`, `files` (JSON), `estimate_usd`, `ai_cost_usd`, `rerun_of`, timestamps | One row per lab run (section 20). A cache of the cluster's job folder. |
+| `lab_suggestions` | lab | `session_id` PK, `data` (JSON), `cost_usd`, `created_at` | Cached pre-run suggestions for a report. |
 
 The CLI never reads the dashboard tables. Runs started from the CLI therefore have no
 `run_meta` row: no estimate is shown next to their actual cost and they cannot appear as
@@ -1096,9 +1099,138 @@ uv run deep-research dashboard --foreground --host 127.0.0.1 --port 7421
 
 ---
 
+## 20. Lab runs
+
+Added in v0.19.0. A lab run turns a question raised by a report into a real computation
+on an HPC cluster and attaches the results to that report.
+
+### 20.1 Flow
+
+```mermaid
+flowchart LR
+  A[Report or highlighted passage] --> B[Plan: Gemini + Google Search]
+  B --> C{User reviews plan and script}
+  C -- edit --> C
+  C -- Submit --> D[sbatch on cluster]
+  D --> E[Install software] --> F[Run] --> G[Fetch outputs] --> H[AI results note]
+  H -- Rerun with new parameters --> C
+```
+
+1. **Suggest.** Each report shows a Lab runs section. "Suggest computations" asks Gemini
+   (with Google Search) for up to 3 computations the report makes possible; each card
+   names the question, method, software and rough run time. Suggestions are cached per
+   report and only generated on a click.
+2. **Plan.** From a suggestion, a text selection (selection bar: "Lab run") or the whole
+   report, `gemini-3.1-pro-preview` with Google Search writes a JSON plan: question,
+   method, software, install spec, inputs, parameters, resources, expected outputs,
+   success criteria and the job script body. The planner is given the target's
+   description (partitions, CPUs, GPUs, memory, modules, software notes) from its config.
+3. **Review (always).** The plan is a `draft` until the user presses Submit. The dialog
+   shows the plan, the full generated sbatch script, the resources and the estimated
+   cluster cost. Parameters and resources are editable; edits rebuild the script and the
+   estimate. Nothing is ever submitted automatically.
+4. **Submit.** The harness writes `plan.json`, `run.sbatch` and a status file into
+   `~/deep-research-lab/run_<id>/` on the cluster and calls `sbatch`.
+5. **Watch.** The dashboard's watcher thread polls every 15 s while any run is active
+   (`squeue`/`sacct`, the stage file and the log tail). It stops when nothing is active.
+6. **Fetch.** On a terminal Slurm state the `outputs/` folder, log, script and plan are
+   copied to `<state dir>/lab/run_<id>/` (limits: 200 MB total, 50 MB per file).
+7. **Write-up.** Gemini reads the plan, the log tail and the text outputs and writes a
+   short note: Result, Key numbers, What it means for the report, Limits, Next run. It
+   must quote numbers from the outputs; a failed job is described as failed.
+8. **Rerun.** Copies the plan into a new draft with `rerun_of` set, back to step 3.
+
+Status values: `planning`, `draft`, `submitting`, `queued`, `running`, `fetching`,
+`analyzing`, `completed`, `failed`, `cancelled`. The UI shows them as stages
+Plan, Review, Queued, Running, Fetch, Write-up, Done.
+
+### 20.2 Job harness
+
+`build_sbatch()` wraps the planner's script body in a fixed harness:
+
+- `#SBATCH` lines from the resources (partition, nodes, CPUs, GPUs, time). No defaults
+  cap nodes, time or GPUs (user decision); the partition's own limits apply.
+- A stage file (`Installing software`, `Running`, `Done`/`Failed (exit N)`) the watcher reads.
+- Install, in this order: `module load`; a cached Pixi environment keyed by the package
+  list (`~/deep-research-lab/envs/<key>`, conda-forge/bioconda, then pip inside it, with
+  Python and pip added when pip packages are listed); Apptainer images pulled once into
+  `~/deep-research-lab/images/` and exported as `IMG_<NAME>`. The environment's `lib`
+  directory goes first on `LD_LIBRARY_PATH` because pip wheels need a newer libstdc++
+  than Rocky 8's system copy.
+- Parameters are exported as environment variables, so a rerun changes values without
+  editing the script.
+- Package names, channels, modules, image references and pip index URLs are checked
+  against strict patterns before they reach the script; anything else is dropped.
+
+### 20.3 Targets
+
+Targets are defined in `<config dir>/lab_targets.json`, outside the repository (host
+names and projects are private). The only type today is `slurm-ssh`: a persistent SSH
+ControlMaster built from `gcloud compute ssh --dry-run` (IAP tunnel), about 0.3 s per
+command after the first. A target implements `submit`, `status`, `log`, `fetch`, `cancel`
+and `describe`. Each partition entry lists CPUs, memory, GPUs and hourly price, used for
+the estimate. A second target type only needs those six methods and a `type` value.
+
+### 20.4 API
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/lab/targets` | Configured targets and partitions. |
+| `GET /api/sessions/{id}/lab` | Runs and cached suggestions for a report. Starts the watcher if runs are active. |
+| `POST /api/sessions/{id}/lab/suggestions` | Generate suggestions (paid; `{"refresh": true}` to regenerate). |
+| `POST /api/sessions/{id}/lab` | Create a run: `{scope, selection?, request?}`, scope `selection`, `document` or `suggestion`. Planning runs in the background. |
+| `GET /api/lab/{rid}` | One run. |
+| `PUT /api/lab/{rid}/plan` | Edit a draft plan; rebuilds script and estimate. |
+| `POST /api/lab/{rid}/submit` | Submit a draft. |
+| `POST /api/lab/{rid}/cancel` | `scancel` (or stop planning). |
+| `POST /api/lab/{rid}/rerun` | New draft from this run's plan. |
+| `GET /api/lab/{rid}/log?offset=N` | Log tail (live from the cluster while active, local copy after). |
+| `GET /api/lab/{rid}/file?path=...` | A fetched file, confined to the run folder. |
+| `DELETE /api/lab/{rid}` | Delete a finished run and its local files (not while active). |
+
+Deleting a report deletes its lab runs, suggestions and local result files.
+
+### 20.5 Cost
+
+The estimate before submit is `partition hourly price x nodes x time limit`, from the
+partition prices in the target config (Google on-demand list prices, us-central1, taken
+from the Cloud Billing catalog on 2026-09-26). It is an upper bound: jobs usually end
+early, and the node's ~90 s boot is not billed to the job. AI cost (suggestions, plan,
+write-up) is computed from `usage_metadata` and shown on the run. Typical figures from
+testing: suggestions $0.05-0.08, a plan $0.10-0.30, a write-up about $0.02.
+
+### 20.6 Reliability
+
+- The cluster's job folder is the source of truth; `lab_runs` is a cache. A poll that
+  fails (laptop asleep, network down) records the error and retries on the next round;
+  it never resubmits.
+- The watcher lives in the dashboard process. If the dashboard is stopped, jobs keep
+  running on the cluster and are picked up when it starts again (checked on start).
+- Runs are fetched once; a run stuck in `fetching` or `analyzing` retries that step.
+
+### 20.7 Tests
+
+`tests/dashboard/test_lab.py` covers the script builder (install order, sanitising,
+parameters, index URLs, containers), the cost estimate, the plan-review-submit-watch-
+fetch-write-up loop and rerun against an in-memory fake target and fake Gemini, the file
+endpoint's path confinement, cleanup on report delete, and the API routes. Live checks
+are listed in the v0.19.0 changelog.
+
+### 20.8 Known gaps
+
+| ID | Gap | Effect |
+|---|---|---|
+| L1 | One target type (Slurm over SSH); no target picker in the UI yet. | Other clusters need a new target class. |
+| L2 | The planner can still choose software that fails on the cluster (for example CUDA 13 wheels on a CUDA 12.4 driver). The write-up reports the failure; the target's software notes are the main defence. | A wasted run; fixed by editing and rerunning. |
+| L3 | No sweeps, result comparison or cluster-side caching of outputs yet. | Reruns are one at a time. |
+| L4 | Watching requires the dashboard to be running; no notification when a job ends. | You see results the next time the report is open. |
+
+---
+
 ## Document history
 
 | Date | Version | Change |
 |---|---|---|
 | 2026-09-26 | v0.17.5 | First complete specification, written from the source. |
 | 2026-09-26 | v0.18.0 | K2, K3, K5 fixed; task limit (6.4a); REQ-DASH-12; host and origin checks. |
+| 2026-09-26 | v0.19.0 | Lab runs (section 20); `lab_runs`, `lab_suggestions` tables. |
