@@ -14,9 +14,10 @@ const CITE = {
     for (const m of tail.matchAll(/^\s*(\d+)\.\s*\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/gm)) out[m[1]] = { label: m[2], url: m[3] };
     return out;
   },
-  decorate(art, md) {
+  decorate(art, md, opts = {}) {
     const src = CITE.sources(md || "");
     if (!Object.keys(src).length) return;
+    if (opts.collapseSources) CITE.collapseSources(art);
     const walker = document.createTreeWalker(art, NodeFilter.SHOW_TEXT);
     const hits = []; let n;
     while ((n = walker.nextNode())) if (/\[cite:\s*[\d,\s]+\]/.test(n.nodeValue)) hits.push(n);
@@ -37,7 +38,7 @@ const CITE = {
       node.replaceWith(frag);
     }
     // Uncited-claim markers: substantive paragraphs/list items with no chip.
-    const body = [...art.children];
+    const body = opts.noUncited ? [] : [...art.children];
     const stop = body.findIndex((el) => /^sources:?$/i.test(el.textContent.trim()));
     body.slice(0, stop < 0 ? undefined : stop).forEach((el) => {
       if (!/^(P|LI|UL|OL)$/.test(el.tagName)) return;
@@ -77,6 +78,18 @@ const CITE = {
     document.addEventListener("scroll", () => (card.hidden = true), true);
     const unc = art.querySelectorAll(".uncited").length;
     if (unc) art.dataset.uncited = unc;
+  },
+  // Fold each long "Sources:" list into a <details> so notebooks stay readable.
+  collapseSources(art) {
+    [...art.querySelectorAll("p, h1, h2, h3, h4")].forEach((el) => {
+      if (!/^sources:?$/i.test(el.textContent.trim())) return;
+      const list = el.nextElementSibling;
+      if (!list || !/^(OL|UL)$/.test(list.tagName)) return;
+      const d = document.createElement("details");
+      d.className = "src-fold";
+      d.innerHTML = `<summary>Sources (${list.children.length})</summary>`;
+      el.replaceWith(d); d.appendChild(list);
+    });
   },
   sentenceOf(chip) {
     const block = chip.closest("p, li, td") || chip.parentElement;

@@ -212,8 +212,13 @@ mark.find { background: rgba(250, 204, 21, .35); color: #fff; border-radius: 2px
 
 /* ---- notebook ---- */
 .nb { display: grid; grid-template-columns: 1fr 1fr; height: calc(100% - 51px); }
-.nb.mode-edit { grid-template-columns: 1fr 0; }
-.nb.mode-preview { grid-template-columns: 0 1fr; }
+.nb.mode-edit { grid-template-columns: 1fr; }
+.nb.mode-preview { grid-template-columns: 1fr; }
+/* Hide the unused pane outright: a 0-width grid column still paints its
+   overflowing text (the editor spilled one letter per line over the preview). */
+.nb.mode-edit .preview, .nb.mode-preview textarea { display: none; }
+.nb > * { min-width: 0; }
+.nb .preview .md { overflow-wrap: anywhere; }
 .nb textarea {
   width: 100%; height: 100%; resize: none; border: 0; outline: none; padding: 28px 32px 80px;
   background: #0a0e14; font: 13.5px/1.7 var(--mono); color: #d7e0ea; border-right: 1px solid var(--line); tab-size: 2;
@@ -355,6 +360,8 @@ mark.find { background: rgba(250, 204, 21, .35); color: #fff; border-radius: 2px
 .cc-x { position: absolute; top: 4px; right: 6px; background: none; border: 0; color: var(--dim); font-size: 16px; cursor: pointer; padding: 2px 6px; }
 .cc-src { display: block; padding: 5px 6px; border-radius: 5px; color: var(--text); text-decoration: none; word-break: break-word; }
 a.cc-src:hover { background: var(--panel-2); color: var(--cyan); }
+.src-fold { margin: 12px 0; font-size: 13px; } .src-fold summary { cursor: pointer; font: 600 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+.src-fold ol, .src-fold ul { font-size: 13px; line-height: 1.5; columns: 2; column-gap: 24px; }
 .md .uncited { box-shadow: -3px 0 0 rgba(245, 165, 36, .45); padding-left: 8px; margin-left: -11px; }
 #report[data-uncited]::before { content: attr(data-uncited) " paragraph(s) with numbers or names but no citation are marked with an amber edge.";
   display: block; font: 11px var(--mono); color: var(--amber); margin-bottom: 10px; opacity: .8; }
@@ -412,6 +419,9 @@ a.cc-src:hover { background: var(--panel-2); color: var(--cyan); }
 .cmp-src .v { display: flex; flex-wrap: wrap; gap: 4px; } .cmp-src .tagpill { white-space: nowrap; }
 .cmp-src details summary { cursor: pointer; color: var(--dim); font-size: 11.5px; }
 @media (max-width: 820px) {
+  .nb.mode-split { grid-template-columns: 1fr; grid-template-rows: 40% 60%; }
+  .nb.mode-split textarea { border-right: 0; border-bottom: 1px solid var(--line); }
+  .nb textarea, .nb .preview { padding: 16px 16px 60px; }
   .cmp { grid-template-columns: 1fr; } .cmp-col + .cmp-col { border-left: 0; border-top: 1px solid var(--line); }
   .cmp-col { padding: 14px 14px 40px; }
   .tl-head { grid-template-columns: repeat(2, 1fr); }

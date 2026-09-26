@@ -611,7 +611,12 @@ const NB = {
   },
   preview() {
     const ta = $(".nb textarea"); const pv = $(".nb .preview");
-    if (ta && pv) pv.innerHTML = `<div class="md">${renderMd(ta.value)}</div>`;
+    if (!ta || !pv) return;
+    pv.innerHTML = `<div class="md">${renderMd(ta.value)}</div>`;
+    const md = pv.querySelector(".md");
+    md.querySelectorAll("a[href^='http']").forEach((a) => { a.target = "_blank"; a.rel = "noopener noreferrer"; });
+    CITE.decorate(md, ta.value, { collapseSources: true, noUncited: true });
+    if (!md.querySelector(".cite")) CITE.collapseSources(md);
   },
 };
 async function renderNotebook(v, t) {
