@@ -51,7 +51,7 @@ def _cli_cmd() -> list[str]:
     """Command prefix that runs this same installed CLI (no runpy warning)."""
     from deepresearch.dashboard.daemon import CHILD_BOOT
 
-    return [sys.executable, "-u", "-c", CHILD_BOOT]
+    return [sys.executable, "-I", "-u", "-c", CHILD_BOOT]
 
 
 def detach(args: list[str], log_path: Path) -> int:

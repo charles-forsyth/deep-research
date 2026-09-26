@@ -18,6 +18,8 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 7420
 
 
+# Children run with `python -I`: -c otherwise puts the cwd first on sys.path,
+# so starting from a source checkout would import that (possibly stale) copy.
 CHILD_BOOT = (
     "import sys; from deepresearch import main; sys.argv[0] = 'deep-research'; main()"
 )
@@ -88,6 +90,7 @@ def start(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> int:
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         sys.executable,
+        "-I",  # isolated: never import a stray ./deepresearch from the cwd
         "-u",
         "-c",
         CHILD_BOOT,
