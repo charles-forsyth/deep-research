@@ -110,6 +110,44 @@ def estimate(depth: int, breadth: int, file_bytes: int = 0) -> dict:
     }
 
 
+# Host names that only resolve on the local network or tailnet. A DNS-rebinding
+# page is served from a public domain, so its requests carry that domain in Host.
+LOCAL_SUFFIXES = (
+    ".local",
+    ".lan",
+    ".home",
+    ".home.arpa",
+    ".localdomain",
+    ".internal",
+    ".ts.net",
+)
+
+
+def _split_host(value: str) -> str:
+    """'Host' or Origin netloc -> lower-case host name without port or brackets."""
+    v = (value or "").strip().lower()
+    if v.startswith("["):  # [::1]:7420
+        return v[1 : v.find("]")] if "]" in v else v
+    return v.rsplit(":", 1)[0] if v.count(":") == 1 else v
+
+
+def host_allowed(host_header: str) -> bool:
+    import ipaddress
+
+    host = _split_host(host_header).rstrip(".")
+    if not host:
+        return False
+    extra = os.getenv("DR_ALLOWED_HOSTS", "")
+    if host in {h.strip().lower() for h in extra.split(",") if h.strip()}:
+        return True
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    return "." not in host or host.endswith(LOCAL_SUFFIXES)
+
+
 def _safe_name(name: str) -> str:
     base = os.path.basename(name or "upload")
     return re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:120] or "upload"
@@ -850,6 +888,16 @@ def make_handler(api: Api):
 
         def _handle(self, method: str) -> None:
             url = urlparse(self.path)
+            if not host_allowed(self.headers.get("Host", "")):
+                # DNS rebinding: a public site pointing its name at this machine.
+                return self._json(
+                    403,
+                    {
+                        "error": "Unrecognised host name. Open the dashboard by IP, "
+                        "machine name or tailnet name, or add this name to "
+                        "DR_ALLOWED_HOSTS."
+                    },
+                )
             if not url.path.startswith("/api/"):
                 if method != "GET":
                     return self._json(405, {"error": "Method not allowed"})
@@ -858,12 +906,20 @@ def make_handler(api: Api):
             length = int(self.headers.get("Content-Length") or 0)
             if length > MAX_BODY:
                 return self._json(413, {"error": "Request too large"})
-            if length:
-                if method != "GET" and not (
-                    self.headers.get("Content-Type", "").startswith("application/json")
+            if method != "GET":
+                origin = self.headers.get("Origin")
+                if origin and urlparse(origin).netloc.lower() != (
+                    self.headers.get("Host", "").lower()
                 ):
-                    # Blocks simple cross-site form posts (no CORS preflight).
+                    return self._json(403, {"error": "Cross-origin request refused"})
+                if not self.headers.get("Content-Type", "").startswith(
+                    "application/json"
+                ):
+                    # Every write must be JSON, with or without a body: browsers
+                    # cannot send that cross-site without a CORS preflight, which
+                    # this server never approves.
                     return self._json(415, {"error": "Use application/json"})
+            if length:
                 try:
                     body = json.loads(self.rfile.read(length) or b"null")
                 except ValueError:

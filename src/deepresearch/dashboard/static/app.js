@@ -23,10 +23,9 @@ const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = se
 
 async function api(path, opts = {}) {
   const init = { method: opts.method || "GET", headers: {} };
-  if (opts.body !== undefined) {
-    init.headers["Content-Type"] = "application/json";
-    init.body = JSON.stringify(opts.body);
-  }
+  // The server refuses non-JSON writes (cross-site protection), even bodyless ones.
+  if (init.method !== "GET") init.headers["Content-Type"] = "application/json";
+  if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
   const res = await fetch(path, init);
   let data = null;
   try { data = await res.json(); } catch { /* empty */ }

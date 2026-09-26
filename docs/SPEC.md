@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.17.5 (package `deepresearch`) |
+| Applies to | deep-research v0.18.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -156,7 +156,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | REQ-RUN-3 | When the agent finishes, the complete report text shall be stored in `sessions.result` and the status set to `completed`. Logs may truncate the report; the database shall not. | `test_final_text_from_steps`, `test_update_session` |
 | REQ-RUN-4 | If a run fails after an interaction exists, the row shall become `failed` with the error in `result`. If it fails before an interaction exists (bad key, quota, network), an adopted row shall also become `failed`. | `test_research_failure_before_interaction_marks_adopted_row_failed` |
 | REQ-RUN-5 | Ctrl-C in a foreground run shall mark the row `cancelled`. | manual |
-| REQ-RUN-6 | A streamed run whose connection drops shall resume from the last event id without starting a new interaction. | `test_deep_research_agent_error_coverage` (partial; see K8) |
+| REQ-RUN-6 | A streamed run whose connection drops shall check the interaction's status and, if it is still running, resume from the last event id without starting a new interaction, backing off on repeated failures. | `test_stream_end_without_final_event_checks_status` |
 | REQ-RUN-7 | Uploaded files shall go into a temporary File Search Store that is deleted, with its documents, when the run ends, whether it succeeds or fails. | `test_agent_auto_upload_and_cleanup`, `test_file_manager_cleanup` |
 | REQ-RUN-8 | When `--output` ends in `.json` or `.csv`, the prompt shall ask for a fenced code block of that type, and the exporter shall extract it. Invalid JSON shall be saved raw to `<file>.raw`, not lost. | `test_request_auto_format_json`, `test_request_auto_format_csv`, `test_save_json_invalid_fallback` |
 
@@ -167,7 +167,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | REQ-REC-1 | For depth > 1, after each non-leaf report the follow-up model shall return 0 to `breadth` gap questions as a JSON list. An empty list, or unparseable output, ends recursion for that node and keeps its report. | `test_recursive_research` |
 | REQ-REC-2 | Child tasks at one level shall run in parallel (thread pool sized to breadth), each as its own session row with `parent_id` and `depth` set. | `test_recursive_research` |
 | REQ-REC-3 | When at least one child returns a report, the node's report shall be replaced by a synthesis of the parent and child reports. If synthesis fails, the parent report shall be kept with the raw child reports appended under a clear error marker. | code review (no dedicated test; see K8) |
-| REQ-REC-4 | A level shall wait at most `recursion_timeout` (600 s) for its children; children still running then are excluded from synthesis and logged as timed out. | code review (see **Known gap** K3) |
+| REQ-REC-4 | A level shall wait for all of its children and synthesize every report that comes back, however long it took. Each task (root or child) is bounded by `task_timeout_min` (default 180, `DR_TASK_TIMEOUT_MIN`, 0 = no limit); a task still running at the limit is cancelled at Google and marked `failed`. At most `breadth` children run per node. | `test_slow_child_report_is_kept_in_synthesis`, `test_gap_questions_are_capped_at_breadth`, `test_poll_times_out_and_cancels_at_google` |
 
 ### 4.3 History and liveness (REQ-HIS)
 
@@ -175,7 +175,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 |---|---|---|
 | REQ-HIS-1 | A row in state `running` whose worker process no longer exists shall be shown and stored as `crashed` the next time sessions are listed. | `test_pid_tracking_dead`, `test_pid_tracking_alive` |
 | REQ-HIS-2 | A child row with no pid shall be judged by its parent: if the parent is finished (`completed`, `crashed`, `failed`, `cancelled`) or the parent's process is gone, the child is `crashed`. | `test_session_manager_coverage` |
-| REQ-HIS-3 | A `running` row with no pid and no parent shall become `crashed` after 3 hours without an update (Deep Research runs are limited to 60 minutes). | `test_running_row_without_pid_goes_stale`, `test_recent_running_row_without_pid_stays_running` |
+| REQ-HIS-3 | A `running` row with no pid and no parent shall become `crashed` after 3 hours without an update (matching the default task limit). | `test_running_row_without_pid_goes_stale`, `test_recent_running_row_without_pid_stays_running` |
 | REQ-HIS-4 | Writing an embedding shall not change `updated_at`, so elapsed-time figures stay correct. | code review (see K8) |
 | REQ-HIS-5 | Sessions shall be addressable by local integer id or by interaction id in every CLI command that takes an id. | `test_main_followup_numeric_id`, `test_id_help_is_consistent` |
 
@@ -198,6 +198,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | REQ-DASH-4 | `/api/health?check=1` shall report whether Google accepts the key (cached 10 minutes; `null` when it cannot check). The UI shall block launching research when the key is missing or rejected. | `test_health_reports_invalid_key` |
 | REQ-DASH-5 | Cancelling a run shall cancel the Google interaction (when one exists), terminate the worker's process group, and mark the row `cancelled`. | `test_cancel_only_running` (state check only) |
 | REQ-DASH-6 | Deleting a session shall also delete its annotations and tags; with `recursive=1` it shall delete all descendants too. | `test_delete_recursive_purges_children_and_annotations` |
+| REQ-DASH-12 | Every non-GET API request shall be `application/json` (with or without a body), shall be refused when its `Origin` differs from its `Host`, and every request shall be refused when its `Host` is not an IP address, a single-label name, a local or tailnet suffix, or listed in `DR_ALLOWED_HOSTS`. | `test_bodyless_cross_site_post_cannot_cancel`, `test_foreign_origin_write_refused`, `test_dns_rebinding_host_refused`, `test_local_host_names_allowed` |
 | REQ-DASH-7 | Uploads shall only be accepted as JSON (base64), limited to 25 MB per request, stored under a random folder in `uploads/`, and research may only reference upload paths inside that folder. | `test_upload_then_research_with_upload`, `test_json_content_type_required_for_writes`, `test_start_research_validation` |
 | REQ-DASH-8 | The layout shall be usable at phone (390 px), tablet and desktop widths: side panes become drawers below the tablet breakpoint and nothing overflows horizontally. | manual (Playwright) |
 | REQ-DASH-9 | Reading aloud word for word shall use the browser's speech engine (free) and highlight the current paragraph; source lists, URLs and citation markers shall not be read. | `test_speakable_strips_markup_citations_urls_and_sources` |
@@ -337,9 +338,11 @@ root node of every recursive run.
    Terminal events: `interaction.completed/complete`, `error`, `interaction.error`,
    `interaction.failed`, `interaction.cancelled`, or a `status_update` to a terminal
    status.
-4. If the stream ends without a terminal event, reconnect with
-   `interactions.get(id, stream=True, last_event_id=...)` after 2 s, repeatedly
-   (REQ-RUN-6; unbounded, see K5).
+4. If the stream ends without a terminal event (Google closes long connections),
+   check the interaction's status; if it is terminal, finish; otherwise reconnect with
+   `interactions.get(id, stream=True, last_event_id=...)`. The wait between attempts
+   grows from 2 s to 30 s on repeated failures. The loop ends at the task limit
+   (6.4a).
 5. On completion, fetch the interaction once more and extract the final text
    (`output_text`, else the last `model_output` step). If non-empty, store it with
    status `completed` (or leave `running` when the caller will synthesize later) and
@@ -352,8 +355,10 @@ root node of every recursive run.
 Used for depth-1 runs without `--stream` and for every child node of a recursive run.
 Same upload handling. Creates the interaction with `background=True` (no stream, no
 `agent_config`), records or adopts the row, then calls `interactions.get` every 10 s
-until the status is `completed` (store the report) or `failed` (store the error). Any
-other terminal status keeps it polling (K5). The report is truncated to 2,000 characters
+until the status is `completed` (store the report) or any other terminal status
+(`failed`, `cancelled`, `incomplete`, `budget_exceeded`: store the error; `cancelled`
+maps to `cancelled`, the rest to `failed`). A failed status check is logged and retried;
+30 in a row fail the run. The loop ends at the task limit (6.4a). The report is truncated to 2,000 characters
 in the log, never in the database (REQ-RUN-3).
 
 ### 6.4 Recursion (`start_recursive_research`)
@@ -367,9 +372,10 @@ execute(prompt, depth d, max D, breadth B, parent):
     if d >= D: return report                       # leaf
     questions = analyze_gaps(prompt, report, B)
     if no questions: mark completed, return report
-    run execute(q, d+1, D, B, this row) for each q in a thread pool of size B
-    wait up to recursion_timeout (600 s) for the level
-    collect reports from the children that finished
+    run execute(q, d+1, D, B, this row) for each of the first B questions,
+        in a thread pool of size B
+    wait for every child (each bounds itself with the task limit)
+    collect every report that came back
     if none: return report
     final = synthesize_findings(prompt, report, child reports)
     store final as this row's result, status completed
@@ -384,13 +390,25 @@ streams to the log.
 **Gap analysis** (`analyze_gaps`) sends the objective and report to the follow-up model
 and asks for 1 to B questions as a JSON list in a ` ```json ` block. Missing block,
 unparseable JSON or any error returns `[]`, which ends recursion for that node. The list
-is not truncated to B (K7).
+is truncated to B.
 
 **Synthesis** (`synthesize_findings`) sends the objective, the node's report and all
 child reports to the follow-up model with instructions to integrate rather than append
 and to resolve conflicts. On error it returns the parent report followed by
 `[ERROR: Synthesis failed. Appending raw sub-reports below]` and the raw child reports
 (REQ-REC-3).
+
+### 6.4a Task limit
+
+Every research task, root or child, carries its own deadline of `task_timeout_min`
+minutes (default 180; `DR_TASK_TIMEOUT_MIN`; 0 disables it). Runs are never cut short
+before then. A task still running at the deadline is cancelled at Google
+(`interactions.cancel`) so it stops billing, and its row becomes `failed` with a
+"Timed out" message. Because each child bounds itself, a recursion level simply waits
+for all its children, and every report that finishes is used.
+
+Google does not document a maximum run time for the Deep Research agent. Observed runs
+take 5 to 60 minutes; the 3-hour default leaves room for slow runs and the Max agent.
 
 ### 6.5 Follow-up
 
@@ -620,9 +638,13 @@ errors (for example a missing key) print `[CONFIG ERROR]`, anything else prints
   are `{"error": "<message>"}` with the status from the table below.
 - Every response carries `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`
   and `Referrer-Policy: no-referrer` (audio: `no-store` and `Accept-Ranges` only).
-- Request bodies over 25 MB get 413. Non-GET requests with a body must be
-  `application/json` (415 otherwise); this forces a CORS preflight for cross-site
-  requests, which the server never approves. Bad JSON gets 400.
+- Every request whose `Host` is not an IP address, a single-label name, a name ending
+  in `.local`, `.lan`, `.home`, `.home.arpa`, `.localdomain`, `.internal` or `.ts.net`,
+  or a name listed in `DR_ALLOWED_HOSTS` gets 403 (DNS-rebinding protection).
+- Request bodies over 25 MB get 413. Every non-GET API request must be
+  `application/json`, with or without a body (415 otherwise); this forces a CORS
+  preflight for cross-site requests, which the server never approves. A non-GET
+  request whose `Origin` does not match its `Host` gets 403. Bad JSON gets 400.
 - Unknown path: 404. Known path, wrong method: 405. Unhandled exception: 500 with the
   exception type and message; the traceback goes to the dashboard log.
 - Access logging is off unless `DR_DASHBOARD_ACCESS_LOG` is set.
@@ -764,9 +786,10 @@ page is hidden and permission was granted, a browser notification.
 | `XDG_CONFIG_HOME` | `~/.config` | Location of the state dir. |
 | `DR_LOG_TIMESTAMPS` | unset | Prefix tagged log lines with `[HH:MM:SS]`; set by the dashboard for its workers so the timeline has times. |
 | `DR_DASHBOARD_ACCESS_LOG` | unset | Enable per-request access logging. |
+| `DR_TASK_TIMEOUT_MIN` | `180` | Safety limit per research task in minutes; 0 = no limit (6.4a). |
+| `DR_ALLOWED_HOSTS` | unset | Comma-separated extra host names the dashboard accepts (for example a custom DNS name for the machine). |
 
-`recursion_timeout` (600 s) and `debug` are fields on `DeepResearchConfig` with no
-environment variable or flag.
+`debug` is a field on `DeepResearchConfig` with no environment variable or flag.
 
 ### 12.2 Precedence
 
@@ -896,8 +919,9 @@ network is the boundary.
 
 | Threat | Control |
 |---|---|
-| Cross-site form posts | Non-GET requests with a body must be `application/json`, which a browser can only send cross-site after a CORS preflight; the server never answers preflights with CORS headers. Gap: bodyless POSTs (K2). |
-| Cross-site reads | No CORS headers, so browsers block other origins from reading responses. The server does not check the `Host` header, so DNS rebinding is not blocked (K2). |
+| Cross-site writes | Every non-GET API request must be `application/json`, which a browser can only send cross-site after a CORS preflight; the server never answers preflights with CORS headers. Writes whose `Origin` differs from `Host` are refused. |
+| Cross-site reads | No CORS headers, so browsers block other origins from reading responses. |
+| DNS rebinding | Requests are refused unless `Host` is an IP address, a single-label or local/tailnet name, or listed in `DR_ALLOWED_HOSTS`. |
 | Script injection from report content | Reports contain text from the open web. All Markdown goes through DOMPurify; log text is escaped. |
 | Path traversal (static) | `.` and `..` segments are dropped; unknown paths serve `index.html`. |
 | Path traversal (uploads) | Upload names are reduced to `[A-Za-z0-9._-]`, max 120 characters, inside a fresh random folder; research may only reference paths that resolve inside `uploads/`. |
@@ -921,11 +945,13 @@ mode the umask gives it (K15).
 |---|---|
 | Missing API key | CLI: `[CONFIG ERROR]`, exit 0. Dashboard: launch disabled, `POST /api/research` returns 400, other paid calls 400. |
 | Key rejected by Google | Dashboard health shows `api_key_valid: false`; launch disabled. Worker: row `failed` with the error. |
-| Network drop during a streamed run | Reconnect from the last event id every 2 s until a terminal event arrives (K5). |
+| Network drop during a streamed run | Check status, then reconnect from the last event id, backing off from 2 s to 30 s, until a terminal status or the task limit. |
+| Status check fails while polling | Logged and retried every 10 s; 30 consecutive failures fail the run. |
+| Task runs past the limit | Cancelled at Google, row `failed` with a "Timed out" message (6.4a). |
 | Network error in follow-up, gaps, synthesis | `with_retry`: up to 4 attempts with exponential backoff (2 s base, 10 s max). Gap analysis and synthesis catch errors internally, so the retry only covers errors raised outside their `try` block. |
 | Synthesis failure | Parent report kept, raw child reports appended with an error marker. |
 | Child task exception | Logged as a warning; excluded from synthesis. |
-| Child still running at the level timeout | Logged as timed out and excluded from synthesis (K3). |
+| Child returns no report | Logged ("N of M child tasks returned no report"); synthesis uses the rest. |
 | Upload failure | Run aborted before any interaction; temporary store cleaned up (K6 for the adopted row). |
 | Worker killed or machine rebooted | Row becomes `crashed` at the next listing (7.3). The Google interaction may keep running and billing until it finishes. |
 | SQLite lock | 10 s busy timeout everywhere; `db_retry` on the main `SessionManager` writes (K1). |
@@ -941,7 +967,7 @@ mode the umask gives it (K15).
 
 ### 16.1 Suite
 
-118 tests in 12 files, about 30 s, no network and no API key. Gemini is faked, and the
+140 tests in 12 files, about 30 s, no network and no API key. Gemini is faked, and the
 dashboard tests run a real HTTP server on an ephemeral port against a temporary
 database.
 
@@ -949,13 +975,13 @@ database.
 |---|---|---|
 | `tests/cli/test_commands.py` | 12 | Command handlers, start, estimate, follow-up by id |
 | `tests/cli/test_help.py` | 9 | Help text and option consistency |
-| `tests/core/test_agent.py` | 8 | Stream processing, uploads, recursion, adoption, failures |
+| `tests/core/test_agent.py` | 15 | Stream processing, reconnect, uploads, recursion, adoption, failures, task limit |
 | `tests/core/test_config.py` | 10 | Key loading, `service_env` precedence |
 | `tests/core/test_session.py` | 10 | Session CRUD and liveness rules |
 | `tests/dashboard/test_cli.py` | 5 | Dashboard flags and working directory |
 | `tests/dashboard/test_daemon.py` | 5 | Start, status, restart, stop, stale pid |
 | `tests/dashboard/test_features.py` | 16 | Usage cost, speakable text, chunks, compare, audio, Range |
-| `tests/dashboard/test_server.py` | 20 | Routes, validation, uploads, delete, health, estimate parity |
+| `tests/dashboard/test_server.py` | 26 (+10 parametrised) | Routes, validation, uploads, delete, health, estimate parity, cross-site and host checks |
 | `tests/storage/test_files.py` | 5 | Store creation, upload, cleanup |
 | `tests/utils/test_exporters.py` | 6 | Code-block extraction, JSON and CSV export |
 | `tests/utils/test_retry.py` | 8 | Retry decorators |
@@ -999,13 +1025,13 @@ confirmed by test. Each is a candidate issue.
 | ID | Area | Gap | Effect |
 |---|---|---|---|
 | K1 | Storage | `db_retry` wraps only some `SessionManager` methods (create, update, fail, list, get). `update_session_pid`, `update_session_interaction_id`, `append_to_result`, `update_embedding`, `delete_session` and every write in `store.py`, `server.py` and `features.py` rely on the 10 s busy timeout alone. | A long lock can surface as a 500 in the dashboard or a lost pid or interaction id in a worker. REQ-NF-3 is only partly met. |
-| K2 | Security | The JSON-only rule applies only to requests that carry a body. A cross-site bodyless `POST /api/sessions/{id}/cancel` is accepted: **confirmed by test** (form-encoded, empty body, foreign `Origin`, returned 200 and the row became `cancelled`). No `Host` check, so DNS rebinding is not blocked. | Any web page the owner visits can cancel a running run. Also affects the trust boundary in 14.1. |
-| K3 | Recursion | `concurrent.futures.wait(timeout=600)` runs inside the executor's `with` block, whose exit waits for all threads anyway. The level therefore still waits for every child, then discards the reports of children that ran past 600 s. Deep Research runs can take up to 60 minutes, so slow children are paid for, stored in their own rows, and left out of the synthesis. | Lost research in the final report; the timeout bounds nothing. |
+| K2 | Security | **Fixed in v0.18.0.** A cross-site bodyless `POST /api/sessions/{id}/cancel` was accepted (confirmed by test), and there was no `Host` check against DNS rebinding. Now covered by REQ-DASH-12. | |
+| K3 | Recursion | **Fixed in v0.18.0.** The 600 s level timeout bounded nothing (the executor waited for all threads anyway) and dropped every child report that arrived after it: 48 of 51 completed children in the author's history ran longer than 10 minutes. Now every report is synthesized and each task has its own limit that cancels at Google (6.4a). | |
 | K4 | Cancel | Cancel stops the root interaction and kills the worker's process group, but child interactions already running on Google are not cancelled. The row is set to `cancelled` even if both steps failed. | Children keep billing until they finish; their rows become `crashed`. |
-| K5 | Engine | The stream reconnect loop has no retry limit or overall deadline. The poll loop only exits on `completed` or `failed`; a `cancelled` or unknown status polls forever. | A worker can hang until killed. |
-| K6 | Engine | If the final interaction has no text, or an upload fails, nothing is written: an adopted row stays `running` until liveness marks it `crashed`, with no error message. | "Crashed" hides the real cause. |
-| K7 | Recursion | The CLI does not bound `--depth` or `--breadth` (the dashboard allows up to 5 and 10). Gap analysis is asked for at most B questions, but its list is not truncated, so more children than B can run (the pool caps concurrency, not count). | Spend can exceed the estimate. |
-| K8 | Tests | No dedicated test for: stream resume (REQ-RUN-6, only partial), synthesis fallback (REQ-REC-3), the level timeout (REQ-REC-4), embeddings leaving `updated_at` alone (REQ-HIS-4), cancel's cloud call and process-group kill (REQ-DASH-5, state change only). | Regressions in these paths would not be caught. |
+| K5 | Engine | **Fixed in v0.18.0.** The stream reconnect loop had no deadline and the poll loop only exited on `completed` or `failed`. Both now stop on any terminal status or the task limit. | |
+| K6 | Engine | If an upload fails, nothing is written: an adopted row stays `running` until liveness marks it `crashed`, with no error message. (A streamed interaction that ends without text and without `completed` is now recorded as failed with its status, since v0.18.0.) | "Crashed" hides the real cause. |
+| K7 | Recursion | The CLI does not bound `--depth` or `--breadth` (the dashboard allows up to 5 and 10). (The gap list is now truncated to B, since v0.18.0.) | A typo can start a very expensive run. |
+| K8 | Tests | No dedicated test for: synthesis fallback (REQ-REC-3), embeddings leaving `updated_at` alone (REQ-HIS-4), cancel's cloud call and process-group kill (REQ-DASH-5, state change only). | Regressions in these paths would not be caught. |
 | K9 | Uploads | Folder uploads take only top-level files. After uploading to a store the code waits a fixed 5 s for ingestion rather than checking. | Nested files are silently skipped; large uploads may not be searchable when the run starts. |
 | K10 | Cleanup | CLI `delete` removes one row and leaves children (orphaned), annotations, meta, run_meta, usage and audio. Dashboard delete removes annotations and meta but leaves `run_meta`, `session_usage`, `audio_exports` rows and audio files. Uploaded files are never removed. | Orphan rows and disk growth. |
 | K11 | CLI | Every command except `dashboard` exits 0, including on errors. | Scripts cannot detect failure. |
@@ -1075,3 +1101,4 @@ uv run deep-research dashboard --foreground --host 127.0.0.1 --port 7421
 | Date | Version | Change |
 |---|---|---|
 | 2026-09-26 | v0.17.5 | First complete specification, written from the source. |
+| 2026-09-26 | v0.18.0 | K2, K3, K5 fixed; task limit (6.4a); REQ-DASH-12; host and origin checks. |
