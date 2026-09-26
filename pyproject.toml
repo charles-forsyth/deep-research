@@ -24,10 +24,10 @@ classifiers = [
 ]
 dependencies = [
     "google-genai>=2.0.0",
-    "pydantic>=2.12.5",
-    "python-dotenv>=1.2.1",
-    "rich>=14.2.0",
-    "tenacity>=9.1.2",
+    "pydantic>=2.13.5",
+    "python-dotenv>=1.2.3",
+    "rich>=15.0.0",
+    "tenacity>=9.1.4",
 ]
 
 [project.urls]
@@ -50,9 +50,9 @@ ignore = ["E402"]
 
 [dependency-groups]
 dev = [
-    "mypy>=1.19.1",
+    "mypy>=2.3.1",
     "pre-commit>=4.0.0",
-    "pytest>=9.0.2",
-    "pytest-cov>=7.0.0",
-    "ruff>=0.14.9",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.8",
 ]
