@@ -93,6 +93,7 @@ const LAB = {
         : `<a class="mono" href="${this.fileUrl(r.id, f.path)}" target="_blank" rel="noopener">${esc(f.path)} <span class="dim">${this.size(f.size)}</span></a>`).join("")}</div>` : ""}
       <div class="lab-foot">
         ${r.status === "draft" ? `<button class="btn small primary" data-la="review">Review and submit</button>` : ""}
+        ${r.status === "plan_failed" && !p.why_not ? `<button class="btn small primary" data-la="replan">\u21BB Retry plan</button>` : ""}
         ${p.script ? `<button class="btn small" data-la="plan">${r.status === "draft" ? "Plan" : "Plan and script"}</button>` : ""}
         ${r.job_id ? `<button class="btn small" data-la="log">${live ? "Live log" : "Log"}</button>` : ""}
         ${["completed", "failed", "cancelled"].includes(r.status) && p.script ? `<button class="btn small" data-la="rerun">\u21BB Re-run with changes</button>` : ""}
@@ -135,6 +136,10 @@ const LAB = {
     act("rerun")?.addEventListener("click", async () => {
       try { const n = await api(`/api/lab/${r.id}/rerun`, { method: "POST" }); await this.refresh(el, s); this.review(el, s, n); }
       catch (e) { toast(e.message, "err"); }
+    });
+    act("replan")?.addEventListener("click", async () => {
+      try { await api(`/api/lab/${r.id}/replan`, { method: "POST" }); } catch (e) { toast(e.message, "err"); }
+      this.refresh(el, s);
     });
     act("nb")?.addEventListener("click", () => NB.append(`## Lab run #${r.id}: ${r.plan?.title || ""}\n\n**Question:** ${r.plan?.question || ""}\n\n${r.result_md}\n\n*Source: Session #${s.id}, lab run #${r.id} (job ${r.job_id || "-"})*\n`));
     act("cancel")?.addEventListener("click", async () => {

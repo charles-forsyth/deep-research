@@ -7,6 +7,14 @@ releases.
 
 ## [Unreleased]
 
+## [0.19.4] - 2026-09-26
+
+### Added
+- "Retry plan" on a lab run whose planning failed. It plans the same input again under
+  the same run number (`POST /api/lab/{id}/replan`), so a failed card no longer has to
+  be deleted and started over. Not shown when the model judged the request not
+  computable.
+
 ## [0.19.3] - 2026-09-26
 
 ### Fixed

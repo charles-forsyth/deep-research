@@ -219,6 +219,21 @@ def test_empty_search_reply_falls_back_to_plan_without_search(lab):
     assert "TOO_MANY_TOOL_CALLS" in run["plan"]["caveats"]
 
 
+def test_replan_retries_only_failed_plans(lab):
+    lab.replies.append("no json here")
+    run = lab.create(7, "document", "x")
+    lab.make_plan(run["id"], "t")
+    assert lab.get(run["id"])["status"] == "plan_failed"
+    run = lab.replan(run["id"])
+    assert run["status"] == "planning" and run["error"] is None
+    lab.replies.append(json.dumps(PLAN))
+    lab.make_plan(run["id"], "t")
+    run = lab.get(run["id"])
+    assert run["status"] == "draft" and run["plan"]["title"] == "Aspirin descriptors"
+    with pytest.raises(ValueError):
+        lab.replan(run["id"])  # a draft is not retried
+
+
 def test_ask_raises_empty_reply_with_finish_reason(lab):
     class Resp:
         text = None
@@ -478,6 +493,25 @@ def test_api_lab_endpoints(app, tmp_path):  # noqa: F811
 
     status, _ = call("DELETE", f"/api/lab/{rr['id']}")
     assert status == 200
+
+    # retry plan: refused unless planning failed, then plans again in the background
+    status, _ = call("POST", f"/api/lab/{run['id']}/replan")
+    assert status == 409
+    replies.extend(["garbage", json.dumps(PLAN)])
+    status, bad = call(
+        "POST", f"/api/sessions/{sid}/lab", {"scope": "selection", "selection": "x"}
+    )
+    for _ in range(50):
+        if api.lab.get(bad["id"])["status"] == "plan_failed":
+            break
+        time.sleep(0.05)
+    status, again = call("POST", f"/api/lab/{bad['id']}/replan")
+    assert status == 200 and again["status"] == "planning"
+    for _ in range(50):
+        if api.lab.get(bad["id"])["status"] == "draft":
+            break
+        time.sleep(0.05)
+    assert api.lab.get(bad["id"])["status"] == "draft"
 
     # deleting the session removes its lab runs
     call("DELETE", f"/api/sessions/{sid}")

@@ -1039,6 +1039,18 @@ class Lab:
             raise ValueError(f"run is {run['status']}")
         return self.get(run_id) or {}
 
+    def replan(self, run_id: int) -> dict:
+        """Put a run whose planning failed back to `planning` (caller starts make_plan)."""
+        run = self.get(run_id)
+        if not run:
+            raise KeyError(run_id)
+        if run["status"] != "plan_failed":
+            raise ValueError(f"run is {run['status']}")
+        self._update(
+            run_id, status="planning", stage="Retrying the plan", error=None, plan=None
+        )
+        return self.get(run_id) or {}
+
     def log(self, run_id: int, offset: int = 0) -> dict:
         run = self.get(run_id)
         if not run:

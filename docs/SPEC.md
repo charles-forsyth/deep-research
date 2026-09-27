@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.19.3 (package `deepresearch`) |
+| Applies to | deep-research v0.19.4 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1185,6 +1185,7 @@ the estimate. A second target type only needs those six methods and a `type` val
 | `POST /api/lab/{rid}/submit` | Submit a draft. |
 | `POST /api/lab/{rid}/cancel` | `scancel` (or stop planning). |
 | `POST /api/lab/{rid}/rerun` | New draft from this run's plan. |
+| `POST /api/lab/{rid}/replan` | Retry planning for a `plan_failed` run (same input, same run id); 409 otherwise. The card shows "Retry plan" unless the model judged it not computable. |
 | `GET /api/lab/{rid}/log?offset=N` | Log tail (live from the cluster while active, local copy after). |
 | `GET /api/lab/{rid}/file?path=...` | A fetched file, confined to the run folder. |
 | `DELETE /api/lab/{rid}` | Delete a finished run and its local files (not while active). |
@@ -1247,3 +1248,4 @@ are listed in the v0.19.0 changelog.
 | 2026-09-26 | v0.19.1 | `gemini-3.8-flash` for all general model calls (12.1, 13.1, 20.1). |
 | 2026-09-26 | v0.19.2 | Header version; Lab calls in 13.1; section 17 intro; Flash cost figures in 20.5. |
 | 2026-09-26 | v0.19.3 | Empty search replies during planning: search cap and fallback (20.6). |
+| 2026-09-26 | v0.19.4 | `POST /api/lab/{rid}/replan` and the Retry plan button (20.4). |
