@@ -233,6 +233,8 @@ class Api:
         r("POST", r"/api/lab/(\d+)/cancel", self.lab_cancel)
         r("POST", r"/api/lab/(\d+)/rerun", self.lab_rerun)
         r("POST", r"/api/lab/(\d+)/replan", self.lab_replan)
+        r("POST", r"/api/lab/(\d+)/fix", self.lab_fix)
+        r("POST", r"/api/lab/(\d+)/undo-fix", self.lab_undo_fix)
         r("GET", r"/api/lab/(\d+)/log", self.lab_log)
         r("GET", r"/api/lab/(\d+)/file", self.lab_file)
         r("DELETE", r"/api/lab/(\d+)", self.lab_delete)
@@ -1045,6 +1047,23 @@ class Api:
             plan=plan,
         )
         return self._lab_view(new)
+
+    def lab_fix(self, rid, query, body):
+        self._lab_run(rid)
+        try:
+            run = self.lab.fix_plan(int(rid))
+        except ValueError as e:
+            raise ApiError(409, str(e)) from e
+        view = self._lab_view(run)
+        view["fix"] = run.get("fix")
+        return view
+
+    def lab_undo_fix(self, rid, query, body):
+        self._lab_run(rid)
+        try:
+            return self._lab_view(self.lab.undo_fix(int(rid)))
+        except ValueError as e:
+            raise ApiError(409, str(e)) from e
 
     def lab_replan(self, rid, query, body):
         self._lab_run(rid)

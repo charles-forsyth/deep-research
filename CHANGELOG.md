@@ -7,6 +7,21 @@ releases.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-09-27
+
+### Added
+- **Fix with AI** button on the Lab review dialog, next to the cluster-check warnings. It
+  sends the plan and the exact warnings back to the planner with the current cluster
+  catalog and asks it to fix only what is flagged (modules, installs, resources and the
+  software-setup lines of the script), keeping the science, parameters, inputs and outputs.
+  The server re-runs the check; if warnings remain it tries once more (2 model calls at
+  most), then shows what changed and what is left. It never submits. The previous plan is
+  kept, and **Undo fix** restores it. API: `POST /api/lab/<id>/fix`, `POST /api/lab/<id>/undo-fix`.
+- Pre-flight warns when a plan installs packages the loaded Python environment module
+  already provides (for example pip `skyfield numpy` with `python-sci`).
+- Plans record the catalog they were made against (`catalog_generated`); a plan made before
+  the cluster catalog changed gets a warning to re-check its software choices.
+
 ## [0.20.2] - 2026-09-27
 
 ### Fixed

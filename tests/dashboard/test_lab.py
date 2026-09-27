@@ -1100,3 +1100,115 @@ def test_describe_full_lists_broken_modules():
     tgt = _py_target()
     assert "Broken modules" in tgt.describe_full()
     assert "snakemake/9.14.0" in tgt.describe_full()
+
+
+# ---- Fix with AI -------------------------------------------------------------
+
+
+def _fix_lab(tmp_path, replies):
+    tgt = labm.SlurmSSHTarget(
+        {"name": "u", "ssh_host": "h", "partitions": {"standard": {}}}
+    )
+    tgt.catalog = {
+        "generated": "2026-09-27T18:00:00+00:00",
+        "modules": {"core": ["python-sci/2026.09", "ffmpeg/8.1"], "mpi_dependent": {}},
+    }
+    lab = Lab(str(tmp_path / "h.db"), lambda: None, tmp_path, targets={"u": tgt})
+    lab._fresh_catalog = lambda t: None  # type: ignore[method-assign]
+    lab.ensure_watcher = lambda: None  # type: ignore[method-assign]
+    calls = []
+
+    def ask(prompt, search):
+        calls.append(prompt)
+        return replies[len(calls) - 1], 0.01
+
+    lab._ask = ask  # type: ignore[method-assign]
+    return lab, tgt, calls
+
+
+def _draft(lab, plan):
+    run = lab.create(1, "selection", "text", "", "u", plan=plan)
+    return run["id"]
+
+
+BAD = {
+    "title": "t",
+    "script": "uv venv v\nuv pip install skyfield\npython3 x.py",
+    "resources": {"partition": "standard", "nodes": 1, "time_limit": "00:10:00"},
+    "install": {
+        "modules": ["python/3.12.14", "ffmpeg/8.1"],
+        "pip": ["skyfield", "numpy"],
+    },
+}
+
+
+def test_fix_plan_repairs_and_rechecks(tmp_path):
+    good = dict(
+        BAD,
+        install={"modules": ["python-sci", "ffmpeg/8.1"], "pip": []},
+        script="python3 x.py",
+    )
+    reply = (
+        "```json\n"
+        + json.dumps(
+            {"plan": good, "changes": ["python/3.12.14 -> python-sci"], "notes": ""}
+        )
+        + "\n```"
+    )
+    lab, tgt, calls = _fix_lab(tmp_path, [reply])
+    rid = _draft(lab, BAD)
+    assert lab.get(rid)["plan"]["warnings"]
+    out = lab.fix_plan(rid)
+    assert len(calls) == 1 and "not a working stack" in calls[0]
+    assert out["fix"]["remaining"] == [] and out["fix"]["changes"] == [
+        "python/3.12.14 -> python-sci"
+    ]
+    assert out["plan"]["install"]["modules"] == ["python-sci", "ffmpeg/8.1"]
+    assert out["plan"]["plan_before_fix"]["install"]["modules"][0] == "python/3.12.14"
+    assert out["status"] == "draft"  # never submits
+    back = lab.undo_fix(rid)
+    assert back["plan"]["install"]["modules"][0] == "python/3.12.14"
+
+
+def test_fix_plan_stops_after_two_rounds(tmp_path):
+    still_bad = (
+        "```json\n"
+        + json.dumps({"plan": BAD, "changes": [], "notes": "cannot"})
+        + "\n```"
+    )
+    lab, tgt, calls = _fix_lab(tmp_path, [still_bad, still_bad, still_bad])
+    rid = _draft(lab, BAD)
+    out = lab.fix_plan(rid)
+    assert len(calls) == 2 and out["fix"]["rounds"] == 2 and out["fix"]["remaining"]
+
+
+def test_fix_plan_noop_when_clean(tmp_path):
+    good = dict(
+        BAD, install={"modules": ["python-sci"], "pip": []}, script="python3 x.py"
+    )
+    lab, tgt, calls = _fix_lab(tmp_path, [])
+    rid = _draft(lab, good)
+    out = lab.fix_plan(rid)
+    assert calls == [] and out["fix"]["rounds"] == 0
+
+
+def test_validate_flags_redundant_pip_and_stale_catalog():
+    tgt = labm.SlurmSSHTarget(
+        {"name": "u", "ssh_host": "h", "partitions": {"standard": {}}}
+    )
+    tgt.catalog = {
+        "generated": "2026-09-27T18:00:00+00:00",
+        "modules": {"core": ["python-sci/2026.09"], "mpi_dependent": {}},
+    }
+    w = labm.validate_plan(
+        tgt,
+        {
+            "install": {
+                "modules": ["python-sci"],
+                "pip": ["skyfield>=1.49", "rebound"],
+            },
+            "catalog_generated": "2026-09-27T14:00:00+00:00",
+        },
+    )
+    assert any("already provides skyfield" in x and "rebound" not in x for x in w), w
+    assert any("Planned against the cluster catalog" in x for x in w), w

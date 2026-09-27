@@ -549,3 +549,6 @@ pre.lab-script { max-height: 300px; }
 
 .lab-warn { border: 1px solid var(--warn, #b7791f); background: rgba(183,121,31,.08); border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
 .lab-warn ul { margin: 4px 0 4px 18px; padding: 0; font-size: 12px; }
+.lab-fix-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.lab-fixed { border: 1px solid var(--ok, #2f855a); background: rgba(47,133,90,.08); border-radius: 6px; padding: 6px 10px; margin: 8px 0; }
+.lab-fixed ul { margin: 4px 0 2px 18px; padding: 0; font-size: 12px; }

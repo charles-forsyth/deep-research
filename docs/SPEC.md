@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.20.2 (package `deepresearch`) |
+| Applies to | deep-research v0.21.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1261,6 +1261,15 @@ about $0.02.)
   `python` or `py-*` module, on two Python environment modules, and on a Python module
   mixed with a conda env. `describe_full` gives the planner the broken list; the catalog
   rules say to load exactly one of `python-sci` (CPU science) or `python-ml` (PyTorch).
+- Warnings come with a way out. **Fix with AI** (`Lab.fix_plan`, `POST /api/lab/<id>/fix`)
+  sends the plan, the warnings and the full cluster description to the planner
+  (`FIX_PROMPT`, no web search), which may change only modules, installs, resources and
+  software-setup script lines. The result is re-validated; a second round runs only if
+  warnings remain (`FIX_MAX_ROUNDS = 2`). The run stays a draft: fixing never submits.
+  The pre-fix plan is stored as `plan.plan_before_fix` and `POST /api/lab/<id>/undo-fix`
+  restores it. Two more checks feed it: packages the loaded Python environment module
+  already provides (`PYTHON_SCI_PACKAGES`, `PYTHON_ML_PACKAGES`), and plans whose
+  `catalog_generated` differs from the current catalog (made before a cluster change).
 - `Lab` and `Features` each hold one `genai.Client`, created under a lock. Without the
   lock, two plans started together each built a client and the one that lost was
   garbage-collected mid-request ("Cannot send a request, as the client has been
