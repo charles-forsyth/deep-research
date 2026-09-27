@@ -7,6 +7,15 @@ releases.
 
 ## [Unreleased]
 
+## [0.19.6] - 2026-09-26
+
+### Fixed
+- The CLI failed with "API key not valid" when run from a folder whose own `.env` had
+  an old `GEMINI_API_KEY` (common in other projects). It now reads the saved settings
+  (`~/.config/deepresearch/.env`, written by `auth login`) before `./.env`, the same
+  order the dashboard uses. A variable exported in the shell still wins, and `./.env`
+  still fills anything the saved settings do not set.
+
 ## [0.19.5] - 2026-09-26
 
 ### Fixed

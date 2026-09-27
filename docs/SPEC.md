@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.19.5 (package `deepresearch`) |
+| Applies to | deep-research v0.19.6 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -801,7 +801,7 @@ set a variable wins.
 
 | Process | Order (first wins) |
 |---|---|
-| CLI (`research`, `list`, ...) | real shell environment, then `./.env` in the current folder, then the user `.env` |
+| CLI (`research`, `list`, ...) | real shell environment, then the user `.env`, then `./.env` in the current folder (`load_env_files()`; since v0.19.6, before which `./.env` came first and a stale project key broke the CLI in that folder) |
 | Dashboard server and the workers it starts | real shell environment, then the user `.env`, then `./.env` (`service_env()`; the server also runs from the state dir) |
 
 The CLI `start` command launches its worker from the current folder with the current
@@ -932,7 +932,7 @@ network is the boundary.
 | Oversized requests | 25 MB body limit. |
 | MIME sniffing, referrer leaks | `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`. |
 | API key exposure | The key is never sent to the browser (health returns booleans), never logged, never stored in the database or exports (REQ-NF-6). `auth login` reads it with hidden input. |
-| Stale key from a folder `.env` | Service precedence (12.2). |
+| Stale key from a folder `.env` | The user `.env` wins over `./.env` for both the CLI and the dashboard (12.2). |
 | Accidental cloud deletion | `cleanup` confirms unless `--force` and warns that it removes every store on the key. |
 
 ### 14.3 Data at rest
@@ -1255,3 +1255,4 @@ are listed in the v0.19.0 changelog.
 | 2026-09-26 | v0.19.3 | Empty search replies during planning: search cap and fallback (20.6). |
 | 2026-09-26 | v0.19.4 | `POST /api/lab/{rid}/replan` and the Retry plan button (20.4). |
 | 2026-09-26 | v0.19.5 | Shared Gemini client under a lock; no temporary clients (20.6). |
+| 2026-09-26 | v0.19.6 | CLI loads the user `.env` before `./.env` (12.2, 14). |

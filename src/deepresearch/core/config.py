@@ -11,10 +11,22 @@ user_db_path = os.path.join(xdg_config_home, "deepresearch", "history.db")
 # Variables set in the real environment before any .env file was read.
 SHELL_ENV = frozenset(os.environ)
 
-# Load local .env if it exists, then fallback to user config
-if os.path.exists(".env"):
-    load_dotenv(".env")
-load_dotenv(user_config_path)
+
+def load_env_files() -> None:
+    """Shell exports win, then the user settings file, then a ./.env in this folder.
+
+    The user file (written by `auth login`) comes before ./.env because many project
+    folders carry their own .env with an old GEMINI_API_KEY; letting it win made the
+    CLI fail with API_KEY_INVALID depending on where it was run. A ./.env still
+    supplies anything the user file does not set. load_dotenv never overrides a
+    variable that is already set, so the first source wins.
+    """
+    load_dotenv(user_config_path)
+    if os.path.exists(".env"):
+        load_dotenv(".env")
+
+
+load_env_files()
 
 
 class DeepResearchConfig(BaseModel):
@@ -51,10 +63,10 @@ class DeepResearchConfig(BaseModel):
 def service_env() -> dict[str, str]:
     """Environment for long-lived background processes (the dashboard).
 
-    The CLI lets a ./.env in the current folder override the user settings, which
-    suits one-off runs. A daemon must not depend on where it was started, so here
-    the user settings file wins over a folder .env; variables exported in the real
-    shell still win over both.
+    The CLI now loads the user settings first too (load_env_files), but a daemon
+    must not depend on where it was started even for variables the user file lacks
+    at import time, so here the user settings file is re-applied over anything a
+    folder .env set; variables exported in the real shell still win over both.
     """
     from dotenv import dotenv_values
 
