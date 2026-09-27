@@ -1254,3 +1254,141 @@ def test_validate_plan_includes_script_checks():
         tgt, {"script": "python3 - << 'EOF'\nx = (\nEOF\n", "install": {}}
     )
     assert any("Python syntax error" in x for x in w), w
+
+
+def test_extract_json_keeps_first_object_when_text_follows():
+    assert extract_json('```json\n{"a": 1}\n{"b": 2}\n```') == {"a": 1}
+    assert extract_json('{"plan": {"x": "a\\d"}}\n\nNotes: done') == {
+        "plan": {"x": "a\\d"}
+    }
+
+
+def _failed_lab(tmp_path, reply, log):
+    tgt = labm.SlurmSSHTarget(
+        {"name": "u", "ssh_host": "h", "partitions": {"standard": {}}}
+    )
+    tgt.catalog = {
+        "generated": "g",
+        "modules": {"core": ["python-sci/2026.09"], "mpi_dependent": {}},
+    }
+    lab = Lab(str(tmp_path / "h.db"), lambda: None, tmp_path, targets={"u": tgt})
+    lab._fresh_catalog = lambda t: None  # type: ignore[method-assign]
+    lab.ensure_watcher = lambda: None  # type: ignore[method-assign]
+    prompts = []
+
+    def ask(prompt, search):
+        prompts.append(prompt)
+        return reply, 0.02
+
+    lab._ask = ask  # type: ignore[method-assign]
+    plan = {
+        "title": "t",
+        "question": "q",
+        "script": "python3 x.py --bad-flag",
+        "resources": {"partition": "standard"},
+        "install": {"modules": ["python-sci"]},
+    }
+    rid = lab.create(1, "selection", "x", "", "u", plan=plan)["id"]
+    lab._update(
+        rid, status="failed", job_id="9", exit_code="1:0", stage="Ended: FAILED"
+    )
+    d = lab.results_dir / f"run_{rid}"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "job.log").write_text(log)
+    return lab, rid, plan, prompts
+
+
+def test_fix_failed_makes_new_draft_and_leaves_failed_run(tmp_path):
+    good = {
+        "title": "t",
+        "question": "q",
+        "script": "python3 x.py",
+        "resources": {"partition": "standard"},
+        "install": {"modules": ["python-sci"]},
+    }
+    reply = (
+        "```json\n"
+        + json.dumps(
+            {
+                "plan": good,
+                "changes": ["drop --bad-flag (unrecognized argument)"],
+                "notes": "",
+            }
+        )
+        + "\n```"
+    )
+    log = (
+        "setup\n" * 3000
+        + "x.py: error: unrecognized arguments: --bad-flag\n[STAGE] Failed (exit 2)\n"
+    )
+    lab, rid, plan, prompts = _failed_lab(tmp_path, reply, log)
+    out = lab.fix_failed(rid)
+    assert (
+        "unrecognized arguments: --bad-flag" in prompts[0]
+    )  # the log tail reached the model
+    assert out["id"] != rid and out["status"] == "draft" and out["rerun_of"] == rid
+    assert out["plan"]["script"] == "python3 x.py"
+    assert out["fix"]["changes"] == ["drop --bad-flag (unrecognized argument)"]
+    assert (
+        lab.get(rid)["status"] == "failed"
+        and lab.get(rid)["plan"]["script"] == plan["script"]
+    )
+
+
+def test_fix_failed_only_for_failed_runs(tmp_path):
+    lab, rid, plan, prompts = _failed_lab(tmp_path, "{}", "log")
+    lab._update(rid, status="completed")
+    with pytest.raises(ValueError):
+        lab.fix_failed(rid)
+    assert prompts == []
+
+
+def test_log_for_fix_keeps_early_traceback():
+    log = "Traceback (most recent call last):\n  File x\nKeyError: 'a'\n" + (
+        "noise line\n" * 5000
+    )
+    out = labm._log_for_fix(log)
+    assert "KeyError: 'a'" in out and len(out) < 12000
+
+
+def test_fix_failed_flags_dropped_option(tmp_path):
+    good = {
+        "title": "t",
+        "question": "q",
+        "script": "python3 x.py",
+        "resources": {"partition": "standard"},
+        "install": {"modules": ["python-sci"]},
+    }
+    reply = (
+        "```json\n"
+        + json.dumps({"plan": good, "changes": ["remove --bad-flag"], "notes": ""})
+        + "\n```"
+    )
+    lab, rid, plan, prompts = _failed_lab(tmp_path, reply, "error: --bad-flag\n")
+    out = lab.fix_failed(rid)
+    assert out["fix"]["notes"].startswith(
+        "REVIEW: this fix removes option(s) --bad-flag"
+    )
+
+
+def test_fix_failed_retries_once_when_changes_missing(tmp_path):
+    good = {
+        "title": "t",
+        "question": "q",
+        "script": "python3 x.py --bad-flag --ok",
+        "resources": {"partition": "standard"},
+        "install": {"modules": ["python-sci"]},
+    }
+    silent = (
+        "```json\n" + json.dumps({"plan": good, "changes": [], "notes": ""}) + "\n```"
+    )
+    told = (
+        "```json\n"
+        + json.dumps({"plan": good, "changes": ["add --ok"], "notes": ""})
+        + "\n```"
+    )
+    lab, rid, plan, prompts = _failed_lab(tmp_path, silent, "log")
+    replies = [silent, told]
+    lab._ask = lambda p, search: (replies.pop(0), 0.01)  # type: ignore[method-assign]
+    out = lab.fix_failed(rid)
+    assert out["fix"]["changes"] == ["add --ok"] and replies == []

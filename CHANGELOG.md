@@ -7,6 +7,33 @@ releases.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-09-27
+
+### Added
+- **Fix with AI on failed runs.** A failed run gets a Fix with AI button. The planner reads
+  the job log (its end, plus the first traceback or ERROR block when that sits earlier)
+  and the plan, and changes only what the error shows is wrong. The result is a NEW draft
+  (`rerun_of` = the failed run) that goes through pre-flight; nothing is submitted and the
+  failed run is left as it was. `POST /api/lab/<id>/fix-failed`. Guards: every change must
+  be listed (one retry if the model changes the plan silently, then refuse); a fix that
+  removes command-line options is marked "REVIEW" because that is how an error gets
+  hidden instead of fixed. Replayed on the real failed runs #6, #23, #25 and #26 (about
+  $0.05 each): correct targeted fixes for #26 (dedupe strain names) and #23 (skyline file
+  format); #6 upgrades vLLM to a version that has the flag, with a note on the GPU driver;
+  #25 treats the symptom (drops --covariation), which the REVIEW note now flags.
+- **Inputs are checked before the heavy step.** The planner adds a few lines under
+  `stage "Checking inputs"` right after inputs are fetched or generated: record count,
+  range coverage and unique IDs for downloaded data, non-empty input files for generated
+  inputs, a responding server for benchmarks. A bad input stops the job in seconds with a
+  one-line reason (exit 3) instead of crashing minutes later in another tool. No extra job
+  or node: it runs inside the real job.
+
+### Fixed
+- Write-ups take input counts from the input or log lines that state them, not from derived
+  structures (run #27 reported 183 "sequences": tips plus internal nodes of a 100-tip tree).
+- Model replies with a second JSON object or trailing notes after the plan parse (the
+  first complete object is used) instead of failing with "Extra data".
+
 ## [0.21.1] - 2026-09-27
 
 ### Fixed
