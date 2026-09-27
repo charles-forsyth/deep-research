@@ -284,7 +284,8 @@ const LAB = {
       <div class="lab-review">
       <h3>${editable ? "Review lab run" : "Lab run"} #${r.id}: ${esc(p.title || "")}</h3>
       <div class="lab-q"><span class="label">Question</span> ${esc(p.question || "")}</div>
-      ${(p.warnings || []).length ? `<div class="lab-warn"><span class="label">Checked against the cluster: ${p.warnings.length} problem${p.warnings.length > 1 ? "s" : ""}</span><ul>${p.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul><div class="dim" style="font-size:11px">Edit the plan (modules, partition, GPUs) or submit anyway.</div></div>` : ""}
+      ${(p.warnings || []).length ? `<div class="lab-warn"><span class="label">Checked against the cluster: ${p.warnings.length} problem${p.warnings.length > 1 ? "s" : ""}</span><ul>${p.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul><div class="lab-fix-row">${editable ? `<button class="btn" data-x="fix" title="The AI fixes only what is flagged, then the plan is checked again. Nothing is submitted.">Fix with AI</button>` : ""}<span class="dim" style="font-size:11px">${editable ? "or edit the plan (modules, partition, GPUs) yourself, or submit anyway." : ""}</span></div></div>` : ""}
+      ${p.plan_before_fix && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">Fixed by AI and re-checked</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "no warnings"}</span> <button class="btn" data-x="undofix">Undo fix</button></div>${(p.fix_changes || []).length ? `<ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(p.fix_notes)}</div>` : ""}</div>` : ""}
       <div class="lab-sec"><span class="label">Approach</span><div>${esc(p.approach || "")}</div></div>
       <div class="lab-grid">
         <div><span class="label">Software</span>${(p.software || []).map((x) => `<div><b>${esc(x.name)}</b> <span class="mono dim">${esc(x.source || "")}${x.version ? " " + esc(x.version) : ""}</span><div class="dim" style="font-size:11.5px">${esc(x.why || "")}</div></div>`).join("") || '<div class="dim">none</div>'}
@@ -339,6 +340,26 @@ const LAB = {
       const w = (n.plan && n.plan.warnings) || [];
       if (w.length) toast(`Saved. ${w.length} cluster check warning${w.length > 1 ? "s" : ""}: ${w[0]}`, "err");
       return n;
+    };
+    const fixBtn = $('#modal [data-x="fix"]');
+    if (fixBtn) fixBtn.onclick = async () => {
+      fixBtn.disabled = true; fixBtn.innerHTML = '<span class="spinner"></span> Fixing';
+      try {
+        const n = await api(`/api/lab/${r.id}/fix`, { method: "POST" });
+        const f = n.fix || {};
+        toast((f.remaining || []).length ? `Plan fixed; ${f.remaining.length} warning(s) left` : (f.rounds ? "Plan fixed; checks pass" : (f.notes || "No problems found")), (f.remaining || []).length ? "err" : "ok");
+        this.review(el, s, n);
+        this.refresh(document.querySelector("#lab-panel"), s);
+      } catch (e) { toast(e.message, "err"); fixBtn.disabled = false; fixBtn.textContent = "Fix with AI"; }
+    };
+    const undoBtn = $('#modal [data-x="undofix"]');
+    if (undoBtn) undoBtn.onclick = async () => {
+      try {
+        const n = await api(`/api/lab/${r.id}/undo-fix`, { method: "POST" });
+        toast("Restored the plan from before the AI fix", "ok");
+        this.review(el, s, n);
+        this.refresh(document.querySelector("#lab-panel"), s);
+      } catch (e) { toast(e.message, "err"); }
     };
     $('#modal [data-x="save"]').onclick = async () => { try { await save(); toast("Plan saved", "ok"); this.refresh(document.querySelector("#lab-panel"), s); } catch (e) { toast(e.message, "err"); } };
     $('#modal [data-x="submit"]').onclick = async () => {

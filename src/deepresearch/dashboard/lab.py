@@ -611,6 +611,21 @@ def load_targets(config_dir: Path) -> dict[str, SlurmSSHTarget]:
     return out
 
 
+# What the site Python environment modules provide (import-tested on the cluster; see
+# ucr-slurm-production build/python-sci.sbatch). Used to flag redundant installs.
+PYTHON_SCI_PACKAGES = set(
+    """numpy scipy pandas matplotlib seaborn scikit-learn sklearn statsmodels
+sympy numba xarray netcdf4 h5py tables pytables zarr dask polars pyarrow astropy astroquery
+skyfield sunpy cartopy shapely geopandas pyproj rasterio networkx biopython pysam
+scikit-image opencv pillow jupyterlab ipykernel ipywidgets tqdm requests pyyaml rich
+cutadapt multiqc snakemake uv""".split()
+)
+PYTHON_ML_PACKAGES = set(
+    """torch numpy scipy pandas scikit-learn sklearn transformers
+jupyterlab""".split()
+)
+
+
 def validate_plan(target: SlurmSSHTarget | None, plan: dict) -> list[str]:
     """Check a plan against the cluster catalog before anything is submitted.
 
@@ -707,6 +722,26 @@ def validate_plan(target: SlurmSSHTarget | None, plan: dict) -> list[str]:
                 "Already installed as modules (faster than installing): "
                 + ", ".join(dup)
             )
+        # packages the loaded Python environment module already provides
+        pyenv_mods = [m for m in mods if m.split("/")[0] in ("python-sci", "python-ml")]
+        provided = {"python-sci": PYTHON_SCI_PACKAGES, "python-ml": PYTHON_ML_PACKAGES}
+        if pyenv_mods:
+            have_py = provided.get(pyenv_mods[0].split("/")[0], set())
+            redundant = sorted({p for p in pkgs if p in have_py})
+            if redundant:
+                warns.append(
+                    f"{pyenv_mods[0].split('/')[0]} already provides "
+                    + ", ".join(redundant)
+                    + "; drop these installs (and any venv built only for them)"
+                )
+        # plan made against an older cluster catalog: its software choices may be stale
+        made = plan.get("catalog_generated")
+        now = (target.catalog or {}).get("generated")
+        if made and now and made != now:
+            warns.append(
+                f"Planned against the cluster catalog of {str(made)[:16]}; the cluster "
+                f"has changed since ({str(now)[:16]}). Re-check the software choices."
+            )
         imgs = (plan.get("install") or {}).get("apptainer") or []
         local = {
             c.get("path", "") for c in (target.catalog or {}).get("containers") or []
@@ -794,6 +829,34 @@ Return JSON only, in a ```json block:
 "approach": "method and software in one or two sentences", "software": ["package"],
 "est_runtime": "e.g. 20 min", "why": "what it would tell the reader"}}],
 "note": "one sentence on how computable this report is"}}"""
+
+FIX_PROMPT = """You are fixing a job plan for the HPC cluster below. A pre-flight check found
+the problems listed under PROBLEMS. Change ONLY what is needed to fix them: modules, install
+lists, resources and the few script lines that set up software. Keep the science, the
+method, the parameters, the inputs and the outputs exactly as they are.
+
+{target}
+
+PROBLEMS:
+{problems}
+
+CURRENT PLAN (JSON):
+{plan}
+
+Rules:
+- Use only module names from the cluster description above, loaded the way it says.
+- Python work: load exactly one of python-sci (CPU science: numpy scipy pandas matplotlib
+  skyfield astropy xarray ...) or python-ml (PyTorch/GPU). Drop pip/conda installs of packages
+  that module already provides, and drop script lines that build a separate venv for them.
+- If a problem cannot be fixed (the science needs something the cluster lacks), leave the
+  plan unchanged and say why in "notes".
+- Inside JSON strings write every backslash as \\ and line breaks as \n.
+
+Return JSON only, in a ```json block:
+{{"plan": <the complete corrected plan, same keys as the current plan>,
+"changes": ["one short line per change, e.g. 'python/3.12.14 -> python-sci'"],
+"notes": "anything the reviewer should know, or empty"}}"""
+
 
 PLAN_PROMPT = """You are a computational scientist. Turn the selected material into ONE runnable job
 on the HPC cluster below. Use a few web searches (at most 5) to choose the best-established
@@ -1453,6 +1516,8 @@ class Lab:
                 if key not in plan:
                     raise ValueError(f"plan is missing '{key}'")
             plan["warnings"] = validate_plan(tgt, plan)
+            if tgt and getattr(tgt, "catalog", None):
+                plan["catalog_generated"] = tgt.catalog.get("generated")  # type: ignore[union-attr]
             self._update(
                 run_id,
                 only_if=("planning",),
@@ -1489,6 +1554,115 @@ class Lab:
             estimate_usd=estimate_cost(tgt, plan),
         )
         return self.get(run_id) or {}
+
+    FIX_MAX_ROUNDS = 2
+
+    def fix_plan(self, run_id: int) -> dict:
+        """Ask the planner to fix only what pre-flight flagged, then check again.
+
+        Never submits. Stores the corrected plan as the draft and keeps the previous
+        plan in `plan_before_fix` so the reviewer can undo. Up to FIX_MAX_ROUNDS model
+        calls: a second round only if the first left warnings. Returns the run plus
+        `fix` = {changes, notes, rounds, remaining}.
+        """
+        run = self.get(run_id)
+        if not run:
+            raise KeyError(run_id)
+        if run["status"] != "draft":
+            raise ValueError(f"run is {run['status']}; only drafts can be fixed")
+        tgt = self.target(run["target"])
+        if not tgt:
+            raise ValueError("no cluster target configured")
+        self._fresh_catalog(tgt)
+        original = dict(run.get("plan") or {})
+        plan = dict(original)
+        plan.pop("plan_before_fix", None)
+        warns = validate_plan(tgt, plan)  # includes "planned against an older catalog"
+        if not warns:
+            return {
+                **(self.get(run_id) or {}),
+                "fix": {
+                    "changes": [],
+                    "notes": "No problems found against the current cluster catalog.",
+                    "rounds": 0,
+                    "remaining": [],
+                },
+            }
+        changes: list[str] = []
+        notes: list[str] = []
+        rounds = 0
+        while warns and rounds < self.FIX_MAX_ROUNDS:
+            rounds += 1
+            body = {
+                k: v
+                for k, v in plan.items()
+                if k not in ("warnings", "plan_before_fix")
+            }
+            prompt = FIX_PROMPT.format(
+                target=_describe(tgt, full=True),
+                problems="\n".join(f"- {w}" for w in warns),
+                plan=json.dumps(body, indent=1)[:60000],
+            )
+            reply, cost = self._ask(prompt, search=False)
+            self._add_cost(run_id, cost)
+            out = extract_json(reply)
+            new = out.get("plan") if isinstance(out, dict) else None
+            if not isinstance(new, dict) or not all(
+                k in new for k in ("script", "resources", "install")
+            ):
+                notes.append("The model returned no usable plan; nothing changed.")
+                break
+            changes += [str(c) for c in out.get("changes") or []][:20]
+            if out.get("notes"):
+                notes.append(str(out["notes"]))
+            plan = new
+            if getattr(tgt, "catalog", None):
+                plan["catalog_generated"] = tgt.catalog.get("generated")  # type: ignore[union-attr]
+            warns = validate_plan(tgt, plan)
+        before = {
+            k: v
+            for k, v in original.items()
+            if k not in ("warnings", "plan_before_fix")
+        }
+        if getattr(tgt, "catalog", None):
+            plan["catalog_generated"] = tgt.catalog.get("generated")  # type: ignore[union-attr]
+        warns = validate_plan(tgt, plan)
+        plan = {
+            **plan,
+            "warnings": warns,
+            "plan_before_fix": before,
+            "fix_changes": changes,
+            "fix_notes": " ".join(notes),
+        }
+        self._update(
+            run_id,
+            plan=plan,
+            stage="Plan fixed by AI, re-checked"
+            + (f" ({len(warns)} warnings left)" if warns else " (no warnings)"),
+            script=build_sbatch(run_id, plan, tgt),
+            estimate_usd=estimate_cost(tgt, plan),
+        )
+        return {
+            **(self.get(run_id) or {}),
+            "fix": {
+                "changes": changes,
+                "notes": " ".join(notes),
+                "rounds": rounds,
+                "remaining": warns,
+            },
+        }
+
+    def undo_fix(self, run_id: int) -> dict:
+        """Restore the plan as it was before the last AI fix."""
+        run = self.get(run_id)
+        if not run:
+            raise KeyError(run_id)
+        if run["status"] != "draft":
+            raise ValueError(f"run is {run['status']}; only drafts can be changed")
+        before = (run.get("plan") or {}).get("plan_before_fix")
+        if not isinstance(before, dict):
+            raise ValueError("no AI fix to undo")
+        return self.edit_plan(run_id, before)
 
     # ---- submit / cancel -------------------------------------------------
     def submit(self, run_id: int) -> dict:
