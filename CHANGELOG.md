@@ -7,6 +7,17 @@ releases.
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-09-27
+
+### Fixed
+- Pre-flight now checks the run script itself, not only modules and resources. Run #16
+  failed 35 s into the job: the planner had emitted a garbled `<unk>` token in place of `{`
+  inside a Python f-string. `check_script` flags model artifact tokens (`<unk>`, `<pad>`,
+  U+FFFD, ...), runs `bash -n` on the script, and compiles (never runs) every Python
+  heredoc (`python3 - << 'EOF'`, `cat > x.py << 'EOF'`), reporting the script line number.
+  Checked against all 19 stored plans: flags only run #16. Fix with AI may now repair the
+  reported lines, and nothing else in the script.
+
 ## [0.21.0] - 2026-09-27
 
 ### Added

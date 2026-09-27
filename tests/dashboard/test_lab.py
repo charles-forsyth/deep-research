@@ -1212,3 +1212,45 @@ def test_validate_flags_redundant_pip_and_stale_catalog():
     )
     assert any("already provides skyfield" in x and "rebound" not in x for x in w), w
     assert any("Planned against the cluster catalog" in x for x in w), w
+
+
+# ---- script checks -----------------------------------------------------------
+
+
+def test_check_script_flags_unk_token_and_python_syntax():
+    s = (
+        "set -euo pipefail\n"
+        "python3 - << 'EOF'\n"
+        "r = {'strain': 'A'}\n"
+        "print(f\">\" + '<unk>' + \"r['strain']}\")\n"
+        "EOF\n"
+    )
+    s = s.replace("\" + '<unk>' + \"", "<unk>")
+    w = labm.check_script(s)
+    assert any("garbled model token" in x and "line 4" in x for x in w), w
+    assert any("Python syntax error" in x and "line 4" in x for x in w), w
+
+
+def test_check_script_clean_and_cat_py_heredoc():
+    ok = "set -e\ncat > a.py << 'PY'\nimport sys\nprint(sys.argv)\nPY\npython3 a.py\n"
+    assert labm.check_script(ok) == []
+    bad = "cat > a.py <<'PY'\ndef f(:\n  pass\nPY\n"
+    assert any("Python syntax error" in x for x in labm.check_script(bad))
+
+
+def test_check_script_bash_syntax_and_unquoted_heredoc_skipped():
+    assert any(
+        "Shell syntax error" in x for x in labm.check_script("if true; then\necho x\n")
+    )
+    # unquoted heredoc with $ is expanded by the shell first: not compiled
+    assert labm.check_script('python3 - <<EOF\nprint("$HOME")\nEOF\n') == []
+
+
+def test_validate_plan_includes_script_checks():
+    tgt = labm.SlurmSSHTarget(
+        {"name": "u", "ssh_host": "h", "partitions": {"standard": {}}}
+    )
+    w = labm.validate_plan(
+        tgt, {"script": "python3 - << 'EOF'\nx = (\nEOF\n", "install": {}}
+    )
+    assert any("Python syntax error" in x for x in w), w

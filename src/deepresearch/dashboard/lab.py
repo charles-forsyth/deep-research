@@ -749,6 +749,67 @@ def validate_plan(target: SlurmSSHTarget | None, plan: dict) -> list[str]:
         for i in imgs:
             if str(i).startswith("/") and str(i) not in local:
                 warns.append(f"Container image '{i}' is not in /apps/containers")
+    warns += check_script(str(plan.get("script") or ""))
+    return warns
+
+
+# Tokens a model emits when it fails to produce a character; they never belong in code.
+_MODEL_ARTIFACTS = ("<unk>", "<pad>", "<|endoftext|>", "<eos>", "\ufffd")
+_HEREDOC = re.compile(
+    r"(?P<cmd>[^\n]*?)<<-?\s*(?P<q>['\"]?)(?P<tag>[A-Za-z_][A-Za-z0-9_]*)(?P=q)[^\n]*\n"
+    r"(?P<body>.*?)\n[ \t]*(?P=tag)[ \t]*(?:\n|$)",
+    re.S,
+)
+
+
+def check_script(script: str) -> list[str]:
+    """Static checks on the run script: model artifacts, bash syntax, embedded Python.
+
+    Catches what would otherwise fail seconds into the job (run #16: a `<unk>` token in
+    place of `{` inside an f-string). Python is compiled, never executed.
+    """
+    if not script.strip():
+        return []
+    warns: list[str] = []
+    for tok in _MODEL_ARTIFACTS:
+        n = script.count(tok)
+        if n:
+            line = next(i for i, ln in enumerate(script.splitlines(), 1) if tok in ln)
+            shown = "U+FFFD" if tok == "\ufffd" else tok
+            warns.append(
+                f"Script contains {n} garbled model token(s) '{shown}' (first on line "
+                f"{line}); the code there is incomplete"
+            )
+    try:
+        r = subprocess.run(
+            ["bash", "-n"], input=script, text=True, capture_output=True, timeout=10
+        )
+        if r.returncode != 0:
+            msg = (r.stderr or "").strip().splitlines()
+            warns.append(
+                "Shell syntax error in the script: "
+                + (msg[0].replace("bash: ", "", 1) if msg else "bash -n failed")[:200]
+            )
+    except (OSError, subprocess.TimeoutExpired):
+        pass  # no bash here: skip, the cluster will still report it
+    for m in _HEREDOC.finditer(script):
+        cmd, body = m.group("cmd"), m.group("body")
+        if m.group("q") == "" and "$" in body:
+            continue  # unquoted heredoc: the shell expands it first, can't compile as-is
+        is_py = re.search(r"\bpython[0-9.]*\b", cmd) or re.search(
+            r"cat\s*>\s*\S+\.py\b", cmd
+        )
+        if not is_py:
+            continue
+        try:
+            compile(body, m.group("tag"), "exec")
+        except SyntaxError as e:
+            start = script[: m.start("body")].count("\n") + 1
+            ln = start + (e.lineno or 1) - 1
+            warns.append(
+                f"Python syntax error in the script (line {ln}): {e.msg}"
+                + (f": {e.text.strip()[:80]}" if e.text else "")
+            )
     return warns
 
 
@@ -832,7 +893,8 @@ Return JSON only, in a ```json block:
 
 FIX_PROMPT = """You are fixing a job plan for the HPC cluster below. A pre-flight check found
 the problems listed under PROBLEMS. Change ONLY what is needed to fix them: modules, install
-lists, resources and the few script lines that set up software. Keep the science, the
+lists, resources, the few script lines that set up software, and lines with reported
+syntax errors. Keep the science, the
 method, the parameters, the inputs and the outputs exactly as they are.
 
 {target}
@@ -848,6 +910,8 @@ Rules:
 - Python work: load exactly one of python-sci (CPU science: numpy scipy pandas matplotlib
   skyfield astropy xarray ...) or python-ml (PyTorch/GPU). Drop pip/conda installs of packages
   that module already provides, and drop script lines that build a separate venv for them.
+- Syntax errors and garbled model tokens (<unk> and similar) in the script: repair only
+  those lines so the code is what was evidently intended; change nothing else in the script.
 - If a problem cannot be fixed (the science needs something the cluster lacks), leave the
   plan unchanged and say why in "notes".
 - Inside JSON strings write every backslash as \\ and line breaks as \n.

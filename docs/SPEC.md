@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.21.0 (package `deepresearch`) |
+| Applies to | deep-research v0.21.1 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1270,6 +1270,11 @@ about $0.02.)
   restores it. Two more checks feed it: packages the loaded Python environment module
   already provides (`PYTHON_SCI_PACKAGES`, `PYTHON_ML_PACKAGES`), and plans whose
   `catalog_generated` differs from the current catalog (made before a cluster change).
+- The script is checked too (`check_script`, part of `validate_plan`): garbled model
+  tokens such as `<unk>` (run #16 had one in place of `{` and died with a Python
+  SyntaxError 35 s in), `bash -n` on the whole script, and `compile()` (never exec) of each
+  quoted Python heredoc, with the script line number in the warning. Unquoted heredocs
+  that contain `$` are skipped because the shell rewrites them before Python sees them.
 - `Lab` and `Features` each hold one `genai.Client`, created under a lock. Without the
   lock, two plans started together each built a client and the one that lost was
   garbage-collected mid-request ("Cannot send a request, as the client has been
