@@ -26,10 +26,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-PLAN_MODEL = "gemini-3.1-pro-preview"
-# Gemini 3.1 Pro list prices, USD per 1M tokens (thinking billed as output).
-PRO_IN_1M = 2.00
-PRO_OUT_1M = 12.00
+PLAN_MODEL = "gemini-3.8-flash"
+# gemini-3.8-flash list prices, USD per 1M tokens (thinking billed as output).
+PRO_IN_1M = 0.75
+PRO_OUT_1M = 3.75
 SEARCH_PER_1K = 14.00
 
 STATES = (
