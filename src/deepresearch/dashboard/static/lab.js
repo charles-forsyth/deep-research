@@ -33,10 +33,12 @@ const LAB = {
       <div class="lab-actions">
         <button class="btn small primary" data-l="doc">\u2697 Lab run on this report</button>
         <span class="dim" style="font-size:11.5px">or select a passage and choose <b>Lab run</b></span>
+        <span class="lab-cat dim" style="font-size:11px;margin-left:auto"></span>
       </div>
       <div class="lab-sug">${sug ? this.sugHtml(sug) : `<div class="lab-sug-empty"><button class="btn small" data-l="sug">Suggest computations for this report</button> <span class="dim" style="font-size:11px">Gemini reads the report and proposes up to 3 runnable jobs (about a cent)</span></div>`}</div>
       <div class="lab-runs">${data.runs.map((r) => this.runHtml(r)).join("")}</div>`;
     body.querySelector('[data-l="doc"]').onclick = () => this.startDialog(s, { scope: "document" });
+    this.catalogLine(body.querySelector(".lab-cat"));
     body.querySelector('[data-l="sug"]')?.addEventListener("click", (e) => this.loadSuggestions(el, s, e.target));
     body.querySelector('[data-l="resug"]')?.addEventListener("click", (e) => this.loadSuggestions(el, s, e.target, true));
     body.querySelectorAll("[data-sug]").forEach((b) => (b.onclick = () => {
@@ -59,6 +61,31 @@ const LAB = {
           <button class="btn small" data-sug="${i}">Plan this run</button>
         </div>`).join("") : `<div class="dim">${esc(sug.note || "Nothing in this report looks computable.")}</div>`}
       ${items.length && sug.note ? `<div class="dim" style="font-size:11px;margin-top:4px">${esc(sug.note)}</div>` : ""}`;
+  },
+
+  // Cluster catalog: what the AI is told about the cluster (modules, recipes, GPU)
+  catalogText(c) {
+    if (!c || !c.available) return c && c.reason ? "" : "cluster info: not loaded";
+    const gpu = c.gpu && c.gpu.driver ? ` \u00b7 GPU driver ${c.gpu.driver} (CUDA ${c.gpu.cuda_max})` : "";
+    const when = (c.generated || "").slice(0, 16).replace("T", " ");
+    return `cluster info: ${c.modules} modules, ${c.recipes} recipes${gpu} \u00b7 ${when} UTC`;
+  },
+  async catalogLine(span) {
+    if (!span) return;
+    let c;
+    try { c = await api("/api/lab/catalog"); } catch { return; }
+    if (!c.available && c.reason) return; // target has no catalog configured
+    span.innerHTML = `${esc(this.catalogText(c))} <button class="linkbtn" data-l="catref">refresh</button>`;
+    span.querySelector('[data-l="catref"]').onclick = async (e) => {
+      e.target.disabled = true; e.target.textContent = "refreshing\u2026";
+      try {
+        const n = await api("/api/lab/catalog/refresh", { method: "POST", body: {} });
+        toast("Cluster info refreshed", "ok");
+        this.partitions = null; // re-read partitions (prices, GPUs) on next review
+        span.innerHTML = `${esc(this.catalogText(n))} <button class="linkbtn" data-l="catref">refresh</button>`;
+        this.catalogLine(span);
+      } catch (err) { toast(err.message, "err"); e.target.disabled = false; e.target.textContent = "refresh"; }
+    };
   },
 
   async loadSuggestions(el, s, btn, refresh = false) {
@@ -257,6 +284,7 @@ const LAB = {
       <div class="lab-review">
       <h3>${editable ? "Review lab run" : "Lab run"} #${r.id}: ${esc(p.title || "")}</h3>
       <div class="lab-q"><span class="label">Question</span> ${esc(p.question || "")}</div>
+      ${(p.warnings || []).length ? `<div class="lab-warn"><span class="label">Checked against the cluster: ${p.warnings.length} problem${p.warnings.length > 1 ? "s" : ""}</span><ul>${p.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul><div class="dim" style="font-size:11px">Edit the plan (modules, partition, GPUs) or submit anyway.</div></div>` : ""}
       <div class="lab-sec"><span class="label">Approach</span><div>${esc(p.approach || "")}</div></div>
       <div class="lab-grid">
         <div><span class="label">Software</span>${(p.software || []).map((x) => `<div><b>${esc(x.name)}</b> <span class="mono dim">${esc(x.source || "")}${x.version ? " " + esc(x.version) : ""}</span><div class="dim" style="font-size:11.5px">${esc(x.why || "")}</div></div>`).join("") || '<div class="dim">none</div>'}
@@ -267,7 +295,7 @@ const LAB = {
         <div class="lab-params">${Object.entries(params).map(([k, v]) => { const val = typeof v === "object" ? JSON.stringify(v) : String(v); return `<label ${val.length > 22 ? 'style="grid-column:span 2"' : ""}><span class="mono">${esc(k)}</span><input data-param="${esc(k)}" value="${esc(val)}" title="${esc(val)}" ${editable ? "" : "disabled"}></label>`; }).join("") || '<span class="dim">none</span>'}</div></div>
       <div class="lab-sec"><span class="label">Resources</span>
         <div class="lab-params res">
-          <label><span class="mono">partition</span><select id="lr-part" ${editable ? "" : "disabled"}>${Object.entries(parts).map(([k, v]) => `<option value="${esc(k)}" ${k === res.partition ? "selected" : ""}>${esc(k)} \u00b7 ${esc(v.machine || "")} \u00b7 $${v.usd_per_hour}/h</option>`).join("") || `<option>${esc(res.partition || "")}</option>`}</select></label>
+          <label><span class="mono">partition</span><select id="lr-part" ${editable ? "" : "disabled"}>${Object.entries(parts).map(([k, v]) => `<option value="${esc(k)}" ${k === res.partition ? "selected" : ""}>${esc(k)} \u00b7 ${esc(v.cpus ? v.cpus + " cores" : (v.machine || ""))}${v.gpus ? " + " + v.gpus + " GPU" : ""}${v.spot ? " \u00b7 spot" : ""} \u00b7 $${v.usd_per_hour}/h</option>`).join("") || `<option>${esc(res.partition || "")}</option>`}</select></label>
           <label><span class="mono">nodes</span><input id="lr-nodes" type="number" min="1" value="${esc(res.nodes || 1)}" ${editable ? "" : "disabled"}></label>
           <label><span class="mono">time limit</span><input id="lr-time" value="${esc(res.time_limit || "01:00:00")}" ${editable ? "" : "disabled"}></label>
           <label><span class="mono">gpus</span><input id="lr-gpus" type="number" min="0" value="${esc(res.gpus || 0)}" ${editable ? "" : "disabled"}></label>
@@ -302,9 +330,16 @@ const LAB = {
       });
       np.resources = { ...(np.resources || {}), partition: $("#lr-part").value, nodes: Math.max(1, +$("#lr-nodes").value || 1), time_limit: $("#lr-time").value.trim(), gpus: Math.max(0, +$("#lr-gpus").value || 0) };
       np.script = $("#lr-script").value;
+      delete np.warnings; // recomputed by the server on save
       return np;
     };
-    const save = async () => { const n = await api(`/api/lab/${r.id}/plan`, { method: "PUT", body: { plan: collect() } }); $("#lr-est").textContent = n.estimate_usd != null ? "$" + (+n.estimate_usd).toFixed(2) : "?"; return n; };
+    const save = async () => {
+      const n = await api(`/api/lab/${r.id}/plan`, { method: "PUT", body: { plan: collect() } });
+      $("#lr-est").textContent = n.estimate_usd != null ? "$" + (+n.estimate_usd).toFixed(2) : "?";
+      const w = (n.plan && n.plan.warnings) || [];
+      if (w.length) toast(`Saved. ${w.length} cluster check warning${w.length > 1 ? "s" : ""}: ${w[0]}`, "err");
+      return n;
+    };
     $('#modal [data-x="save"]').onclick = async () => { try { await save(); toast("Plan saved", "ok"); this.refresh(document.querySelector("#lab-panel"), s); } catch (e) { toast(e.message, "err"); } };
     $('#modal [data-x="submit"]').onclick = async () => {
       const b = $('#modal [data-x="submit"]'); b.disabled = true; b.innerHTML = '<span class="spinner"></span> Submitting';

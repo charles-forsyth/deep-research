@@ -222,6 +222,8 @@ class Api:
         r("GET", r"/api/audio/jobs/(\d+)", self.audio_job)
         r("GET", r"/api/audio/(\d+)/file", self.audio_file)
         r("GET", r"/api/lab/targets", self.lab_targets)
+        r("GET", r"/api/lab/catalog", self.lab_catalog)
+        r("POST", r"/api/lab/catalog/refresh", self.lab_catalog_refresh)
         r("GET", r"/api/sessions/(\d+)/lab", self.lab_list)
         r("POST", r"/api/sessions/(\d+)/lab/suggestions", self.lab_suggestions)
         r("POST", r"/api/sessions/(\d+)/lab", self.lab_create)
@@ -929,6 +931,17 @@ class Api:
                 for t in self.lab.targets.values()
             ]
         }
+
+    def lab_catalog(self, query, body):
+        name = (query.get("target") or [None])[0]
+        return self.lab.catalog(name, refresh=False)
+
+    def lab_catalog_refresh(self, query, body):
+        name = (body or {}).get("target")
+        st = self.lab.catalog(name, refresh=True)
+        if st.get("error") and not st.get("available"):
+            raise ApiError(502, st["error"])
+        return st
 
     def lab_list(self, sid, query, body):
         self._session(sid)
