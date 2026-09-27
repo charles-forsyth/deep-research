@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.21.1 (package `deepresearch`) |
+| Applies to | deep-research v0.22.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1275,6 +1275,18 @@ about $0.02.)
   SyntaxError 35 s in), `bash -n` on the whole script, and `compile()` (never exec) of each
   quoted Python heredoc, with the script line number in the warning. Unquoted heredocs
   that contain `$` are skipped because the shell rewrites them before Python sees them.
+- Failures that only running can show (file formats, date formats, duplicate names,
+  thin data) are handled two ways, neither adding a job or a node. (1) The plan prompt
+  requires a `stage "Checking inputs"` block right after inputs are fetched or generated
+  that exits 3 with a one-line reason when inputs cannot give a meaningful answer (count,
+  range coverage, unique IDs; non-empty generated inputs; responding server for
+  benchmarks). (2) Fix with AI on a failed run (`Lab.fix_failed`, `RUNFIX_PROMPT`,
+  `POST /api/lab/<id>/fix-failed`) sends the plan and `_log_for_fix(job.log)` (end of the
+  log plus an earlier first traceback/ERROR block) and creates a new draft with
+  `rerun_of`; it never submits and never edits the failed run. Every change must be
+  listed (one retry, then refuse), and `_dropped_options` marks fixes that remove `--flags`
+  with a REVIEW note, because removing an option is how a model hides an error (replay
+  of run #25 did exactly that).
 - `Lab` and `Features` each hold one `genai.Client`, created under a lock. Without the
   lock, two plans started together each built a client and the one that lost was
   garbage-collected mid-request ("Cannot send a request, as the client has been

@@ -126,6 +126,7 @@ const LAB = {
         ${r.status === "plan_failed" && !p.why_not ? `<button class="btn small primary" data-la="replan">\u21BB Retry plan</button>` : ""}
         ${p.script ? `<button class="btn small" data-la="plan">${r.status === "draft" ? "Plan" : "Plan and script"}</button>` : ""}
         ${r.job_id ? `<button class="btn small" data-la="log">${live ? "Live log" : "Log"}</button>` : ""}
+        ${r.status === "failed" && p.script ? `<button class="btn small primary" data-la="fixfailed" title="The AI reads the error in the job log and fixes only what failed. You review the new plan before anything runs.">Fix with AI</button>` : ""}
         ${["completed", "failed", "cancelled"].includes(r.status) && p.script ? `<button class="btn small" data-la="rerun">\u21BB Re-run with changes</button>` : ""}
         ${r.result_md ? `<button class="btn small" data-la="nb">\u2192 Notebook</button>` : ""}
         <span class="grow"></span>
@@ -168,6 +169,15 @@ const LAB = {
     act("rerun")?.addEventListener("click", async () => {
       try { const n = await api(`/api/lab/${r.id}/rerun`, { method: "POST" }); await this.refresh(el, s); this.review(el, s, n); }
       catch (e) { toast(e.message, "err"); }
+    });
+    act("fixfailed")?.addEventListener("click", async (ev) => {
+      const b = ev.currentTarget; b.disabled = true; b.innerHTML = '<span class="spinner"></span> Reading the log';
+      try {
+        const n = await api(`/api/lab/${r.id}/fix-failed`, { method: "POST" });
+        const f = n.fix || {};
+        toast(`New draft #${n.id}: ${(f.changes || []).length} change(s)${(f.remaining || []).length ? `, ${f.remaining.length} warning(s)` : ""}`, (f.remaining || []).length ? "err" : "ok");
+        await this.refresh(el, s); this.review(el, s, n);
+      } catch (e) { toast(e.message, "err"); b.disabled = false; b.textContent = "Fix with AI"; }
     });
     act("replan")?.addEventListener("click", async () => {
       try { await api(`/api/lab/${r.id}/replan`, { method: "POST" }); } catch (e) { toast(e.message, "err"); }
@@ -285,6 +295,7 @@ const LAB = {
       <h3>${editable ? "Review lab run" : "Lab run"} #${r.id}: ${esc(p.title || "")}</h3>
       <div class="lab-q"><span class="label">Question</span> ${esc(p.question || "")}</div>
       ${(p.warnings || []).length ? `<div class="lab-warn"><span class="label">Checked against the cluster: ${p.warnings.length} problem${p.warnings.length > 1 ? "s" : ""}</span><ul>${p.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul><div class="lab-fix-row">${editable ? `<button class="btn" data-x="fix" title="The AI fixes only what is flagged, then the plan is checked again. Nothing is submitted.">Fix with AI</button>` : ""}<span class="dim" style="font-size:11px">${editable ? "or edit the plan (modules, partition, GPUs) yourself, or submit anyway." : ""}</span></div></div>` : ""}
+      ${!p.plan_before_fix && (p.fix_changes || []).length && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">AI fix of failed run #${esc(r.rerun_of || "")}</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "checks pass"}</span></div><ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(p.fix_notes)}</div>` : ""}</div>` : ""}
       ${p.plan_before_fix && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">Fixed by AI and re-checked</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "no warnings"}</span> <button class="btn" data-x="undofix">Undo fix</button></div>${(p.fix_changes || []).length ? `<ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(p.fix_notes)}</div>` : ""}</div>` : ""}
       <div class="lab-sec"><span class="label">Approach</span><div>${esc(p.approach || "")}</div></div>
       <div class="lab-grid">

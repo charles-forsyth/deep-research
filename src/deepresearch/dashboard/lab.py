@@ -114,16 +114,24 @@ def _loads_lenient(body: str) -> Any:
     Try strict first, then allow control characters, then double every backslash that
     does not start a valid JSON escape, which is what the model meant.
     """
-    try:
-        return json.loads(body)
-    except ValueError:
-        pass
-    try:
-        return json.loads(body, strict=False)
-    except ValueError:
-        pass
-    fixed = _ESCAPE.sub(lambda m: m.group(0) if m.group(1) else "\\\\", body)
-    return json.loads(fixed, strict=False)
+    last: ValueError | None = None
+    for text, strict in (
+        (body, True),
+        (body, False),
+        (_ESCAPE.sub(lambda m: m.group(0) if m.group(1) else "\\\\", body), False),
+    ):
+        try:
+            return json.loads(text, strict=strict)
+        except json.JSONDecodeError as e:
+            last = e
+            if e.msg == "Extra data":
+                # a complete object followed by more text (a second object, notes):
+                # keep the first complete value
+                try:
+                    return json.JSONDecoder(strict=strict).raw_decode(text.lstrip())[0]
+                except ValueError:
+                    pass
+    raise last or ValueError("no JSON")
 
 
 def extract_json(text: str) -> Any:
@@ -813,6 +821,31 @@ def check_script(script: str) -> list[str]:
     return warns
 
 
+def _dropped_options(old: dict, new: dict) -> list[str]:
+    """Command-line options (--name) present in the old script but gone from the new one,
+    unless the new plan replaces the software they belonged to (install lists changed)."""
+    opt = re.compile(r"(?<![\w-])--[a-zA-Z][\w-]+")
+    before = set(opt.findall(str(old.get("script") or "")))
+    after = set(opt.findall(str(new.get("script") or "")))
+    return sorted(before - after)
+
+
+def _log_for_fix(log: str, limit: int = 9000) -> str:
+    """The part of a job log that explains a failure: its end, plus the first traceback
+    or ERROR block when that sits earlier (tools often print pages after the real error)."""
+    log = log or ""
+    if len(log) <= limit:
+        return log or "(no log)"
+    tail = log[-(limit * 2 // 3) :]
+    m = re.search(
+        r"(Traceback \(most recent call last\)|^ERROR|^Error|error:)", log, re.M
+    )
+    if m and m.start() < len(log) - len(tail):
+        head = log[max(0, m.start() - 500) : m.start() + limit // 3]
+        return head + "\n[...]\n" + tail
+    return log[-limit:]
+
+
 def _describe(tgt, full: bool) -> str:
     if not tgt:
         return "No cluster configured."
@@ -922,6 +955,44 @@ Return JSON only, in a ```json block:
 "notes": "anything the reviewer should know, or empty"}}"""
 
 
+RUNFIX_PROMPT = """A job you planned ran on the HPC cluster below and FAILED. Fix the plan so a
+rerun gets past this failure. Change ONLY what the error shows is wrong: the lines that
+failed, a wrong flag, a missing package or module, a file-format assumption, or resources
+(time, memory, partition) if the job was killed for them. Make the SMALLEST change that
+fixes it: prefer removing or replacing an unsupported flag, or fixing the lines that
+failed, over switching software versions or container images. Change a version only
+when the method truly needs it, and then say in "notes" what that risks (e.g. whether
+the cluster's GPU driver supports it). Keep the science, method,
+parameters and outputs as they are. Do not add retries or try/except that would hide the
+error; fix its cause.
+
+{target}
+
+SLURM STATE: {state} (exit {exit_code}, elapsed {elapsed})
+
+END OF THE JOB LOG:
+{log}
+
+PLAN THAT FAILED (JSON):
+{plan}
+
+Rules:
+- Only modules from the cluster description above; one Python environment module at most.
+- Inside JSON strings write every backslash as \\\\ and line breaks as \\n.
+- An error message can be a symptom. Trace it back through the log to the first thing
+  that went wrong (e.g. a model that "cannot estimate a rate" because too few inputs were
+  kept: fix why they were dropped, do not remove the analysis option that complained).
+  Never remove an analysis step, option or output to make an error go away.
+- Every change must appear in "changes". A change you cannot name an error for is not
+  allowed.
+- If the log does not show why it failed, change nothing and say so in "notes".
+
+Return JSON only, in a ```json block:
+{{"plan": <the complete corrected plan, same keys>,
+"changes": ["one short line per change, naming the error it fixes"],
+"notes": "anything the reviewer should know, or empty"}}"""
+
+
 PLAN_PROMPT = """You are a computational scientist. Turn the selected material into ONE runnable job
 on the HPC cluster below. Use a few web searches (at most 5) to choose the best-established
 open-source software for the task and to check exact package names and command-line usage.
@@ -953,6 +1024,15 @@ Requirements for the job:
   file (CSV, JSON, PNG plots, text summaries) into ./outputs/. Keep outputs under 100 MB.
 - Print progress lines. Mark phases with `stage "Running"`, `stage "Post-processing"`
   (a shell function the harness provides).
+- Check inputs before the heavy step: right after inputs are downloaded or generated, add a
+  few lines under `stage "Checking inputs"` that stop the job (exit 3) with a one-line
+  reason if the inputs cannot give a meaningful answer. Fit the check to the job: for
+  downloaded data, the record count, coverage of the requested range (dates, regions,
+  energies...) and unique identifiers; for generated inputs, that each input file exists
+  and is non-empty; for benchmarks, that the server or model answers before timing starts.
+  Print what was checked, e.g. "inputs OK: 100 sequences, years 2015-2024, all names
+  unique". Keep it to seconds and to things that make the result meaningless if wrong;
+  do not check the science.
 - Use $SLURM_CPUS_ON_NODE for thread counts. For MPI codes launch with `srun` (Slurm
   starts one rank per task across all nodes; set resources.nodes and optionally
   resources.ntasks_per_node). Temporary files go to $TMPDIR (private, node-local).
@@ -999,7 +1079,9 @@ TEXT OUTPUTS (truncated):
 LOG TAIL:
 {log}
 
-Rules: report only what the outputs and log show. Quote the key numbers exactly. No LaTeX
+Rules: report only what the outputs and log show. Quote the key numbers exactly. Take
+counts of inputs (samples, sequences, structures, cases) from the input or log lines that
+state them, not from derived structures (a tree also has internal nodes, a mesh has cells). No LaTeX
 (the reader does not render it): write symbols in plain Unicode, e.g. θ, ≤, √2, ×10⁻³. If the job
 failed or the outputs do not answer the question, say so plainly and say what to change.
 Sections: **Result** (2-4 sentences), **Key numbers** (bullets), **What it means for the
@@ -1727,6 +1809,120 @@ class Lab:
         if not isinstance(before, dict):
             raise ValueError("no AI fix to undo")
         return self.edit_plan(run_id, before)
+
+    def fix_failed(self, run_id: int) -> dict:
+        """A failed run: ask the planner to fix what the job log shows, as a new draft.
+
+        The failed run is left untouched. The new run is a draft (`rerun_of` = the failed
+        run) that goes through pre-flight like any plan; nothing is submitted. Returns the
+        new run plus `fix` = {changes, notes, remaining}.
+        """
+        run = self.get(run_id)
+        if not run:
+            raise KeyError(run_id)
+        if run["status"] != "failed":
+            raise ValueError(
+                f"run is {run['status']}; only failed runs can be fixed this way"
+            )
+        tgt = self.target(run["target"])
+        if not tgt:
+            raise ValueError("no cluster target configured")
+        plan = {
+            k: v
+            for k, v in (run.get("plan") or {}).items()
+            if k not in ("warnings", "plan_before_fix", "fix_changes", "fix_notes")
+        }
+        if not plan.get("script"):
+            raise ValueError("the failed run has no plan to fix")
+        log_path = self.results_dir / f"run_{run_id}" / "job.log"
+        log = log_path.read_text("utf-8", "replace") if log_path.exists() else ""
+        if not log.strip() and run.get("job_id"):
+            try:
+                log, _ = tgt.log(run_id, 0)
+            except Exception:  # cluster unreachable: fix from state alone
+                log = ""
+        self._fresh_catalog(tgt)
+        prompt = RUNFIX_PROMPT.format(
+            target=_describe(tgt, full=True),
+            state=run.get("slurm_state") or run.get("stage") or "FAILED",
+            exit_code=run.get("exit_code"),
+            elapsed=run.get("elapsed"),
+            log=_log_for_fix(log),
+            plan=json.dumps(plan, indent=1)[:60000],
+        )
+        new: dict | None = None
+        changes: list[str] = []
+        notes = ""
+        for attempt in range(2):
+            reply, cost = self._ask(
+                prompt
+                if attempt == 0
+                else prompt
+                + '\n\nYour previous answer changed the plan but its "changes" list was '
+                'empty. Return the same fix again with one line per change in "changes".',
+                search=False,
+            )
+            self._add_cost(run_id, cost)
+            try:
+                out = extract_json(reply)
+            except ValueError:
+                out = None
+            cand = out.get("plan") if isinstance(out, dict) else None
+            if not isinstance(cand, dict) or not all(
+                k in cand for k in ("script", "resources", "install")
+            ):
+                continue
+            new = cand
+            changes = [str(c) for c in (out.get("changes") or [])][:20]  # type: ignore[union-attr]
+            notes = str(out.get("notes") or "")  # type: ignore[union-attr]
+            if changes or new == plan:
+                break  # a described fix, or an honest "nothing to fix"
+        if new is None:
+            raise ValueError("the model returned no usable plan; nothing changed")
+        dropped = _dropped_options(plan, new)
+        if dropped:
+            # Removing an analysis option is how a fix hides an error (run #25: the model
+            # dropped --covariation instead of fixing why inputs were thrown away). Keep
+            # the fix, but say so loudly so the reviewer decides.
+            notes = (
+                f"REVIEW: this fix removes option(s) {', '.join(dropped)} from the "
+                "script. Removing an option can hide an error instead of fixing it; "
+                "check the log for an earlier cause before accepting. " + notes
+            ).strip()
+        if not changes and new != plan:
+            raise ValueError(
+                "the AI changed the plan without saying what or why; nothing was "
+                "created. Edit the plan by hand, or try again."
+            )
+        if not changes:
+            raise ValueError(
+                "the AI found nothing to fix from the log"
+                + (f": {notes[:300]}" if notes else "")
+            )
+        new["fix_changes"] = changes
+        new["fix_notes"] = notes
+        new["caveats"] = (
+            str(new.get("caveats") or "")
+            + f" AI fix of failed run #{run_id}: "
+            + "; ".join(changes)
+        ).strip()
+        created = self.create(
+            run["session_id"],
+            run["scope"],
+            run.get("selection") or "",
+            run.get("request") or "",
+            run.get("target"),
+            rerun_of=run_id,
+            plan=new,
+        )
+        return {
+            **created,
+            "fix": {
+                "changes": changes,
+                "notes": notes,
+                "remaining": (created.get("plan") or {}).get("warnings") or [],
+            },
+        }
 
     # ---- submit / cancel -------------------------------------------------
     def submit(self, run_id: int) -> dict:
