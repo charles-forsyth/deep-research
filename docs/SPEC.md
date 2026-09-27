@@ -1202,6 +1202,9 @@ price) replace the hand-written table.
 | `POST /api/lab/{rid}/cancel` | `scancel` (or stop planning). |
 | `POST /api/lab/{rid}/rerun` | New draft from this run's plan. |
 | `POST /api/lab/{rid}/replan` | Retry planning for a `plan_failed` run (same input, same run id); 409 otherwise. The card shows "Retry plan" unless the model judged it not computable. |
+| `POST /api/lab/{rid}/fix` | Draft only: the planner fixes what pre-flight flagged (at most 2 model calls), the plan is re-checked, the previous plan is kept as `plan_before_fix`. Returns the run plus `fix` {changes, notes, rounds, remaining}. Never submits; 409 if not a draft. |
+| `POST /api/lab/{rid}/undo-fix` | Restore the plan from before the last AI fix; 409 if there is none. |
+| `POST /api/lab/{rid}/fix-failed` | Failed runs only: the planner reads the job log and the plan and returns a NEW draft (`rerun_of` = this run) that goes through pre-flight. The failed run is unchanged; nothing is submitted. 409 if the run is not failed, if the model returns nothing usable, or changes the plan without listing the changes. |
 | `GET /api/lab/{rid}/log?offset=N` | Log tail (live from the cluster while active, local copy after). |
 | `GET /api/lab/{rid}/file?path=...` | A fetched file, confined to the run folder. |
 | `DELETE /api/lab/{rid}` | Delete a finished run and its local files (not while active). |
@@ -1365,5 +1368,9 @@ relying on hand-written notes that go stale (before this, the config still said 
 | 2026-09-26 | v0.19.4 | `POST /api/lab/{rid}/replan` and the Retry plan button (20.4). |
 | 2026-09-26 | v0.19.5 | Shared Gemini client under a lock; no temporary clients (20.6). |
 | 2026-09-26 | v0.19.6 | CLI loads the user `.env` before `./.env` (12.2, 14). |
-| 2026-09-27 | v0.20.1 | Lenient plan JSON parsing (20.6). |
 | 2026-09-27 | v0.20.0 | Cluster catalog (20.9): prompts from the live catalog, pre-flight plan check, catalog API, site job header, spot `--requeue`, `ntasks_per_node` (20.1-20.8). |
+| 2026-09-27 | v0.20.1 | Lenient plan JSON parsing (20.6). |
+| 2026-09-27 | v0.20.2 | Pre-flight flags broken modules (catalog `module_health`) and mixed Python stacks (20.6). |
+| 2026-09-27 | v0.21.0 | Fix with AI for pre-flight warnings, Undo fix; redundant-install and stale-catalog warnings; `POST /api/lab/{rid}/fix`, `/undo-fix` (20.4, 20.6). |
+| 2026-09-27 | v0.21.1 | Pre-flight checks the run script: garbled model tokens, `bash -n`, Python compile (20.6). |
+| 2026-09-27 | v0.22.0 | Fix with AI on failed runs (new draft, REVIEW note for removed options), "Checking inputs" stage in plans, write-up count rule, JSON trailing-data parse; `POST /api/lab/{rid}/fix-failed` (20.4, 20.6). |
