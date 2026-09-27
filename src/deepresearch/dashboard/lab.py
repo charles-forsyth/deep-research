@@ -13,6 +13,7 @@ never loses a job.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -26,11 +27,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-PLAN_MODEL = "gemini-3.8-flash"
+PLAN_MODEL = "gemini-3.8-flash"  # default; GEMINI_FOLLOWUP_MODEL overrides it
 # gemini-3.8-flash list prices, USD per 1M tokens (thinking billed as output).
 FLASH_IN_1M = 0.75
+FLASH_CACHED_1M = 0.075
 FLASH_OUT_1M = 3.75
+# Google Search grounding per 1,000 queries. The 5,000 free queries a month are shared
+# with every other Gemini use and cannot be seen from here, so this is the worst case.
 SEARCH_PER_1K = 14.00
+MAX_FETCH_TRIES = 5  # fetch attempts before a finished job is marked failed
 
 STATES = (
     "planning",  # AI is writing the plan
@@ -46,6 +51,7 @@ STATES = (
     "cancelled",
 )
 ACTIVE = ("submitting", "queued", "running", "fetching", "analyzing")
+FINAL = ("completed", "failed", "cancelled")
 SLURM_DONE = {
     "COMPLETED": "completed",
     "FAILED": "failed",
@@ -65,15 +71,31 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _cost(usage) -> float | None:
-    if not usage:
+def _cost(usage, searches: int = 0) -> float | None:
+    if not usage and not searches:
         return None
     inp = getattr(usage, "prompt_token_count", 0) or 0
+    cached = min(getattr(usage, "cached_content_token_count", 0) or 0, inp)
     out = (getattr(usage, "candidates_token_count", 0) or 0) + (
         getattr(usage, "thoughts_token_count", 0) or 0
     )
     tool = getattr(usage, "tool_use_prompt_token_count", 0) or 0
-    return round((inp + tool) / 1e6 * FLASH_IN_1M + out / 1e6 * FLASH_OUT_1M, 4)
+    return round(
+        (inp - cached + tool) / 1e6 * FLASH_IN_1M
+        + cached / 1e6 * FLASH_CACHED_1M
+        + out / 1e6 * FLASH_OUT_1M
+        + searches / 1000 * SEARCH_PER_1K,
+        4,
+    )
+
+
+def _search_count(resp) -> int:
+    """Google Search queries a generate_content reply ran (each one is billed)."""
+    n = 0
+    for cand in getattr(resp, "candidates", None) or []:
+        gm = getattr(cand, "grounding_metadata", None)
+        n += len(getattr(gm, "web_search_queries", None) or [])
+    return n
 
 
 def extract_json(text: str) -> Any:
@@ -384,19 +406,27 @@ def estimate_cost(target: SlurmSSHTarget | None, plan: dict) -> float | None:
 
 
 def _hours(limit: str) -> float:
-    """Slurm time limit ('D-HH:MM:SS', 'HH:MM:SS', 'MM') -> hours."""
+    """Slurm time limit -> hours, read the way sbatch --time reads it.
+
+    Without a day part: 'MM', 'MM:SS', 'HH:MM:SS'. With one: 'D-HH', 'D-HH:MM',
+    'D-HH:MM:SS'.
+    """
     days = 0
     s = str(limit).strip()
+    parts: list[int]
     if "-" in s:
         d, s = s.split("-", 1)
         days = int(d or 0)
-    parts = [int(p or 0) for p in s.split(":")]
-    if len(parts) == 1:
-        h, m, sec = 0, parts[0], 0
-    elif len(parts) == 2:
-        h, m, sec = parts[0], parts[1], 0
+        parts = [int(p or 0) for p in s.split(":")] + [0, 0]
+        h, m, sec = parts[0], parts[1], parts[2]
     else:
-        h, m, sec = parts[-3], parts[-2], parts[-1]
+        parts = [int(p or 0) for p in s.split(":")]
+        if len(parts) == 1:
+            h, m, sec = 0, parts[0], 0
+        elif len(parts) == 2:
+            h, m, sec = 0, parts[0], parts[1]
+        else:
+            h, m, sec = parts[-3], parts[-2], parts[-1]
     return days * 24 + h + m / 60 + sec / 3600
 
 
@@ -571,15 +601,22 @@ stage "Installing software"
         body += "module purge >/dev/null 2>&1 || true\n"
         body += "".join(f"module load {m}\n" for m in mods)
     if conda or pips:
-        env_key = _slug(
-            "-".join(
-                sorted(conda + [x for x in pips if not x.startswith(("--", "https:"))])
-            ),
-            60,
+        # Readable prefix plus a hash of everything that shapes the environment: a
+        # truncated name alone let two different package lists share one cache.
+        pkg_names = sorted(
+            conda + [x for x in pips if not x.startswith(("--", "https:"))]
         )
+        digest = hashlib.sha256(
+            json.dumps([pkg_names, sorted(chans), pips]).encode()
+        ).hexdigest()[:12]
+        env_key = f"{_slug('-'.join(pkg_names), 40)}-{digest}"
         body += f"""export PATH=/apps/pixi/bin:$HOME/.pixi/bin:$PATH
 export PIXI_CACHE_DIR=$HOME/.cache/rattler
 ENVDIR=$HOME/deep-research-lab/envs/{env_key}
+mkdir -p "$(dirname "$ENVDIR")"
+# Two jobs needing the same environment build it once: the second waits here.
+exec 9>"$ENVDIR.lock"
+flock 9
 if [ ! -f "$ENVDIR/.ready" ]; then
   rm -rf "$ENVDIR"; mkdir -p "$ENVDIR"
   ( cd "$ENVDIR" && pixi init {" ".join("-c " + shlex.quote(c) for c in chans)} . >/dev/null )
@@ -601,6 +638,7 @@ if [ ! -f "$ENVDIR/.ready" ]; then
 else
   echo "[INFO] reusing cached environment $ENVDIR"
 fi
+flock -u 9
 eval "$(cd "$ENVDIR" && pixi shell-hook)"
 # Pip wheels (PyTorch...) pull in the host's old libstdc++ first, which breaks conda
 # libraries that need a newer one. Put the environment's own runtime libraries first.
@@ -652,6 +690,7 @@ class Lab:
         self.targets = targets if targets is not None else load_targets(state_dir)
         self._genai = None
         self._client_lock = threading.Lock()
+        self._fetch_tries: dict[int, int] = {}
         self._watch_lock = threading.Lock()
         self._watcher: threading.Thread | None = None
         self._stop = threading.Event()
@@ -713,6 +752,10 @@ class Lab:
                 self._genai = genai.Client(api_key=self._config().api_key)
             return self._genai
 
+    def _model(self) -> str:
+        cfg = self._config()
+        return getattr(cfg, "followup_model", None) or PLAN_MODEL
+
     def _ask(self, prompt: str, search: bool) -> tuple[str, float | None]:
         from google.genai import types
 
@@ -725,9 +768,9 @@ class Lab:
         )
         client = self._client()  # hold a reference for the whole call
         resp = client.models.generate_content(
-            model=PLAN_MODEL, contents=prompt, config=cfg
+            model=self._model(), contents=prompt, config=cfg
         )
-        cost = _cost(getattr(resp, "usage_metadata", None))
+        cost = _cost(getattr(resp, "usage_metadata", None), _search_count(resp))
         if not (resp.text or "").strip():
             # Flash with Google Search can stop on TOO_MANY_TOOL_CALLS with only
             # thoughts and no answer; surface the reason instead of "no JSON".
@@ -774,19 +817,30 @@ class Lab:
             ).fetchall()
         return [self._row(r) for r in rows]
 
-    def _update(self, run_id: int, **fields) -> None:
+    def _update(
+        self, run_id: int, only_if: tuple[str, ...] | None = None, **fields
+    ) -> bool:
+        """Write fields; with `only_if`, only while the run is in one of those states.
+
+        Background threads (planning, the watcher) pass `only_if` so a cancel that
+        lands while they work is not overwritten. Returns whether the row changed.
+        """
         if not fields:
-            return
+            return False
         for k in ("plan", "files"):
             if k in fields and not isinstance(fields[k], (str, type(None))):
                 fields[k] = json.dumps(fields[k])
         fields["updated_at"] = _now()
         cols = ", ".join(f"{k} = ?" for k in fields)
+        sql = f"UPDATE lab_runs SET {cols} WHERE id = ?"
+        args: list[Any] = [*fields.values(), run_id]
+        if only_if:
+            sql += f" AND status IN ({','.join('?' * len(only_if))})"
+            args += only_if
         with self._conn() as conn:
-            conn.execute(
-                f"UPDATE lab_runs SET {cols} WHERE id = ?", (*fields.values(), run_id)
-            )
+            changed = conn.execute(sql, args).rowcount > 0
             conn.commit()
+        return changed
 
     def _add_cost(self, run_id: int, usd: float | None) -> None:
         if usd:
@@ -796,6 +850,20 @@ class Lab:
                     (usd, run_id),
                 )
                 conn.commit()
+
+    def active_for(self, session_ids: list[int]) -> list[dict]:
+        """Runs of these sessions that still hold (or are about to hold) a Slurm job."""
+        if not session_ids:
+            return []
+        marks = ",".join("?" * len(session_ids))
+        states = ",".join("?" * len(ACTIVE))
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM lab_runs WHERE session_id IN ({marks}) "
+                f"AND status IN ({states}) ORDER BY id",
+                (*session_ids, *ACTIVE),
+            ).fetchall()
+        return [self._row(r) for r in rows]
 
     def purge_session(self, session_ids: list[int]) -> None:
         import shutil
@@ -840,10 +908,18 @@ class Lab:
             title=title,
             text=_strip_sources(text)[:60000],
         )
-        reply, cost = self._ask(prompt, search=False)
-        data = extract_json(reply)
+        try:
+            reply, cost = self._ask(prompt, search=False)
+        except EmptyReply as e:
+            raise ValueError(f"{e}{_spent(e.cost)}") from e
+        try:
+            data = extract_json(reply)
+        except ValueError as e:
+            raise ValueError(f"{e}{_spent(cost)}") from e
         if isinstance(data, list):
             data = {"suggestions": data}
+        if not isinstance(data, dict):
+            raise ValueError(f"suggestions are not a JSON object{_spent(cost)}")
         data["suggestions"] = [
             s for s in data.get("suggestions") or [] if isinstance(s, dict)
         ][:3]
@@ -903,7 +979,12 @@ class Lab:
             return
         tgt = self.target(run["target"])
         try:
-            self._update(run_id, stage="Researching software and methods (web search)")
+            if not self._update(
+                run_id,
+                only_if=("planning",),
+                stage="Researching software and methods (web search)",
+            ):
+                return  # cancelled before it started
             prompt = PLAN_PROMPT.format(
                 target=tgt.describe() if tgt else "No cluster configured.",
                 title=title,
@@ -923,7 +1004,9 @@ class Lab:
             except EmptyReply as e:
                 self._add_cost(run_id, e.cost)
                 self._update(
-                    run_id, stage="Web search stopped early; planning without it"
+                    run_id,
+                    only_if=("planning",),
+                    stage="Web search stopped early; planning without it",
                 )
                 no_search = (
                     f"Planned without web search (search stopped: {e.finish}); "
@@ -941,6 +1024,7 @@ class Lab:
             if not plan.get("computable", True):
                 self._update(
                     run_id,
+                    only_if=("planning",),
                     status="plan_failed",
                     stage="Not computable",
                     plan=plan,
@@ -953,6 +1037,7 @@ class Lab:
                     raise ValueError(f"plan is missing '{key}'")
             self._update(
                 run_id,
+                only_if=("planning",),
                 status="draft",
                 stage="Plan ready for review",
                 plan=plan,
@@ -962,6 +1047,7 @@ class Lab:
         except Exception as e:
             self._update(
                 run_id,
+                only_if=("planning",),
                 status="plan_failed",
                 stage="Planning failed",
                 error=str(e)[:500],
@@ -1035,12 +1121,34 @@ class Lab:
             raise KeyError(run_id)
         if run["status"] in ("planning", "draft", "plan_failed"):
             self._update(run_id, status="cancelled", stage="Cancelled before submit")
+        elif run["status"] in ("fetching", "analyzing"):
+            # The Slurm job already ended; there is nothing to scancel. Cancelling now
+            # skips the rest of the fetch and the AI write-up.
+            self._update(
+                run_id,
+                status="cancelled",
+                stage="Cancelled after the job ended",
+                finished_at=_now(),
+            )
         elif run["status"] in ACTIVE and run.get("job_id"):
             tgt = self.target(run["target"])
             if tgt:
-                tgt.cancel(run["job_id"])
+                try:
+                    tgt.cancel(run["job_id"])
+                except Exception:
+                    # scancel fails when the job ended between the page's last poll
+                    # and this click; the watcher has then moved the run on.
+                    now = self.get(run_id) or run
+                    if now["status"] not in ("fetching", "analyzing", *FINAL):
+                        raise
+                    if now["status"] in FINAL:
+                        return now
             self._update(
-                run_id, status="cancelled", stage="Cancelled", finished_at=_now()
+                run_id,
+                only_if=ACTIVE,
+                status="cancelled",
+                stage="Cancelled",
+                finished_at=_now(),
             )
         else:
             raise ValueError(f"run is {run['status']}")
@@ -1106,7 +1214,9 @@ class Lab:
                 try:
                     self.poll(run)
                 except Exception as e:  # network blip: keep the run, try again later
-                    self._update(run["id"], error=f"watcher: {str(e)[:300]}")
+                    self._update(
+                        run["id"], only_if=ACTIVE, error=f"watcher: {str(e)[:300]}"
+                    )
             self._stop.wait(interval)
 
     def poll(self, run: dict) -> None:
@@ -1145,26 +1255,56 @@ class Lab:
                 exit_code=st["exit_code"],
                 slurm_state=state,
             )
-            self._update(run["id"], **upd)
+            # `run` was read at the start of the watcher pass; a cancel since then
+            # must win, so every write here is conditional on the run still being live.
+            if not self._update(run["id"], only_if=ACTIVE, **upd):
+                return
             return self._finish(self.get(run["id"]) or run, tgt)
-        self._update(run["id"], **upd)
+        self._update(run["id"], only_if=ACTIVE, **upd)
 
     def _finish(self, run: dict, tgt: SlurmSSHTarget) -> None:
+        run = self.get(run["id"]) or run  # the watcher's copy may predate a cancel
         dest = self.results_dir / f"run_{run['id']}"
         state = run.get("slurm_state") or ""
         final = SLURM_DONE.get(state.split()[0] if state else "", "failed")
         if run["status"] == "fetching":
-            files = tgt.fetch(run["id"], dest)
-            self._update(
-                run["id"], files=files, status="analyzing", stage="Writing up results"
-            )
+            try:
+                files = tgt.fetch(run["id"], dest)
+            except Exception as e:
+                # A fetch can block the watcher for up to 10 minutes; stop retrying
+                # after a few attempts instead of stalling every other run forever.
+                tries = self._fetch_tries.get(run["id"], 0) + 1
+                self._fetch_tries[run["id"]] = tries
+                if tries < MAX_FETCH_TRIES:
+                    raise
+                self._fetch_tries.pop(run["id"], None)
+                self._update(
+                    run["id"],
+                    only_if=("fetching",),
+                    status="failed",
+                    stage="Could not fetch results",
+                    error=f"fetch failed {tries} times: {str(e)[:300]} "
+                    "(the outputs are still on the cluster)",
+                    finished_at=_now(),
+                )
+                return
+            self._fetch_tries.pop(run["id"], None)
+            if not self._update(
+                run["id"],
+                only_if=("fetching",),
+                files=files,
+                status="analyzing",
+                stage="Writing up results",
+            ):
+                return  # cancelled while fetching
             run = self.get(run["id"]) or run
-        if run.get("status") == "cancelled":
+        if run.get("status") != "analyzing":
             return
         note, cost = self._analyze(run, dest, final)
         self._add_cost(run["id"], cost)
         self._update(
             run["id"],
+            only_if=("analyzing",),
             status=final,
             stage="Completed"
             if final == "completed"
@@ -1223,7 +1363,7 @@ class Lab:
             return (
                 f"**Result**\n\nThe job ended as `{final}`. The AI write-up failed "
                 f"({str(e)[:200]}); see the files and log.",
-                None,
+                getattr(e, "cost", None),  # an empty reply is still billed
             )
 
     def file_path(self, run_id: int, rel: str) -> Path:
@@ -1232,6 +1372,10 @@ class Lab:
         if not p.is_relative_to(base) or not p.is_file():
             raise FileNotFoundError(rel)
         return p
+
+
+def _spent(cost: float | None) -> str:
+    return f" (${cost:.4f} spent on the attempt)" if cost else ""
 
 
 def _strip_sources(md: str) -> str:

@@ -344,3 +344,52 @@ def test_task_timeout_setting(monkeypatch):
     assert DeepResearchConfig(api_key="k").task_timeout_min == 0
     monkeypatch.delenv("DR_TASK_TIMEOUT_MIN")
     assert DeepResearchConfig(api_key="k").task_timeout_min == 180
+
+
+def _stream_ending_as(monkeypatch, tmp_path, iid, **final):
+    a = _agent(monkeypatch, tmp_path)
+    created = MagicMock(event_type="interaction.created", event_id="e1")
+    created.interaction.id = iid
+    a.client.interactions.create.return_value = iter([created])
+    a.client.interactions.get.return_value = MagicMock(error="boom", **final)
+    a.start_research_stream(ResearchRequest(prompt="q"))
+    return a.session_manager.get_session(iid)
+
+
+def test_stream_partial_report_is_not_marked_completed(monkeypatch, tmp_path):
+    row = _stream_ending_as(
+        monkeypatch, tmp_path, "iid-p", status="incomplete", output_text="half"
+    )
+    assert row["status"] == "failed"
+    assert "incomplete" in row["result"] and "half" in row["result"]
+
+
+def test_stream_completed_without_text_is_failed_not_left_running(
+    monkeypatch, tmp_path
+):
+    row = _stream_ending_as(
+        monkeypatch, tmp_path, "iid-e", status="completed", output_text="", steps=[]
+    )
+    assert row["status"] == "failed" and "no report text" in row["result"]
+
+
+def test_stream_timeout_applies_while_connected(monkeypatch, tmp_path):
+    """A stream that never drops used to ignore DR_TASK_TIMEOUT_MIN."""
+    a = _agent(monkeypatch, tmp_path, task_timeout_min=1)
+    from deepresearch.core import agent as agent_mod
+
+    clock = iter(range(0, 100000, 30))
+    monkeypatch.setattr(agent_mod.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(agent_mod.time, "sleep", lambda s: None)
+    created = MagicMock(event_type="interaction.created", event_id="e1")
+    created.interaction.id = "iid-long"
+
+    def endless():
+        yield created
+        while True:
+            yield MagicMock(event_type="step.delta", event_id="e", delta=MagicMock())
+
+    a.client.interactions.create.return_value = endless()
+    a.start_research_stream(ResearchRequest(prompt="q"))
+    a.client.interactions.cancel.assert_called_once_with("iid-long")
+    assert a.session_manager.get_session("iid-long")["status"] == "failed"

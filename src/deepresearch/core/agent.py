@@ -90,8 +90,11 @@ class DeepResearchAgent:
         request_prompt: str | None = None,
         upload_paths: list | None = None,
         adopt_session_id: int | None = None,
+        deadline: float | None = None,
     ):
         for event in event_stream:
+            if self._expired(deadline):
+                return  # the caller sees the deadline and cancels the task
             etype = getattr(event, "event_type", None) or getattr(event, "type", None)
             if etype in ("interaction.created", "interaction.start"):
                 interaction_id_ref[0] = event.interaction.id
@@ -193,6 +196,7 @@ class DeepResearchAgent:
                 request.prompt,
                 request.upload_paths,
                 request.adopt_session_id,
+                deadline=deadline,
             )
 
             failures = 0
@@ -222,6 +226,7 @@ class DeepResearchAgent:
                         last_event_id,
                         is_complete,
                         adopt_session_id=request.adopt_session_id,
+                        deadline=deadline,
                     )
                     failures = 0
                 except Exception as e:
@@ -238,14 +243,25 @@ class DeepResearchAgent:
                         )
                         final_text = _final_text(final_interaction)
                         status = getattr(final_interaction, "status", None)
-                        if not final_text and status != "completed":
+                        if status != "completed" or not final_text:
+                            # Failed, incomplete or over budget (a partial report is
+                            # kept but not passed off as finished), or completed
+                            # with nothing to show.
                             err = getattr(final_interaction, "error", None)
+                            note = (
+                                f"Interaction ended with status {status}: {err}"
+                                if status != "completed"
+                                else "Interaction completed but returned no report text."
+                            )
+                            if final_text:
+                                note += f"\n\n--- Partial output ---\n\n{final_text}"
+                            self._log(f"[ERROR] {note.splitlines()[0]}")
                             self.session_manager.update_session(
                                 interaction_id[0],
                                 "cancelled" if status == "cancelled" else "failed",
-                                result=f"Interaction ended with status {status}: {err}",
+                                result=note,
                             )
-                        if final_text:
+                        else:
                             if self.quiet:
                                 print(final_text)
 

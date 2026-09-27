@@ -427,7 +427,8 @@ async function renderSession(v, t) {
     const hasKids = s.children.length > 0;
     const ok = await confirmBox(`Delete session #${s.id}?`, `This removes it from local history${hasKids ? ` along with its ${s.children.length} direct sub-task(s) and their descendants` : ""}, plus its annotations. It cannot be undone.`, "Delete");
     if (!ok) return;
-    await api(`/api/sessions/${s.id}${hasKids ? "?recursive=1" : ""}`, { method: "DELETE" });
+    try { await api(`/api/sessions/${s.id}${hasKids ? "?recursive=1" : ""}`, { method: "DELETE" }); }
+    catch (err) { toast(err.message, "err"); return; }
     toast(`Deleted #${s.id}`, "ok"); delete S.cache[s.id];
     closeTab(t.key); loadSessions(); loadStats();
   };

@@ -31,7 +31,7 @@ TTS_IN_1M = 0.50
 TTS_OUT_1M = 9.00
 TTS_TOKENS_PER_SEC = 25
 # gemini-3.8-flash for summaries/briefs: $0.75 in, $3.75 out per 1M (2026 rate).
-FLASH_MODEL = "gemini-3.8-flash"
+FLASH_MODEL = "gemini-3.8-flash"  # default; GEMINI_FOLLOWUP_MODEL overrides it
 FLASH_IN_1M = 0.75
 FLASH_OUT_1M = 3.75
 
@@ -120,6 +120,9 @@ class Features:
 
                 self._genai = genai.Client(api_key=self._config().api_key)
             return self._genai
+
+    def _model(self) -> str:
+        return getattr(self._config(), "followup_model", None) or FLASH_MODEL
 
     # ---- actual cost --------------------------------------------------------
 
@@ -278,7 +281,7 @@ class Features:
                 f"--- REPORT B (#{b['id']}) ---\n{_strip_sources(b.get('result') or '')[:60000]}\n"
             )
             resp = self._client().models.generate_content(
-                model=FLASH_MODEL, contents=prompt
+                model=self._model(), contents=prompt
             )
             out["summary"] = resp.text
         return out
@@ -305,14 +308,17 @@ class Features:
             f"TITLE: {title}\n\nNOTES:\n{content[:120000]}"
         )
         resp = self._client().models.generate_content(
-            model=FLASH_MODEL, contents=prompt
+            model=self._model(), contents=prompt
         )
         u = getattr(resp, "usage_metadata", None)
         cost = None
         if u:
+            out = (u.candidates_token_count or 0) + (
+                getattr(u, "thoughts_token_count", 0) or 0
+            )  # thinking is billed as output
             cost = round(
                 (u.prompt_token_count or 0) / 1e6 * FLASH_IN_1M
-                + (u.candidates_token_count or 0) / 1e6 * FLASH_OUT_1M,
+                + out / 1e6 * FLASH_OUT_1M,
                 4,
             )
         return {"markdown": resp.text, "cost_usd": cost}
@@ -382,7 +388,7 @@ class Features:
         )
         return (
             self._client()
-            .models.generate_content(model=FLASH_MODEL, contents=prompt)
+            .models.generate_content(model=self._model(), contents=prompt)
             .text.strip()
         )
 

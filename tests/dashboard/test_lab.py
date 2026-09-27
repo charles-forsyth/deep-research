@@ -370,7 +370,7 @@ def test_pip_index_url_allowed_but_not_arbitrary_flags(lab):
     s = build_sbatch(1, plan, lab.fake)
     assert "--extra-index-url https://download.pytorch.org/whl/cu124" in s
     assert "evil.example" not in s and "insecure.example" not in s
-    assert "envs/torch-2-5-1" in s  # cache key ignores the index URL
+    assert "envs/torch-2-5-1-" in s  # readable prefix ignores the index URL
 
 
 def test_containers_load_the_apptainer_module(lab):
@@ -557,3 +557,162 @@ def test_static_lab_js_served(app):  # noqa: F811
     port = app["port"]
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/lab.js") as r:
         assert b"const LAB" in r.read()
+
+
+# ---- review fixes (v0.19.7) ---------------------------------------------------
+
+
+def test_hours_reads_time_limits_like_slurm():
+    from deepresearch.dashboard.lab import _hours
+
+    assert _hours("30") == pytest.approx(0.5)  # MM
+    assert _hours("30:00") == pytest.approx(0.5)  # MM:SS, not 30 hours
+    assert _hours("01:30:00") == pytest.approx(1.5)
+    assert _hours("1-12") == pytest.approx(36)  # D-HH
+    assert _hours("1-12:30") == pytest.approx(36.5)  # D-HH:MM
+    assert _hours("2-00:00:00") == pytest.approx(48)
+
+
+def test_env_cache_key_differs_for_every_package_set(lab):
+    import re
+
+    base = ["matplotlib", "numpy", "pandas", "scipy", "seaborn", "scikit-learn"]
+    base += ["statsmodels"]
+
+    def key(conda, chans=("conda-forge",)):
+        plan = dict(PLAN, install={"conda": conda, "channels": list(chans)})
+        return re.search(r"envs/(\S+)", build_sbatch(1, plan, lab.fake)).group(1)
+
+    assert key(base) != key(base + ["xarray"])  # used to collide at 60 chars
+    assert key(base) != key(base, ("conda-forge", "bioconda"))
+    assert key(base) == key(list(reversed(base)))  # order does not matter
+    s = build_sbatch(1, dict(PLAN), lab.fake)
+    assert "flock 9" in s and "flock -u 9" in s  # concurrent builds wait
+
+
+def test_cancel_during_planning_is_not_overwritten(lab):
+    run = lab.create(7, "document", "x")
+    gate, go = threading.Event(), threading.Event()
+
+    def ask(prompt, search):
+        gate.set()
+        go.wait(5)
+        return json.dumps(PLAN), 0.01
+
+    lab._ask = ask  # type: ignore[method-assign]
+    t = threading.Thread(target=lab.make_plan, args=(run["id"], "t"))
+    t.start()
+    assert gate.wait(5)
+    lab.cancel(run["id"])
+    go.set()
+    t.join(5)
+    assert lab.get(run["id"])["status"] == "cancelled"
+
+
+def test_cancel_between_watcher_read_and_write_wins(lab):
+    lab.replies.append(json.dumps(PLAN))
+    run = lab.create(7, "document", "x")
+    lab.make_plan(run["id"], "t")
+    lab.submit(run["id"])
+    stale = lab.get(run["id"])  # what the watcher read at the start of its pass
+    lab.fake.state = "RUNNING"
+    lab.cancel(run["id"])
+    lab.poll(stale)
+    assert lab.get(run["id"])["status"] == "cancelled"
+    lab.fake.state = "COMPLETED"
+    lab.poll(stale)  # would fetch, pay for a write-up and mark completed
+    assert lab.get(run["id"])["status"] == "cancelled"
+    assert lab.get(run["id"])["result_md"] is None
+
+
+def test_cancel_after_job_ended_skips_write_up(lab):
+    lab.replies.append(json.dumps(PLAN))
+    run = lab.create(7, "document", "x")
+    lab.make_plan(run["id"], "t")
+    lab.submit(run["id"])
+    lab._update(run["id"], status="analyzing", slurm_state="COMPLETED")
+
+    def gone(job_id):
+        raise labm.TargetError("Invalid job id specified")
+
+    lab.fake.cancel = gone
+    stale = lab.get(run["id"])
+    assert lab.cancel(run["id"])["status"] == "cancelled"  # no scancel, no 502
+    lab._ask = lambda p, search: pytest.fail("paid for a write-up after cancel")
+    lab.poll(stale)
+    assert lab.get(run["id"])["status"] == "cancelled"
+
+
+def test_fetch_failures_give_up_after_a_few_tries(lab):
+    lab.replies.append(json.dumps(PLAN))
+    run = lab.create(7, "document", "x")
+    lab.make_plan(run["id"], "t")
+    lab.submit(run["id"])
+    lab.fake.state = "COMPLETED"
+
+    def broken(run_id, dest):
+        raise labm.TargetError("cluster command timed out after 600s")
+
+    lab.fake.fetch = broken
+    for _ in range(labm.MAX_FETCH_TRIES - 1):
+        with pytest.raises(labm.TargetError):
+            lab.poll(lab.get(run["id"]))
+        assert lab.get(run["id"])["status"] == "fetching"
+    lab.poll(lab.get(run["id"]))
+    r = lab.get(run["id"])
+    assert r["status"] == "failed" and "still on the cluster" in r["error"]
+
+
+def test_cost_counts_searches_cached_and_thinking_tokens():
+    from types import SimpleNamespace as NS
+
+    from deepresearch.dashboard.lab import _cost, _search_count
+
+    u = NS(
+        prompt_token_count=1_000_000,
+        cached_content_token_count=400_000,
+        candidates_token_count=100_000,
+        thoughts_token_count=100_000,
+        tool_use_prompt_token_count=0,
+    )
+    # 600k fresh * 0.75 + 400k cached * 0.075 + 200k out * 3.75 + 10 searches * 0.014
+    assert _cost(u, 10) == pytest.approx(0.45 + 0.03 + 0.75 + 0.14)
+    resp = NS(
+        candidates=[NS(grounding_metadata=NS(web_search_queries=["a", "b", "c"]))]
+    )
+    assert _search_count(resp) == 3
+    assert _search_count(NS(candidates=None)) == 0
+
+
+def test_model_follows_followup_setting(lab):
+    from types import SimpleNamespace as NS
+
+    lab._config = lambda: NS(followup_model="gemini-x", api_key="k")
+    assert lab._model() == "gemini-x"
+    lab._config = lambda: None
+    assert lab._model() == labm.PLAN_MODEL
+
+
+def test_bad_suggestions_reply_reports_what_it_cost(lab):
+    lab.replies.append("no json here")
+    with pytest.raises(ValueError, match=r"\$0\.0100 spent"):
+        lab.suggestions(7, "t", "report")
+
+
+def test_api_refuses_to_delete_session_with_live_lab_job(app, tmp_path):  # noqa: F811
+    api = app["api"]
+    fake = FakeTarget()
+    api.lab.targets = {"fake": fake}
+    api.lab.results_dir = tmp_path / "labres"
+    api.lab._ask = lambda prompt, search: (json.dumps(PLAN), 0.02)
+    api.lab.ensure_watcher = lambda: None
+    sid = _seed(api, "Aspirin", "Aspirin MW is 180.")
+    run = api.lab.create(int(sid), "document", "x")
+    api.lab.make_plan(run["id"], "t")
+    api.lab.submit(run["id"])
+    status, err = app["call"]("DELETE", f"/api/sessions/{sid}")
+    assert status == 409 and f"#{run['id']}" in err["error"]
+    assert api.lab.get(run["id"])["status"] == "queued"
+    api.lab.cancel(run["id"])
+    status, _ = app["call"]("DELETE", f"/api/sessions/{sid}")
+    assert status == 200 and api.lab.get(run["id"]) is None

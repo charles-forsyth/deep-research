@@ -1153,7 +1153,9 @@ Plan, Review, Queued, Running, Fetch, Write-up, Done.
   cap nodes, time or GPUs (user decision); the partition's own limits apply.
 - A stage file (`Installing software`, `Running`, `Done`/`Failed (exit N)`) the watcher reads.
 - Install, in this order: `module load`; a cached Pixi environment keyed by the package
-  list (`~/deep-research-lab/envs/<key>`, conda-forge/bioconda, then pip inside it, with
+  list (`~/deep-research-lab/envs/<name>-<hash>`: a readable prefix plus a hash of the
+  packages, channels and pip flags, built under `flock` so two jobs never build the same
+  one at once; conda-forge/bioconda, then pip inside it, with
   Python and pip added when pip packages are listed); Apptainer images pulled once into
   `~/deep-research-lab/images/` and exported as `IMG_<NAME>`. The environment's `lib`
   directory goes first on `LD_LIBRARY_PATH` because pip wheels need a newer libstdc++
@@ -1198,7 +1200,10 @@ The estimate before submit is `partition hourly price x nodes x time limit`, fro
 partition prices in the target config (Google on-demand list prices, us-central1, taken
 from the Cloud Billing catalog on 2026-09-26). It is an upper bound: jobs usually end
 early, and the node's ~90 s boot is not billed to the job. AI cost (suggestions, plan,
-write-up) is computed from `usage_metadata` and shown on the run. Measured on
+write-up) is computed from `usage_metadata` (cached input at the cached rate, thinking
+as output) plus $14 per 1,000 Google Search queries the reply reports, and shown on the
+run. The free monthly search quota is shared and not visible here, so that part is a
+worst case. Measured on
 `gemini-3.8-flash` (v0.19.1): suggestions about $0.01, a plan about $0.10. (On
 `gemini-3.1-pro-preview` in v0.19.0 they were $0.04-0.05 and $0.10-0.30, and a write-up
 about $0.02.)
@@ -1210,7 +1215,16 @@ about $0.02.)
   it never resubmits.
 - The watcher lives in the dashboard process. If the dashboard is stopped, jobs keep
   running on the cluster and are picked up when it starts again (checked on start).
-- Runs are fetched once; a run stuck in `fetching` or `analyzing` retries that step.
+- Runs are fetched once; a run stuck in `fetching` or `analyzing` retries that step. A
+  fetch that fails `MAX_FETCH_TRIES` (5) times marks the run failed, noting the outputs
+  are still on the cluster, so one bad fetch cannot stall the single watcher thread.
+- Cancel always wins. Planning threads and the watcher write through
+  `_update(only_if=...)`, which changes a row only while it is still in the state they
+  expect; a cancel that lands mid-plan or between a watcher read and write is kept.
+  Cancelling in `fetching`/`analyzing` skips `scancel` (the job has ended) and the paid
+  write-up.
+- Deleting a report refuses (409) while any of its lab runs is still active on the
+  cluster; cancel them first. Otherwise the job would keep running with no record.
 - Planning with Google Search can come back with no text: `gemini-3.8-flash` sometimes
   stops with finish reason `TOO_MANY_TOOL_CALLS` after thinking but before answering
   (run #14). The plan prompt caps searches at 5. If a search reply is still empty,
@@ -1228,7 +1242,9 @@ about $0.02.)
 
 `tests/dashboard/test_lab.py` covers the script builder (install order, sanitising,
 parameters, index URLs, containers), the cost estimate, the plan-review-submit-watch-
-fetch-write-up loop and rerun against an in-memory fake target and fake Gemini, the file
+fetch-write-up loop and rerun against an in-memory fake target and fake Gemini, cancel
+races (during planning, between watcher read and write, after the job ended), the fetch
+retry cap, the env cache key, time-limit parsing, AI cost, the file
 endpoint's path confinement, cleanup on report delete, and the API routes. Live checks
 are listed in the v0.19.0 changelog.
 
