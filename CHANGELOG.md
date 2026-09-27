@@ -7,6 +7,15 @@ releases.
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-09-26
+
+### Changed
+- Every general model call now uses `gemini-3.8-flash` by default: follow-ups, gap
+  analysis, synthesis, search answers, and Lab suggestions, plans and write-ups.
+  (Before: `gemini-3.1-pro-preview`.) The Deep Research agent itself, embeddings and
+  text-to-speech are unchanged. `GEMINI_FOLLOWUP_MODEL` still overrides it.
+- Lab AI cost is now computed at Flash rates ($0.75 in / $3.75 out per 1M tokens).
+
 ## [0.19.0] - 2026-09-26
 
 ### Added

@@ -132,7 +132,7 @@ Settings come from environment variables or `~/.config/deepresearch/.env` (a loc
 |---|---|---|
 | `GEMINI_API_KEY` | (required) | Gemini API key |
 | `GEMINI_AGENT_NAME` | `deep-research-preview-04-2026` | Research agent; `deep-research-max-preview-04-2026` for maximum depth |
-| `GEMINI_FOLLOWUP_MODEL` | `gemini-3.1-pro-preview` | Model for follow-ups, gap analysis, synthesis and search answers |
+| `GEMINI_FOLLOWUP_MODEL` | `gemini-3.8-flash` | Model for follow-ups, gap analysis, synthesis and search answers |
 | `DR_DASHBOARD_ACCESS_LOG` | unset | Set to log every dashboard HTTP request |
 
 Data locations (all local):

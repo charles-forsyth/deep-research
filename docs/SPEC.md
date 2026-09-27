@@ -785,7 +785,7 @@ page is hidden and permission was granted, a browser notification.
 |---|---|---|
 | `GEMINI_API_KEY` | none (required) | Every Gemini call. Missing key raises a config error. |
 | `GEMINI_AGENT_NAME` | `deep-research-preview-04-2026` | The Deep Research agent. |
-| `GEMINI_FOLLOWUP_MODEL` | `gemini-3.1-pro-preview` | Follow-ups, gap analysis, synthesis, search answers. |
+| `GEMINI_FOLLOWUP_MODEL` | `gemini-3.8-flash` | Follow-ups, gap analysis, synthesis, search answers. |
 | `XDG_CONFIG_HOME` | `~/.config` | Location of the state dir. |
 | `DR_LOG_TIMESTAMPS` | unset | Prefix tagged log lines with `[HH:MM:SS]`; set by the dashboard for its workers so the timeline has times. |
 | `DR_DASHBOARD_ACCESS_LOG` | unset | Enable per-request access logging. |
@@ -828,9 +828,9 @@ environment, so it follows the CLI order.
 | Call | SDK method | Model or agent | Triggered by |
 |---|---|---|---|
 | Research | `interactions.create/get` (stream or poll) | agent `deep-research-preview-04-2026` | research, start, dashboard launch, recursion nodes |
-| Follow-up | `interactions.create(previous_interaction_id=...)` | `gemini-3.1-pro-preview` | followup (CLI, dashboard) |
-| Gap analysis, synthesis | `models.generate_content` | `gemini-3.1-pro-preview` | recursion |
-| Search answer | `models.generate_content` | `gemini-3.1-pro-preview` | search (CLI, dashboard) |
+| Follow-up | `interactions.create(previous_interaction_id=...)` | `gemini-3.8-flash` | followup (CLI, dashboard) |
+| Gap analysis, synthesis | `models.generate_content` | `gemini-3.8-flash` | recursion |
+| Search answer | `models.generate_content` | `gemini-3.8-flash` | search (CLI, dashboard) |
 | Embeddings | `models.embed_content` | `gemini-embedding-001` | search backfill and query |
 | Compare summary, briefs, audio summary script | `models.generate_content` | `gemini-3.8-flash` | dashboard |
 | Text to speech | `models.generate_content` (AUDIO) | `gemini-3.8-flash-tts` | dashboard audio export |
@@ -1121,7 +1121,7 @@ flowchart LR
    names the question, method, software and rough run time. Suggestions are cached per
    report and only generated on a click.
 2. **Plan.** From a suggestion, a text selection (selection bar: "Lab run") or the whole
-   report, `gemini-3.1-pro-preview` with Google Search writes a JSON plan: question,
+   report, `gemini-3.8-flash` with Google Search writes a JSON plan: question,
    method, software, install spec, inputs, parameters, resources, expected outputs,
    success criteria and the job script body. The planner is given the target's
    description (partitions, CPUs, GPUs, memory, modules, software notes) from its config.

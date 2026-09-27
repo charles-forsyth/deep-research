@@ -27,9 +27,7 @@ class DeepResearchConfig(BaseModel):
         )
     )
     followup_model: str = Field(
-        default_factory=lambda: os.getenv(
-            "GEMINI_FOLLOWUP_MODEL", "gemini-3.1-pro-preview"
-        )
+        default_factory=lambda: os.getenv("GEMINI_FOLLOWUP_MODEL", "gemini-3.8-flash")
     )
     # Safety limit for one research task (root or child), in minutes. Runs are
     # not cut off early: a task only stops if it is still going after this long,
