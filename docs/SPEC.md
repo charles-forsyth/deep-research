@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.19.6 (package `deepresearch`) |
+| Applies to | deep-research v0.20.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1124,10 +1124,13 @@ flowchart LR
 2. **Plan.** From a suggestion, a text selection (selection bar: "Lab run") or the whole
    report, `gemini-3.8-flash` with Google Search writes a JSON plan: question,
    method, software, install spec, inputs, parameters, resources, expected outputs,
-   success criteria and the job script body. The planner is given the target's
-   description (partitions, CPUs, GPUs, memory, modules, software notes) from its config.
+   success criteria and the job script body. The planner is given the cluster's own
+   catalog (section 20.9): partitions, every installed module, tested recipes, install
+   tools, prebuilt containers and site rules. Without a catalog it falls back to the
+   target's hand-written description (partitions, modules, software notes).
 3. **Review (always).** The plan is a `draft` until the user presses Submit. The dialog
-   shows the plan, the full generated sbatch script, the resources and the estimated
+   shows the plan, any pre-flight warnings from checking it against the catalog
+   (20.9), the full generated sbatch script, the resources and the estimated
    cluster cost. Parameters and resources are editable; edits rebuild the script and the
    estimate. Nothing is ever submitted automatically.
 4. **Submit.** The harness writes `plan.json`, `run.sbatch` and a status file into
@@ -1149,8 +1152,14 @@ Plan, Review, Queued, Running, Fetch, Write-up, Done.
 
 `build_sbatch()` wraps the planner's script body in a fixed harness:
 
-- `#SBATCH` lines from the resources (partition, nodes, CPUs, GPUs, time). No defaults
-  cap nodes, time or GPUs (user decision); the partition's own limits apply.
+- `#SBATCH` lines from the resources (partition, nodes, `ntasks_per_node`, GPUs, time).
+  No defaults cap nodes, time or GPUs (user decision); the partition's own limits apply.
+  A partition the catalog marks `spot` adds `--requeue` (spot nodes can be reclaimed).
+- When the catalog publishes a site job header (`job_header.path`, Ursa Major:
+  `/apps/docs/templates/job-header.sh`), the script sources it right after the job banner:
+  private `TMPDIR`, `SCRATCH`, package caches, `URSA_CONTAINERS`, and `ursa_conda_libs`
+  (the libstdc++ fix below). The cluster owns those settings; the path must match
+  `/[\w./-]+` or it is ignored.
 - A stage file (`Installing software`, `Running`, `Done`/`Failed (exit N)`) the watcher reads.
 - Install, in this order: `module load`; a cached Pixi environment keyed by the package
   list (`~/deep-research-lab/envs/<name>-<hash>`: a readable prefix plus a hash of the
@@ -1159,7 +1168,7 @@ Plan, Review, Queued, Running, Fetch, Write-up, Done.
   Python and pip added when pip packages are listed); Apptainer images pulled once into
   `~/deep-research-lab/images/` and exported as `IMG_<NAME>`. The environment's `lib`
   directory goes first on `LD_LIBRARY_PATH` because pip wheels need a newer libstdc++
-  than Rocky 8's system copy.
+  than Rocky 8's system copy (via the site header's `ursa_conda_libs` when present).
 - Parameters are exported as environment variables, so a rerun changes values without
   editing the script.
 - Package names, channels, modules, image references and pip index URLs are checked
@@ -1173,17 +1182,22 @@ ControlMaster built from `gcloud compute ssh --dry-run` (IAP tunnel), about 0.3 
 command after the first. A target implements `submit`, `status`, `log`, `fetch`, `cancel`
 and `describe`. Each partition entry lists CPUs, memory, GPUs and hourly price, used for
 the estimate. A second target type only needs those six methods and a `type` value.
+Optional `catalog_path` (Ursa Major: `/apps/docs/catalog.json`) points at the cluster's
+catalog (20.9); when it loads, its partitions (cores, memory, GPUs, max nodes, spot,
+price) replace the hand-written table.
 
 ### 20.4 API
 
 | Method and path | Purpose |
 |---|---|
 | `GET /api/lab/targets` | Configured targets and partitions. |
+| `GET /api/lab/catalog?target=` | Catalog status: available, fetched, generated, module and recipe counts, GPU driver. Reads the cache; fetches only if there is none. |
+| `POST /api/lab/catalog/refresh` | Fetch the catalog from the cluster now (`{target?}`); 502 if it fails and no cached copy exists. |
 | `GET /api/sessions/{id}/lab` | Runs and cached suggestions for a report. Starts the watcher if runs are active. |
 | `POST /api/sessions/{id}/lab/suggestions` | Generate suggestions (paid; `{"refresh": true}` to regenerate). |
 | `POST /api/sessions/{id}/lab` | Create a run: `{scope, selection?, request?}`, scope `selection`, `document` or `suggestion`. Planning runs in the background. |
 | `GET /api/lab/{rid}` | One run. |
-| `PUT /api/lab/{rid}/plan` | Edit a draft plan; rebuilds script and estimate. |
+| `PUT /api/lab/{rid}/plan` | Edit a draft plan; rebuilds script, estimate and pre-flight warnings (client-sent warnings are discarded). |
 | `POST /api/lab/{rid}/submit` | Submit a draft. |
 | `POST /api/lab/{rid}/cancel` | `scancel` (or stop planning). |
 | `POST /api/lab/{rid}/rerun` | New draft from this run's plan. |
@@ -1197,8 +1211,9 @@ Deleting a report deletes its lab runs, suggestions and local result files.
 ### 20.5 Cost
 
 The estimate before submit is `partition hourly price x nodes x time limit`, from the
-partition prices in the target config (Google on-demand list prices, us-central1, taken
-from the Cloud Billing catalog on 2026-09-26). It is an upper bound: jobs usually end
+cluster catalog's partition prices when loaded (the same table as the cluster's
+`ursa-cost`, Google list prices; `spot` $0.74 against `standard` $1.45 per node-hour),
+else from the target config. It is an upper bound: jobs usually end
 early, and the node's ~90 s boot is not billed to the job. AI cost (suggestions, plan,
 write-up) is computed from `usage_metadata` (cached input at the cached rate, thinking
 as output) plus $14 per 1,000 Google Search queries the reply reports, and shown on the
@@ -1245,17 +1260,55 @@ parameters, index URLs, containers), the cost estimate, the plan-review-submit-w
 fetch-write-up loop and rerun against an in-memory fake target and fake Gemini, cancel
 races (during planning, between watcher read and write, after the job ended), the fetch
 retry cap, the env cache key, time-limit parsing, AI cost, the file
-endpoint's path confinement, cleanup on report delete, and the API routes. Live checks
-are listed in the v0.19.0 changelog.
+endpoint's path confinement, cleanup on report delete, and the API routes. Catalog tests
+cover fetch and cache, stale-cache fallback on a bad fetch, partition replacement, the
+brief and full prompt descriptions, every pre-flight check, spot `--requeue`,
+`ntasks_per_node`, the site header (and rejection of an unsafe header path), and the
+catalog endpoints. Live checks are listed in the v0.19.0 and v0.20.0 changelogs.
 
 ### 20.8 Known gaps
 
 | ID | Gap | Effect |
 |---|---|---|
 | L1 | One target type (Slurm over SSH); no target picker in the UI yet. | Other clusters need a new target class. |
-| L2 | The planner can still choose software that fails on the cluster (for example CUDA 13 wheels on a CUDA 12.4 driver). The write-up reports the failure; the target's software notes are the main defence. | A wasted run; fixed by editing and rerunning. |
+| L2 | Mostly closed in v0.20.0: the planner sees the live catalog and every plan is checked against it before submit. Still possible: wrong command-line flags or a package that fails to install from conda/pip (not in the catalog). | A wasted run; fixed by editing and rerunning. |
 | L3 | No sweeps, result comparison or cluster-side caching of outputs yet. | Reruns are one at a time. |
 | L4 | Watching requires the dashboard to be running; no notification when a job ends. | You see results the next time the report is open. |
+
+### 20.9 Cluster catalog
+
+Added in v0.20.0. The cluster publishes what it can run; the Lab reads it instead of
+relying on hand-written notes that go stale (before this, the config still said driver
+550, "nothing prebuilt" and an old MPI after all three had changed).
+
+- **Source.** On Ursa Major, `ursa-catalog` (repo `ursa-major-hpc`, `tools/ursa-catalog`)
+  writes `/apps/docs/catalog.json` (schema `ursa-catalog/1`) from Slurm, Lmod and
+  `/apps`; no AI, no timer. It regenerates after module refreshes and login-node setup,
+  and the GPU self-test records the real driver. Keys: `summary` (module and package
+  counts, GPU driver and CUDA), `partitions`, `rules`, `install_tools`, `modules.core`,
+  `modules.mpi_dependent` (by MPI), `recipes` (tested load lines per application),
+  `containers`, `job_header`.
+- **Fetch and cache.** `SlurmSSHTarget.load_catalog()` reads it with `cat` over the
+  existing SSH connection and caches it at `<state dir>/catalog-<target>.json` with the
+  fetch time. On start the dashboard loads the cache only (no cluster call). Before a
+  suggestion or plan, a cache older than 24 h is refreshed; a failed refresh keeps the
+  cached copy. The Lab panel shows "cluster info: N modules, N recipes, GPU driver ..."
+  with a refresh link (`POST /api/lab/catalog/refresh`).
+- **Prompts.** Suggestions get `describe_brief()` (about 3.5 KB): partitions with use
+  cases and prices, the GPU driver, applications by field, every installed package name,
+  and a reminder of multi-node MPI, GPUs, large memory and spot. The prompt asks for the
+  best science for the question, preferring installed software when it fits equally.
+  Plans get `describe_full()` (about 11 KB): every module with its version and MPI
+  level, tested recipes with exact load lines, install tools, prebuilt containers, site
+  rules and the job header. The plan prompt says to use installed modules first (load the
+  MPI before MPI-built modules), use `/apps/containers` images in place, launch MPI with
+  `srun`, and send sweeps to spot with restart-safe scripts.
+- **Pre-flight check.** `validate_plan()` runs when a plan is made, edited or copied for a
+  rerun, and stores `plan.warnings`: unknown partition; GPUs on a partition without them,
+  or more than it has; more nodes than the partition allows; a module that is not
+  installed (with the versions that are); an MPI-built module without its MPI loaded
+  first; conda/pip packages that are already modules; a local container path not in
+  `/apps/containers`. Warnings never block submit; the review dialog lists them.
 
 ---
 
@@ -1272,3 +1325,4 @@ are listed in the v0.19.0 changelog.
 | 2026-09-26 | v0.19.4 | `POST /api/lab/{rid}/replan` and the Retry plan button (20.4). |
 | 2026-09-26 | v0.19.5 | Shared Gemini client under a lock; no temporary clients (20.6). |
 | 2026-09-26 | v0.19.6 | CLI loads the user `.env` before `./.env` (12.2, 14). |
+| 2026-09-27 | v0.20.0 | Cluster catalog (20.9): prompts from the live catalog, pre-flight plan check, catalog API, site job header, spot `--requeue`, `ntasks_per_node` (20.1-20.8). |

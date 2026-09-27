@@ -13,6 +13,7 @@ never loses a job.
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import os
@@ -151,6 +152,11 @@ class SlurmSSHTarget:
         )
         self.modules: list[str] = cfg.get("modules", [])
         self.software_notes: str = cfg.get("software_notes", "")
+        # Machine-readable description published by the cluster (ursa-catalog).
+        # Fetched over the same SSH connection, cached on disk, refreshed on demand.
+        self.catalog_path: str = cfg.get("catalog_path", "")
+        self.catalog: dict | None = None
+        self.catalog_fetched: str = ""
         self._argv: list[str] | None = None
         self._dest = ""
         self._lock = threading.Lock()
@@ -361,6 +367,186 @@ class SlurmSSHTarget:
                         files.append({"path": m.name, "size": m.size})
         return files + skipped
 
+    # ---- cluster catalog ---------------------------------------------------
+    def load_catalog(
+        self, cache_dir: Path | None, refresh: bool = False
+    ) -> dict | None:
+        """The cluster's published catalog (partitions, modules, recipes, tools).
+
+        Read from the local cache unless `refresh`; on refresh (or no cache) fetch it
+        over SSH. A fetch failure keeps the cached copy: stale beats nothing.
+        """
+        if not self.catalog_path:
+            return None
+        cache = (cache_dir / f"catalog-{self.name}.json") if cache_dir else None
+        if not refresh and self.catalog is None and cache and cache.exists():
+            try:
+                data = json.loads(cache.read_text())
+                self.catalog, self.catalog_fetched = (
+                    data.get("catalog"),
+                    data.get("fetched", ""),
+                )
+            except ValueError:
+                self.catalog = None
+        if refresh or self.catalog is None:
+            raw = self.sh(f"cat {shlex.quote(self.catalog_path)}", timeout=60)
+            cat = json.loads(raw)
+            if not isinstance(cat, dict) or not str(cat.get("schema", "")).startswith(
+                "ursa-catalog/"
+            ):
+                raise TargetError("cluster catalog has an unknown format")
+            self.catalog, self.catalog_fetched = cat, _now()
+            if cache:
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                cache.write_text(
+                    json.dumps({"fetched": self.catalog_fetched, "catalog": cat})
+                )
+            self._apply_catalog_partitions()
+        elif self.catalog:
+            self._apply_catalog_partitions()
+        return self.catalog
+
+    def _apply_catalog_partitions(self) -> None:
+        """Catalog partitions replace the hand-written table (prices, cores, GPUs)."""
+        cat = self.catalog or {}
+        parts: dict[str, dict] = {}
+        for p in cat.get("partitions") or []:
+            if not isinstance(p, dict) or not p.get("name"):
+                continue
+            old = self.partitions.get(p["name"], {})
+            parts[p["name"]] = {
+                "machine": old.get("machine") or p.get("use_for", "")[:60],
+                "cpus": p.get("cpus_per_node"),
+                "mem_gb": p.get("mem_gb_per_node"),
+                "gpus": p.get("gpus_per_node") or 0,
+                "gpu_type": p.get("gpu_type"),
+                "usd_per_hour": p.get("usd_per_node_hour", old.get("usd_per_hour")),
+                "max_nodes": p.get("max_nodes"),
+                "spot": bool(p.get("spot")),
+                "use_for": p.get("use_for", ""),
+            }
+            if p.get("default"):
+                self.default_partition = p["name"]
+        if parts:
+            self.partitions = parts
+
+    def known_modules(self) -> tuple[set[str], dict[str, str]]:
+        """(every loadable module incl. bare names, module -> MPI it needs)."""
+        mods = (self.catalog or {}).get("modules") or {}
+        have: set[str] = set()
+        needs: dict[str, str] = {}
+        for m in mods.get("core") or []:
+            have |= {m, m.split("/")[0]}
+        for mpi, tier in (mods.get("mpi_dependent") or {}).items():
+            for m in tier.get("modules") or []:
+                for k in (m, m.split("/")[0]):
+                    if k not in have:
+                        needs.setdefault(k, mpi)
+                have |= {m, m.split("/")[0]}
+        return have, needs
+
+    def describe_brief(self) -> str:
+        """Capabilities overview for suggestions: what is possible, compactly."""
+        cat = self.catalog
+        if not cat:
+            return self.describe()
+        s = cat.get("summary") or {}
+        gpu = s.get("gpu") or {}
+        lines = [f"Target: {self.label} (Slurm). {cat.get('cluster', '')}".strip()]
+        lines.append(self._partitions_text())
+        lines.append(
+            f"Installed: {s.get('modules', '?')} environment modules built from "
+            f"{s.get('spack_packages', '?')} Spack packages; GPU driver "
+            f"{gpu.get('driver', '?')} (CUDA <= {gpu.get('cuda_max', '?')})."
+        )
+        by_field: dict[str, list[str]] = {}
+        for r in cat.get("recipes") or []:
+            by_field.setdefault(r.get("field", "other"), []).append(r.get("name", ""))
+        if by_field:
+            lines.append("Ready-to-use applications by field:")
+            lines += [f"- {f}: {', '.join(n)}" for f, n in sorted(by_field.items())]
+        core = (cat.get("modules") or {}).get("core") or []
+        mpi = (cat.get("modules") or {}).get("mpi_dependent") or {}
+        names = sorted(
+            {m.split("/")[0] for m in core}
+            | {m.split("/")[0] for t in mpi.values() for m in t.get("modules") or []}
+        )
+        lines.append("All installed packages (module names): " + ", ".join(names))
+        lines.append(
+            "Anything else can be installed inside a job (uv/pip, Pixi/conda, "
+            "Apptainer containers). Capabilities worth using: multi-node MPI, GPUs, "
+            "~500 GB memory nodes, cheap spot nodes for parameter sweeps."
+        )
+        return "\n".join(lines)
+
+    def describe_full(self) -> str:
+        """Everything a job planner needs: modules, recipes, rules, tools."""
+        cat = self.catalog
+        if not cat:
+            return self.describe()
+        mods = cat.get("modules") or {}
+        gpu = (cat.get("summary") or {}).get("gpu") or {}
+        out = [
+            f"Target: {self.label} (Slurm). Catalog generated {cat.get('generated', '?')}.",
+            self._partitions_text(),
+            f"GPU: {gpu.get('gpu', 'NVIDIA L4')}, driver {gpu.get('driver', '?')}, "
+            f"runs CUDA <= {gpu.get('cuda_max', '?')}.",
+            "Rules:",
+            *[f"- {r}" for r in cat.get("rules") or []],
+            "How to load: " + str(cat.get("how_to_load", "")),
+            "Modules loadable directly: " + ", ".join(mods.get("core") or []),
+        ]
+        for mpi, t in (mods.get("mpi_dependent") or {}).items():
+            out.append(
+                f"Modules after `{t.get('requires', 'module load ' + mpi)}`: "
+                + ", ".join(t.get("modules") or [])
+            )
+        out.append("Tested recipes (use these load lines exactly):")
+        for r in cat.get("recipes") or []:
+            load = (
+                " && ".join(f"module load {m}" for m in r.get("load") or []) or "(none)"
+            )
+            out.append(
+                f"- {r.get('name')}: {load}; run: {r.get('run')}; partition "
+                f"{r.get('partition')}" + (f"; {r['notes']}" if r.get("notes") else "")
+            )
+        out.append("Install tools for anything not installed:")
+        out += [
+            f"- {t.get('name')} ({t.get('how')}): {t.get('use')}"
+            for t in cat.get("install_tools") or []
+        ]
+        if cat.get("containers"):
+            out.append(
+                "Prebuilt Apptainer images (use the path directly, no pull needed): "
+                + ", ".join(c["path"] for c in cat["containers"])
+            )
+        jh = cat.get("job_header") or {}
+        if jh.get("path"):
+            out.append(
+                f"The harness already sources the site job header {jh['path']} "
+                "(TMPDIR, SCRATCH, caches); do not redo that in the script."
+            )
+        if self.software_notes:
+            out.append("Site notes: " + self.software_notes)
+        return "\n".join(out)
+
+    def _partitions_text(self) -> str:
+        rows = []
+        for p, v in self.partitions.items():
+            rows.append(
+                f"- `{p}`{' (default)' if p == self.default_partition else ''}: "
+                f"{v.get('cpus', '?')} cores, {v.get('mem_gb', '?')} GB"
+                + (
+                    f", {v['gpus']}x {v.get('gpu_type') or 'GPU'}"
+                    if v.get("gpus")
+                    else ""
+                )
+                + (f", up to {v['max_nodes']} nodes" if v.get("max_nodes") else "")
+                + f", ${v.get('usd_per_hour', '?')}/node-hour"
+                + (f". {v['use_for']}" if v.get("use_for") else "")
+            )
+        return "Partitions (whole nodes, created on demand):\n" + "\n".join(rows)
+
     def describe(self) -> str:
         parts = "\n".join(
             f"- `{p}`: {v.get('machine', '?')}, {v.get('cpus', '?')} Slurm CPUs per node, "
@@ -390,6 +576,92 @@ def load_targets(config_dir: Path) -> dict[str, SlurmSSHTarget]:
             tgt = SlurmSSHTarget(t)
             out[tgt.name] = tgt
     return out
+
+
+def validate_plan(target: SlurmSSHTarget | None, plan: dict) -> list[str]:
+    """Check a plan against the cluster catalog before anything is submitted.
+
+    Returns human-readable warnings (empty when the plan fits). Never raises: a plan
+    with warnings can still be edited or submitted by the reviewer.
+    """
+    if not target or not isinstance(plan, dict):
+        return []
+    warns: list[str] = []
+    r = plan.get("resources") or {}
+    part_name = r.get("partition") or target.default_partition
+    part = target.partitions.get(part_name)
+    if target.partitions and part is None:
+        warns.append(
+            f"Partition '{part_name}' does not exist; available: "
+            + ", ".join(target.partitions)
+        )
+    gpus = int(r.get("gpus") or 0) if str(r.get("gpus") or 0).isdigit() else 0
+    if part is not None and isinstance(part, dict):
+        have_gpus = int(part.get("gpus") or 0)
+        if gpus and not have_gpus:
+            gp = [k for k, v in target.partitions.items() if v.get("gpus")]
+            warns.append(
+                f"{gpus} GPU(s) requested on '{part_name}', which has none"
+                + (f"; use {', '.join(gp)}" if gp else "")
+            )
+        elif have_gpus and gpus > have_gpus:
+            warns.append(f"{gpus} GPUs requested; '{part_name}' nodes have {have_gpus}")
+        mx = part.get("max_nodes")
+        nodes = r.get("nodes") or 1
+        if isinstance(mx, int) and str(nodes).isdigit() and int(nodes) > mx:
+            warns.append(f"{nodes} nodes requested; '{part_name}' has at most {mx}")
+    if getattr(target, "catalog", None):
+        have, needs = target.known_modules()
+        mods = [str(m) for m in (plan.get("install") or {}).get("modules") or []]
+        loaded_mpi = {m.split("/")[0] for m in mods} & {
+            "openmpi",
+            "mpich",
+            "intel-oneapi-mpi",
+        }
+        for m in mods:
+            if m not in have:
+                base = m.split("/")[0]
+                alts = sorted(x for x in have if x.split("/")[0] == base and "/" in x)
+                warns.append(
+                    f"Module '{m}' is not installed"
+                    + (f"; available: {', '.join(alts[:6])}" if alts else "")
+                )
+            elif needs.get(m) and needs[m] not in loaded_mpi:
+                warns.append(
+                    f"Module '{m}' needs `module load {needs[m]}` before it "
+                    f"(add '{needs[m]}' earlier in install.modules)"
+                )
+        # installing something that is already a module wastes minutes
+        pkgs = [
+            re.split(r"[=<>!\[]", str(x))[0].lower()
+            for x in ((plan.get("install") or {}).get("conda") or [])
+            + ((plan.get("install") or {}).get("pip") or [])
+            if not str(x).startswith(("--", "https:"))
+        ]
+        dup = sorted(
+            {p for p in pkgs if p in have and p not in ("python", "pip", "numpy")}
+        )
+        if dup:
+            warns.append(
+                "Already installed as modules (faster than installing): "
+                + ", ".join(dup)
+            )
+        imgs = (plan.get("install") or {}).get("apptainer") or []
+        local = {
+            c.get("path", "") for c in (target.catalog or {}).get("containers") or []
+        }
+        for i in imgs:
+            if str(i).startswith("/") and str(i) not in local:
+                warns.append(f"Container image '{i}' is not in /apps/containers")
+    return warns
+
+
+def _describe(tgt, full: bool) -> str:
+    if not tgt:
+        return "No cluster configured."
+    if getattr(tgt, "catalog", None):
+        return tgt.describe_full() if full else tgt.describe_brief()
+    return tgt.describe()
 
 
 def estimate_cost(target: SlurmSSHTarget | None, plan: dict) -> float | None:
@@ -437,10 +709,15 @@ computations that could be run on the HPC cluster below to test, quantify or ext
 the report with real software and real data or models.
 
 Rules:
-- Only propose what is genuinely computable with open-source software installable from
-  conda-forge, bioconda, PyPI, Spack or a public container, and with inputs that are public
-  (datasets, structures, sequences) or can be generated (simulations).
-- Prefer small, decisive computations that finish in minutes to a few hours.
+- Only propose what is genuinely computable with open-source software (already installed on
+  the cluster, or installable from conda-forge, bioconda, PyPI, Spack or a public container)
+  and with inputs that are public (datasets, structures, sequences) or can be generated
+  (simulations).
+- Choose the best science for the question, not only what is preinstalled; installed
+  applications start fastest, so prefer them when they fit equally well.
+- Use the cluster's real capabilities when they help: multi-node MPI, GPUs, large-memory
+  nodes, spot nodes for sweeps over many parameters.
+- Prefer decisive computations that finish in minutes to a few hours.
 - If nothing in the report is meaningfully computable, return an empty list. Do not invent
   busywork; news summaries, policy and how-to documents usually have nothing to compute.
 
@@ -471,7 +748,12 @@ Requirements for the job:
 - Real software, real data. Never simulate results with sleep, random numbers presented as
   findings, or hard-coded answers. Tiny demonstration inputs are fine only when labelled as
   such in the plan.
-- Install software inside the job. Preference: an existing module; else a Pixi environment
+- Software: FIRST check the cluster's installed modules and tested recipes below and use
+  them when they fit (exact module names; load the compiler/MPI module before modules that
+  need it, e.g. install.modules = ["openmpi", "gromacs/2026.1"]). Installing something
+  that is already a module wastes 5-10 minutes. Use a prebuilt image from
+  /apps/containers by its path inside the script instead of pulling it.
+- Otherwise install software inside the job. Preference after modules: a Pixi environment
   from conda-forge/bioconda (list the packages, the harness installs them with
   `pixi add`); else `pip` packages inside that environment; else an Apptainer image
   (list it under install.apptainer; the harness pulls it and exports IMG_<NAME>, NAME being the
@@ -483,8 +765,13 @@ Requirements for the job:
   file (CSV, JSON, PNG plots, text summaries) into ./outputs/. Keep outputs under 100 MB.
 - Print progress lines. Mark phases with `stage "Running"`, `stage "Post-processing"`
   (a shell function the harness provides).
-- Use $SLURM_CPUS_ON_NODE for thread counts. Exit non-zero on failure (the harness uses
-  `set -euo pipefail`).
+- Use $SLURM_CPUS_ON_NODE for thread counts. For MPI codes launch with `srun` (Slurm
+  starts one rank per task across all nodes; set resources.nodes and optionally
+  resources.ntasks_per_node). Temporary files go to $TMPDIR (private, node-local).
+  Exit non-zero on failure (the harness uses `set -euo pipefail`).
+- Parameter sweeps or many independent cases: the `spot` partition costs about half;
+  write the script so a rerun skips cases whose output already exists (spot nodes can be
+  reclaimed).
 - Pick a partition and node count that fit the problem. The time limit covers software
   installation too (a first pip install of PyTorch-based packages can take 5-10 minutes;
   environments are cached for later runs), so leave headroom.
@@ -498,7 +785,7 @@ Return JSON only, in a ```json block, with exactly these keys:
 "software": [{{"name": "...", "source": "module|conda-forge|bioconda|pip|apptainer|spack", "version": "optional", "why": "..."}}],
 "inputs": ["data or structures used, with URLs where downloaded"],
 "parameters": {{"name": value}},
-"resources": {{"partition": "...", "nodes": 1, "time_limit": "HH:MM:SS", "gpus": 0}},
+"resources": {{"partition": "...", "nodes": 1, "ntasks_per_node": null, "time_limit": "HH:MM:SS", "gpus": 0}},
 "install": {{"modules": [], "conda": ["package", ...], "channels": ["conda-forge"], "pip": ["package", "--extra-index-url https://...", ...], "apptainer": ["docker://image:tag"]}},
 "script": "bash commands to run after install (no #SBATCH lines, no install commands). Parameters from 'parameters' are exported as env vars named PARAM_<NAME> in upper case; use them.",
 "expected_outputs": ["outputs/..."],
@@ -584,6 +871,18 @@ def build_sbatch(run_id: int, plan: dict, target: SlurmSSHTarget) -> str:
     ]
     if gpus:
         lines.append(f"#SBATCH --gres=gpu:{gpus}")
+    tpn = str(r.get("ntasks_per_node") or "")
+    if tpn.isdigit() and int(tpn) > 0:
+        lines.append(f"#SBATCH --ntasks-per-node={int(tpn)}")
+    if (getattr(target, "partitions", {}) or {}).get(part, {}).get("spot"):
+        lines.append("#SBATCH --requeue")  # spot nodes can be reclaimed
+    hdr = ((getattr(target, "catalog", None) or {}).get("job_header") or {}).get("path")
+    site_header = (
+        f"# cluster's site job header (TMPDIR, SCRATCH, caches), published in its catalog\n"
+        f"[ -r {shlex.quote(hdr)} ] && . {shlex.quote(hdr)}\n"
+        if hdr and re.fullmatch(r"/[\w./-]+", str(hdr))
+        else ""
+    )
     body = f"""
 # Generated by deep-research Lab runs (run #{run_id}). Edit the plan, not this file.
 set -euo pipefail
@@ -593,7 +892,7 @@ stage() {{ echo "$1" >> "$SLURM_SUBMIT_DIR/stage.txt"; echo "[STAGE] $1"; }}
 export -f stage
 trap 'rc=$?; if [ $rc -ne 0 ]; then stage "Failed (exit $rc)"; fi' EXIT
 echo "[INFO] job $SLURM_JOB_ID on $(hostname), $SLURM_CPUS_ON_NODE CPUs, $(date -u +%FT%TZ)"
-{exports}
+{site_header}{exports}
 
 stage "Installing software"
 """
@@ -642,7 +941,9 @@ flock -u 9
 eval "$(cd "$ENVDIR" && pixi shell-hook)"
 # Pip wheels (PyTorch...) pull in the host's old libstdc++ first, which breaks conda
 # libraries that need a newer one. Put the environment's own runtime libraries first.
-export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+if declare -F ursa_conda_libs >/dev/null; then ursa_conda_libs; else
+  export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 """
     if imgs:
         body += """command -v apptainer >/dev/null 2>&1 || module load apptainer 2>/dev/null || true
@@ -688,6 +989,12 @@ class Lab:
         self.state_dir = state_dir
         self.results_dir = state_dir / "lab"
         self.targets = targets if targets is not None else load_targets(state_dir)
+        for t in self.targets.values():
+            if getattr(t, "catalog_path", ""):
+                try:
+                    t.load_catalog(self.state_dir, refresh=False)  # cache only
+                except Exception:
+                    pass  # no cache yet; fetched on first use
         self._genai = None
         self._client_lock = threading.Lock()
         self._fetch_tries: dict[int, int] = {}
@@ -783,6 +1090,50 @@ class Lab:
         if name and name in self.targets:
             return self.targets[name]
         return next(iter(self.targets.values()), None)
+
+    CATALOG_MAX_AGE_H = 24.0
+
+    def catalog(self, name: str | None = None, refresh: bool = False) -> dict:
+        """Load (or refresh) the target's cluster catalog; returns a status summary."""
+        tgt = self.target(name)
+        if not tgt or not getattr(tgt, "catalog_path", ""):
+            return {"available": False, "reason": "no catalog_path configured"}
+        err = ""
+        try:
+            tgt.load_catalog(self.state_dir, refresh=refresh)
+        except Exception as e:  # keep any cached copy
+            err = str(e)[:300]
+        cat = tgt.catalog or {}
+        s = cat.get("summary") or {}
+        return {
+            "available": bool(tgt.catalog),
+            "target": tgt.name,
+            "fetched": tgt.catalog_fetched,
+            "generated": cat.get("generated"),
+            "modules": s.get("modules"),
+            "spack_packages": s.get("spack_packages"),
+            "recipes": len(cat.get("recipes") or []),
+            "gpu": s.get("gpu"),
+            "error": err,
+        }
+
+    def _fresh_catalog(self, tgt: SlurmSSHTarget | None) -> None:
+        """Before prompting: refresh a catalog older than a day (errors ignored)."""
+        if not tgt or not getattr(tgt, "catalog_path", ""):
+            return
+        age_h = 1e9
+        if tgt.catalog_fetched:
+            try:
+                then = dt.datetime.fromisoformat(tgt.catalog_fetched)
+                if then.tzinfo is not None:
+                    then = then.astimezone().replace(tzinfo=None)
+                age_h = (dt.datetime.now() - then).total_seconds() / 3600
+            except ValueError:
+                pass
+        try:
+            tgt.load_catalog(self.state_dir, refresh=age_h > self.CATALOG_MAX_AGE_H)
+        except Exception:
+            pass
 
     def get(self, run_id: int) -> dict | None:
         with self._conn() as conn:
@@ -903,8 +1254,9 @@ class Lab:
                 "cached": True,
             }
         tgt = self.target()
+        self._fresh_catalog(tgt)
         prompt = SUGGEST_PROMPT.format(
-            target=tgt.describe() if tgt else "No cluster configured.",
+            target=_describe(tgt, full=False),
             title=title,
             text=_strip_sources(text)[:60000],
         )
@@ -965,8 +1317,10 @@ class Lab:
             conn.commit()
             run_id = cur.lastrowid or 0
         if plan and tgt:
+            plan = {**plan, "warnings": validate_plan(tgt, plan)}
             self._update(
                 run_id,
+                plan=plan,
                 script=build_sbatch(run_id, plan, tgt),
                 estimate_usd=estimate_cost(tgt, plan),
             )
@@ -985,8 +1339,9 @@ class Lab:
                 stage="Researching software and methods (web search)",
             ):
                 return  # cancelled before it started
+            self._fresh_catalog(tgt)
             prompt = PLAN_PROMPT.format(
-                target=tgt.describe() if tgt else "No cluster configured.",
+                target=_describe(tgt, full=True),
                 title=title,
                 scope="a highlighted passage"
                 if run["scope"] == "selection"
@@ -1035,11 +1390,13 @@ class Lab:
             for key in ("script", "resources", "install"):
                 if key not in plan:
                     raise ValueError(f"plan is missing '{key}'")
+            plan["warnings"] = validate_plan(tgt, plan)
             self._update(
                 run_id,
                 only_if=("planning",),
                 status="draft",
-                stage="Plan ready for review",
+                stage="Plan ready for review"
+                + (f" ({len(plan['warnings'])} warnings)" if plan["warnings"] else ""),
                 plan=plan,
                 script=build_sbatch(run_id, plan, tgt) if tgt else None,
                 estimate_usd=estimate_cost(tgt, plan),
@@ -1060,6 +1417,7 @@ class Lab:
         if run["status"] not in ("draft", "plan_failed"):
             raise ValueError(f"run is {run['status']}; only drafts can be edited")
         tgt = self.target(run["target"])
+        plan = {**plan, "warnings": validate_plan(tgt, plan)}
         self._update(
             run_id,
             plan=plan,

@@ -716,3 +716,299 @@ def test_api_refuses_to_delete_session_with_live_lab_job(app, tmp_path):  # noqa
     api.lab.cancel(run["id"])
     status, _ = app["call"]("DELETE", f"/api/sessions/{sid}")
     assert status == 200 and api.lab.get(run["id"]) is None
+
+
+# ---------------------------------------------------------------- cluster catalog
+
+CATALOG = {
+    "schema": "ursa-catalog/1",
+    "cluster": "Test cluster",
+    "generated": "2026-09-27T15:51:10+00:00",
+    "summary": {
+        "modules": 5,
+        "spack_packages": 1694,
+        "fields": ["molecular dynamics"],
+        "gpu": {"driver": "580.178.04", "gpu": "NVIDIA L4", "cuda_max": "13.0"},
+    },
+    "partitions": [
+        {
+            "name": "standard",
+            "default": True,
+            "max_nodes": 32,
+            "cpus_per_node": 16,
+            "mem_gb_per_node": 124,
+            "gpus_per_node": 0,
+            "gpu_type": None,
+            "usd_per_node_hour": 1.45,
+            "spot": False,
+            "use_for": "general",
+        },
+        {
+            "name": "gpul4",
+            "default": False,
+            "max_nodes": 8,
+            "cpus_per_node": 8,
+            "mem_gb_per_node": 62,
+            "gpus_per_node": 1,
+            "gpu_type": "NVIDIA L4 24 GB",
+            "usd_per_node_hour": 1.15,
+            "spot": False,
+            "use_for": "GPU",
+        },
+        {
+            "name": "spot",
+            "default": False,
+            "max_nodes": 32,
+            "cpus_per_node": 16,
+            "mem_gb_per_node": 124,
+            "gpus_per_node": 0,
+            "gpu_type": None,
+            "usd_per_node_hour": 0.74,
+            "spot": True,
+            "use_for": "sweeps",
+        },
+    ],
+    "rules": ["Slurm CPUs are physical cores."],
+    "install_tools": [{"name": "uv", "how": "on PATH", "use": "uv pip install"}],
+    "modules": {
+        "core": [
+            "gcc/13.5.0",
+            "openmpi/5.0.10",
+            "python-ml/2026.09",
+            "blast-plus/2.17.0",
+        ],
+        "mpi_dependent": {
+            "openmpi": {
+                "requires": "module load openmpi",
+                "modules": [
+                    "gromacs/2026.1",
+                    "gromacs/2026.1-cuda",
+                    "lammps/20250722.4",
+                ],
+            }
+        },
+    },
+    "recipes": [
+        {
+            "name": "GROMACS (CPU, MPI)",
+            "field": "molecular dynamics",
+            "load": ["openmpi", "gromacs/2026.1"],
+            "run": "srun gmx_mpi mdrun",
+            "partition": "standard",
+        }
+    ],
+    "containers": [
+        {"path": "/apps/containers/vllm-0.6.4-cuda12.4.sif", "size_gb": 5.6}
+    ],
+    "how_to_load": "module load <name>",
+    "job_header": {"path": "/apps/docs/templates/job-header.sh", "use": "source it"},
+}
+
+
+def _cat_target(tmp_path, monkeypatch, catalog=CATALOG):
+    tgt = labm.SlurmSSHTarget(
+        {
+            "name": "ursa",
+            "label": "Ursa",
+            "ssh_host": "h",
+            "catalog_path": "/apps/docs/catalog.json",
+            "partitions": {
+                "standard": {"machine": "c2d", "cpus": 16, "usd_per_hour": 9.99}
+            },
+        }
+    )
+    calls = []
+
+    def sh(cmd, stdin=None, timeout=120):
+        calls.append(cmd)
+        return json.dumps(catalog)
+
+    monkeypatch.setattr(tgt, "sh", sh)
+    tgt.calls = calls  # type: ignore[attr-defined]
+    return tgt
+
+
+def test_catalog_fetch_caches_and_replaces_partitions(tmp_path, monkeypatch):
+    tgt = _cat_target(tmp_path, monkeypatch)
+    cat = tgt.load_catalog(tmp_path)
+    assert cat["summary"]["gpu"]["driver"] == "580.178.04"
+    assert tgt.calls == ["cat /apps/docs/catalog.json"]
+    # live prices/partitions win over the hand-written table
+    assert tgt.partitions["standard"]["usd_per_hour"] == 1.45
+    assert (
+        tgt.partitions["spot"]["spot"] is True and tgt.partitions["gpul4"]["gpus"] == 1
+    )
+    assert tgt.default_partition == "standard"
+    cached = json.loads((tmp_path / "catalog-ursa.json").read_text())
+    assert cached["catalog"]["schema"] == "ursa-catalog/1" and cached["fetched"]
+
+    # a new target object reads the cache without touching the cluster
+    tgt2 = _cat_target(tmp_path, monkeypatch)
+    tgt2.load_catalog(tmp_path)
+    assert tgt2.calls == [] and tgt2.catalog["cluster"] == "Test cluster"
+    tgt2.load_catalog(tmp_path, refresh=True)
+    assert tgt2.calls == ["cat /apps/docs/catalog.json"]
+
+
+def test_catalog_rejects_unknown_format_and_keeps_cache(tmp_path, monkeypatch):
+    tgt = _cat_target(tmp_path, monkeypatch)
+    tgt.load_catalog(tmp_path)
+    bad = _cat_target(tmp_path, monkeypatch, catalog={"hello": 1})
+    bad.load_catalog(tmp_path)  # from cache: fine
+    with pytest.raises(labm.TargetError):
+        bad.load_catalog(tmp_path, refresh=True)
+    assert bad.catalog["schema"] == "ursa-catalog/1"  # stale beats nothing
+
+
+def test_describe_brief_and_full_come_from_the_catalog(tmp_path, monkeypatch):
+    tgt = _cat_target(tmp_path, monkeypatch)
+    tgt.load_catalog(tmp_path)
+    brief = tgt.describe_brief()
+    assert "1694 Spack packages" in brief and "CUDA <= 13.0" in brief
+    assert "gromacs" in brief and "molecular dynamics: GROMACS (CPU, MPI)" in brief
+    full = tgt.describe_full()
+    assert "module load openmpi && module load gromacs/2026.1" in full
+    assert "Modules after `module load openmpi`: gromacs/2026.1" in full
+    assert "/apps/containers/vllm-0.6.4-cuda12.4.sif" in full
+    assert "`spot`" in full and "$0.74/node-hour" in full
+    assert labm._describe(tgt, full=True) == full
+    assert labm._describe(None, full=True) == "No cluster configured."
+
+
+def test_validate_plan_catches_what_would_fail_on_the_cluster(tmp_path, monkeypatch):
+    tgt = _cat_target(tmp_path, monkeypatch)
+    tgt.load_catalog(tmp_path)
+    good = {
+        **PLAN,
+        "resources": {
+            "partition": "standard",
+            "nodes": 2,
+            "time_limit": "01:00:00",
+            "gpus": 0,
+        },
+        "install": {"modules": ["openmpi", "gromacs/2026.1"], "conda": [], "pip": []},
+    }
+    assert labm.validate_plan(tgt, good) == []
+    bad = {
+        **PLAN,
+        "resources": {
+            "partition": "standard",
+            "nodes": 40,
+            "time_limit": "01:00:00",
+            "gpus": 1,
+        },
+        "install": {
+            "modules": ["gromacs/2026.1", "lammps/2024", "nosuch"],
+            "conda": ["blast-plus", "python=3.12"],
+            "pip": [],
+            "apptainer": ["/apps/containers/missing.sif"],
+        },
+    }
+    w = " | ".join(labm.validate_plan(tgt, bad))
+    assert "has none; use gpul4" in w
+    assert "40 nodes requested; 'standard' has at most 32" in w
+    assert "'gromacs/2026.1' needs `module load openmpi`" in w
+    assert "'lammps/2024' is not installed; available: lammps/20250722.4" in w
+    assert "Module 'nosuch' is not installed" in w
+    assert "Already installed as modules (faster than installing): blast-plus" in w
+    assert "missing.sif" in w
+    nopart = {
+        **PLAN,
+        "resources": {"partition": "gpu", "nodes": 1, "time_limit": "1:00:00"},
+    }
+    assert "Partition 'gpu' does not exist" in labm.validate_plan(tgt, nopart)[0]
+    assert labm.validate_plan(None, PLAN) == []
+
+
+def test_sbatch_spot_requeue_and_ntasks_per_node(tmp_path, monkeypatch):
+    tgt = _cat_target(tmp_path, monkeypatch)
+    tgt.load_catalog(tmp_path)
+    plan = {
+        **PLAN,
+        "resources": {
+            "partition": "spot",
+            "nodes": 2,
+            "ntasks_per_node": 16,
+            "time_limit": "00:30:00",
+        },
+    }
+    sb = build_sbatch(9, plan, tgt)
+    assert "#SBATCH --requeue" in sb and "#SBATCH --ntasks-per-node=16" in sb
+    std = build_sbatch(
+        9,
+        {**PLAN, "resources": {"partition": "standard", "ntasks_per_node": "x; rm"}},
+        tgt,
+    )
+    assert "--requeue" not in std and "ntasks-per-node" not in std
+
+
+def test_plans_carry_warnings_and_prompts_use_catalog(tmp_path, monkeypatch):
+    tgt = _cat_target(tmp_path, monkeypatch)
+    lb = Lab(str(tmp_path / "h.db"), lambda: None, tmp_path, targets={"ursa": tgt})
+    seen = []
+
+    def ask(prompt, search):
+        seen.append(prompt)
+        return "```json\n" + json.dumps(
+            {**PLAN, "install": {"modules": ["lammps"], "conda": [], "pip": []}}
+        ) + "\n```", 0.01
+
+    lb._ask = ask  # type: ignore[method-assign]
+    run = lb.create(1, "document", "text")
+    lb.make_plan(run["id"], "t")
+    got = lb.get(run["id"])
+    assert got["status"] == "draft" and "1 warnings" in got["stage"]
+    assert "needs `module load openmpi`" in got["plan"]["warnings"][0]
+    assert "Tested recipes" in seen[0] and "module load gromacs/2026.1" in seen[0]
+    # editing recomputes (and the client cannot inject its own warnings)
+    fixed = {
+        **got["plan"],
+        "install": {"modules": ["openmpi", "lammps"]},
+        "warnings": ["x"],
+    }
+    assert lb.edit_plan(run["id"], fixed)["plan"]["warnings"] == []
+    st = lb.catalog()
+    assert st["available"] and st["modules"] == 5 and st["gpu"]["cuda_max"] == "13.0"
+
+
+def test_api_catalog_endpoints(app, tmp_path, monkeypatch):  # noqa: F811
+    api = app["api"]
+    tgt = _cat_target(tmp_path, monkeypatch)
+    api.lab.targets = {"ursa": tgt}
+    api.lab.state_dir = tmp_path
+    call = app["call"]
+
+    status, first = call("GET", "/api/lab/catalog")
+    assert status == 200 and first["available"]
+    assert tgt.calls == ["cat /apps/docs/catalog.json"]
+    status, ref = call("POST", "/api/lab/catalog/refresh", {})
+    assert status == 200 and ref["recipes"] == 1 and len(tgt.calls) == 2
+    status, t = call("GET", "/api/lab/targets")
+    assert t["targets"][0]["partitions"]["spot"]["usd_per_hour"] == 0.74
+
+
+def test_api_catalog_without_catalog_path(app):  # noqa: F811
+    api = app["api"]
+    api.lab.targets = {"fake": FakeTarget()}
+    status, st = app["call"]("GET", "/api/lab/catalog")
+    assert status == 200 and st["available"] is False
+
+
+def test_sbatch_sources_site_header_only_from_catalog(tmp_path, monkeypatch):
+    tgt = _cat_target(tmp_path, monkeypatch)
+    plain = build_sbatch(3, PLAN, tgt)  # catalog not loaded yet
+    assert "job-header.sh" not in plain
+    tgt.load_catalog(tmp_path)
+    sb = build_sbatch(3, PLAN, tgt)
+    assert (
+        "[ -r /apps/docs/templates/job-header.sh ] && . /apps/docs/templates/job-header.sh"
+        in sb
+    )
+    assert sb.index("job-header.sh") < sb.index('stage "Installing software"')
+    assert "ursa_conda_libs" in sb  # pip-in-conda fix delegates to the site helper
+    assert "site job header /apps/docs/templates/job-header.sh" in tgt.describe_full()
+    evil = {**CATALOG, "job_header": {"path": "/x; rm -rf ~"}}
+    bad = _cat_target(tmp_path / "e", monkeypatch, catalog=evil)
+    bad.load_catalog(tmp_path / "e")
+    evil_sb = build_sbatch(3, PLAN, bad)
+    assert "job-header" not in evil_sb and "/x; rm" not in evil_sb

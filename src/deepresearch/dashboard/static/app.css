@@ -546,3 +546,6 @@ pre.lab-script { max-height: 300px; }
 .status-badge.review, .status-badge.planning, .status-badge.queued { color: var(--cyan); background: var(--cyan-d); }
 .status-badge.plan_failed { color: var(--red); background: var(--red-d); }
 @media (max-width: 820px) { .lab-grid { grid-template-columns: 1fr; } .lab-params.res { grid-template-columns: 1fr 1fr; } }
+
+.lab-warn { border: 1px solid var(--warn, #b7791f); background: rgba(183,121,31,.08); border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
+.lab-warn ul { margin: 4px 0 4px 18px; padding: 0; font-size: 12px; }
