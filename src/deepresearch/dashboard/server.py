@@ -230,6 +230,7 @@ class Api:
         r("POST", r"/api/lab/(\d+)/submit", self.lab_submit)
         r("POST", r"/api/lab/(\d+)/cancel", self.lab_cancel)
         r("POST", r"/api/lab/(\d+)/rerun", self.lab_rerun)
+        r("POST", r"/api/lab/(\d+)/replan", self.lab_replan)
         r("GET", r"/api/lab/(\d+)/log", self.lab_log)
         r("GET", r"/api/lab/(\d+)/file", self.lab_file)
         r("DELETE", r"/api/lab/(\d+)", self.lab_delete)
@@ -1009,6 +1010,18 @@ class Api:
             plan=plan,
         )
         return self._lab_view(new)
+
+    def lab_replan(self, rid, query, body):
+        self._lab_run(rid)
+        try:
+            run = self.lab.replan(int(rid))
+        except ValueError as e:
+            raise ApiError(409, str(e)) from e
+        s = self._session(run["session_id"])
+        threading.Thread(
+            target=self.lab.make_plan, args=(run["id"], s["prompt"]), daemon=True
+        ).start()
+        return self._lab_view(run)
 
     def lab_log(self, rid, query, body):
         self._lab_run(rid)
