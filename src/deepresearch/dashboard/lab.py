@@ -100,6 +100,15 @@ class TargetError(RuntimeError):
     pass
 
 
+class EmptyReply(ValueError):
+    """The model returned no text (for example it stopped on a tool-call limit)."""
+
+    def __init__(self, finish: str, cost: float | None):
+        super().__init__(f"model returned no text (finish reason: {finish})")
+        self.finish = finish
+        self.cost = cost
+
+
 class SlurmSSHTarget:
     """A Slurm cluster reached over SSH (gcloud IAP or a plain ssh host).
 
@@ -419,8 +428,8 @@ Return JSON only, in a ```json block:
 "note": "one sentence on how computable this report is"}}"""
 
 PLAN_PROMPT = """You are a computational scientist. Turn the selected material into ONE runnable job
-on the HPC cluster below. Use web search to choose the best-established open-source software
-for the task and to check exact package names and command-line usage.
+on the HPC cluster below. Use a few web searches (at most 5) to choose the best-established
+open-source software for the task and to check exact package names and command-line usage.
 
 {target}
 
@@ -711,7 +720,14 @@ class Lab:
         resp = self._client().models.generate_content(
             model=PLAN_MODEL, contents=prompt, config=cfg
         )
-        return resp.text or "", _cost(getattr(resp, "usage_metadata", None))
+        cost = _cost(getattr(resp, "usage_metadata", None))
+        if not (resp.text or "").strip():
+            # Flash with Google Search can stop on TOO_MANY_TOOL_CALLS with only
+            # thoughts and no answer; surface the reason instead of "no JSON".
+            cand = (getattr(resp, "candidates", None) or [None])[0]
+            reason = getattr(cand, "finish_reason", None)
+            raise EmptyReply(getattr(reason, "name", None) or str(reason), cost)
+        return resp.text, cost
 
     def target(self, name: str | None = None) -> SlurmSSHTarget | None:
         if name and name in self.targets:
@@ -894,11 +910,27 @@ class Lab:
                     else ""
                 ),
             )
-            reply, cost = self._ask(prompt, search=True)
+            no_search = ""
+            try:
+                reply, cost = self._ask(prompt, search=True)
+            except EmptyReply as e:
+                self._add_cost(run_id, e.cost)
+                self._update(
+                    run_id, stage="Web search stopped early; planning without it"
+                )
+                no_search = (
+                    f"Planned without web search (search stopped: {e.finish}); "
+                    "check package names and flags."
+                )
+                reply, cost = self._ask(prompt, search=False)
             self._add_cost(run_id, cost)
             plan = extract_json(reply)
             if not isinstance(plan, dict):
                 raise ValueError("plan is not a JSON object")
+            if no_search:
+                plan["caveats"] = " ".join(
+                    x for x in (no_search, str(plan.get("caveats") or "")) if x
+                )
             if not plan.get("computable", True):
                 self._update(
                     run_id,

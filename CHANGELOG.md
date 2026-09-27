@@ -7,6 +7,16 @@ releases.
 
 ## [Unreleased]
 
+## [0.19.3] - 2026-09-26
+
+### Fixed
+- Lab planning could fail with "no JSON in model reply". With Google Search on,
+  `gemini-3.8-flash` sometimes stops with `TOO_MANY_TOOL_CALLS` after thinking and
+  returns no text (reproduced 3 of 3 times on run #14's input). The plan prompt now caps
+  searches at 5 (3 of 3 plans then succeeded). If a search reply is still empty, the
+  plan is written once more without search and its caveats say so. An empty model
+  reply now shows its finish reason instead of "no JSON in model reply".
+
 ## [0.19.2] - 2026-09-26
 
 ### Fixed
