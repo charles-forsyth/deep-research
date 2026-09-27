@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.20.1 (package `deepresearch`) |
+| Applies to | deep-research v0.20.2 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1253,6 +1253,14 @@ about $0.02.)
   with control characters allowed, then with every backslash that does not start a valid
   JSON escape doubled (valid escapes such as `\\`, `\"`, `\n`, `\u00b0` are kept). The plan
   prompt also asks for valid escaping.
+- Pre-flight checks that modules work, not only that they exist (run #21 named
+  `python/3.12` + `py-numpy`/`py-scipy`/`py-pandas`, all real modules that could never
+  import together). The catalog's `module_health` comes from the cluster's
+  `tests/ursa-module-smoke`, which loads every module and starts its programs or imports
+  its Python package; `validate_plan` warns on any module listed as broken, on a bare
+  `python` or `py-*` module, on two Python environment modules, and on a Python module
+  mixed with a conda env. `describe_full` gives the planner the broken list; the catalog
+  rules say to load exactly one of `python-sci` (CPU science) or `python-ml` (PyTorch).
 - `Lab` and `Features` each hold one `genai.Client`, created under a lock. Without the
   lock, two plans started together each built a client and the one that lost was
   garbage-collected mid-request ("Cannot send a request, as the client has been

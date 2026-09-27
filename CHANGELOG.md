@@ -7,6 +7,19 @@ releases.
 
 ## [Unreleased]
 
+## [0.20.2] - 2026-09-27
+
+### Fixed
+- Lab pre-flight now catches plans that name real modules which cannot work together or
+  cannot run. Run #21 loaded `python/3.12` + `py-numpy`/`py-scipy`/`py-pandas`: every name
+  existed, but the py-* modules were built for a different Python and would have died with
+  "No module named numpy". New warnings: a module the cluster's smoke test marked broken
+  (catalog `module_health.broken`), a bare `python` or `py-*` module, two Python
+  environment modules at once, and a Python environment module mixed with a conda env.
+- The planner is told which modules are broken (describe_full) and, through the catalog
+  rules, to use exactly one Python environment (python-sci for CPU science, python-ml for
+  PyTorch/GPU) or conda.
+
 ## [0.20.1] - 2026-09-27
 
 ### Fixed
