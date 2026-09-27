@@ -76,6 +76,36 @@ def test_service_env_prefers_user_file_over_folder_env(tmp_path, monkeypatch):
     assert env["SHELL_SET"] == "from-shell"
 
 
+def test_cli_prefers_user_file_over_folder_env(tmp_path, monkeypatch):
+    """A stale key in ./.env (common in project folders) must not beat auth login."""
+    from deepresearch.core import config
+
+    user = tmp_path / "user.env"
+    user.write_text("GEMINI_API_KEY=user-key\n")
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    (folder / ".env").write_text("GEMINI_API_KEY=stale\nDR_FOLDER_ONLY=y\n")
+    monkeypatch.setattr(config, "user_config_path", str(user))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("DR_FOLDER_ONLY", raising=False)
+    monkeypatch.chdir(folder)
+    config.load_env_files()
+    assert config.os.environ["GEMINI_API_KEY"] == "user-key"
+    assert config.os.environ["DR_FOLDER_ONLY"] == "y"  # folder still fills gaps
+
+
+def test_cli_shell_export_beats_both_files(tmp_path, monkeypatch):
+    from deepresearch.core import config
+
+    user = tmp_path / "user.env"
+    user.write_text("GEMINI_API_KEY=user-key\n")
+    monkeypatch.setattr(config, "user_config_path", str(user))
+    monkeypatch.setenv("GEMINI_API_KEY", "exported")
+    monkeypatch.chdir(tmp_path)
+    config.load_env_files()
+    assert config.os.environ["GEMINI_API_KEY"] == "exported"
+
+
 def test_service_env_keeps_real_shell_export(tmp_path, monkeypatch):
     from deepresearch.core import config
 
