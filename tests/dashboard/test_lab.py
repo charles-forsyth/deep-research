@@ -198,6 +198,42 @@ def test_bad_model_reply_fails_planning(lab):
     assert lab.get(run["id"])["status"] == "plan_failed"
 
 
+def test_empty_search_reply_falls_back_to_plan_without_search(lab):
+    # Flash + Google Search can stop on TOO_MANY_TOOL_CALLS with no text (run #14).
+    calls = []
+
+    def ask(prompt, search):
+        calls.append(search)
+        if search:
+            raise labm.EmptyReply("TOO_MANY_TOOL_CALLS", 0.013)
+        return json.dumps(PLAN), 0.07
+
+    lab._ask = ask
+    run = lab.create(7, "document", "x")
+    lab.make_plan(run["id"], "t")
+    run = lab.get(run["id"])
+    assert calls == [True, False]
+    assert run["status"] == "draft"
+    assert run["ai_cost_usd"] == pytest.approx(0.083)
+    assert run["plan"]["caveats"].startswith("Planned without web search")
+    assert "TOO_MANY_TOOL_CALLS" in run["plan"]["caveats"]
+
+
+def test_ask_raises_empty_reply_with_finish_reason(lab):
+    class Resp:
+        text = None
+        usage_metadata = None
+        candidates = [type("C", (), {"finish_reason": type("F", (), {"name": "X"})})]
+
+    class Models:
+        def generate_content(self, **kw):
+            return Resp()
+
+    lab._genai = type("G", (), {"models": Models()})()
+    with pytest.raises(labm.EmptyReply, match="finish reason: X"):
+        Lab._ask(lab, "p", search=False)
+
+
 def test_only_drafts_submit_and_cancel_calls_scancel(lab):
     lab.replies.append(json.dumps(PLAN))
     run = lab.create(7, "document", "x")

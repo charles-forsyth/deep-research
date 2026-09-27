@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.19.2 (package `deepresearch`) |
+| Applies to | deep-research v0.19.3 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1210,6 +1210,13 @@ about $0.02.)
 - The watcher lives in the dashboard process. If the dashboard is stopped, jobs keep
   running on the cluster and are picked up when it starts again (checked on start).
 - Runs are fetched once; a run stuck in `fetching` or `analyzing` retries that step.
+- Planning with Google Search can come back with no text: `gemini-3.8-flash` sometimes
+  stops with finish reason `TOO_MANY_TOOL_CALLS` after thinking but before answering
+  (run #14). The plan prompt caps searches at 5. If a search reply is still empty,
+  `_ask` raises `EmptyReply` with the finish reason, and `make_plan` plans once more
+  without search and puts "Planned without web search (...)" at the front of the
+  plan's caveats, so the reviewer knows to check package names and flags. An empty reply
+  from any other call fails with its finish reason, not "no JSON in model reply".
 
 ### 20.7 Tests
 
@@ -1239,3 +1246,4 @@ are listed in the v0.19.0 changelog.
 | 2026-09-26 | v0.19.0 | Lab runs (section 20); `lab_runs`, `lab_suggestions` tables. |
 | 2026-09-26 | v0.19.1 | `gemini-3.8-flash` for all general model calls (12.1, 13.1, 20.1). |
 | 2026-09-26 | v0.19.2 | Header version; Lab calls in 13.1; section 17 intro; Flash cost figures in 20.5. |
+| 2026-09-26 | v0.19.3 | Empty search replies during planning: search cap and fallback (20.6). |
