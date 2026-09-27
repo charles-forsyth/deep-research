@@ -28,8 +28,8 @@ from typing import Any, Callable
 
 PLAN_MODEL = "gemini-3.8-flash"
 # gemini-3.8-flash list prices, USD per 1M tokens (thinking billed as output).
-PRO_IN_1M = 0.75
-PRO_OUT_1M = 3.75
+FLASH_IN_1M = 0.75
+FLASH_OUT_1M = 3.75
 SEARCH_PER_1K = 14.00
 
 STATES = (
@@ -73,7 +73,7 @@ def _cost(usage) -> float | None:
         getattr(usage, "thoughts_token_count", 0) or 0
     )
     tool = getattr(usage, "tool_use_prompt_token_count", 0) or 0
-    return round((inp + tool) / 1e6 * PRO_IN_1M + out / 1e6 * PRO_OUT_1M, 4)
+    return round((inp + tool) / 1e6 * FLASH_IN_1M + out / 1e6 * FLASH_OUT_1M, 4)
 
 
 def extract_json(text: str) -> Any:

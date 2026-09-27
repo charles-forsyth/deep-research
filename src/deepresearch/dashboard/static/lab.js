@@ -31,7 +31,7 @@ const LAB = {
         <button class="btn small primary" data-l="doc">\u2697 Lab run on this report</button>
         <span class="dim" style="font-size:11.5px">or select a passage and choose <b>Lab run</b></span>
       </div>
-      <div class="lab-sug">${sug ? this.sugHtml(sug) : `<div class="lab-sug-empty"><button class="btn small" data-l="sug">Suggest computations for this report</button> <span class="dim" style="font-size:11px">Gemini reads the report and proposes up to 3 runnable jobs (about 5 cents)</span></div>`}</div>
+      <div class="lab-sug">${sug ? this.sugHtml(sug) : `<div class="lab-sug-empty"><button class="btn small" data-l="sug">Suggest computations for this report</button> <span class="dim" style="font-size:11px">Gemini reads the report and proposes up to 3 runnable jobs (about a cent)</span></div>`}</div>
       <div class="lab-runs">${data.runs.map((r) => this.runHtml(r)).join("")}</div>`;
     body.querySelector('[data-l="doc"]').onclick = () => this.startDialog(s, { scope: "document" });
     body.querySelector('[data-l="sug"]')?.addEventListener("click", (e) => this.loadSuggestions(el, s, e.target));
@@ -213,7 +213,7 @@ const LAB = {
       ${scope === "selection" ? `<blockquote class="lab-quote">${esc(clip(opts.selection, 700))}</blockquote>` : ""}
       <div class="field" style="margin-top:10px"><label>What should it compute? <span class="dim">(optional)</span></label>
         <textarea id="lab-req" rows="3" placeholder="e.g. verify the scaling claim with a real benchmark; keep it under an hour">${esc(opts.request || "")}</textarea></div>
-      <div class="estimate"><span>PLANNING <b>~$0.10-0.20</b></span><span class="dim">Gemini 3.1 Pro + Google Search, 1-2 min</span></div>
+      <div class="estimate"><span>PLANNING <b>~$0.10</b></span><span class="dim">Gemini 3.8 Flash + Google Search, 1-2 min</span></div>
       <div class="acts"><button class="btn" data-x="0">Cancel</button><button class="btn primary" data-x="1">Write the plan</button></div>`;
     $("#modal-back").hidden = false;
     const close = () => ($("#modal-back").hidden = true);
