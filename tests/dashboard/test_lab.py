@@ -1012,3 +1012,39 @@ def test_sbatch_sources_site_header_only_from_catalog(tmp_path, monkeypatch):
     bad.load_catalog(tmp_path / "e")
     evil_sb = build_sbatch(3, PLAN, bad)
     assert "job-header" not in evil_sb and "/x; rm" not in evil_sb
+
+
+def test_extract_json_repairs_unescaped_backslashes_in_scripts():
+    # run #21: a plan whose script held regex/LaTeX backslashes failed with
+    # "Invalid \\escape" and the whole plan was lost
+    reply = (
+        "```json\n"
+        '{"title": "eclipse", "script": "grep -E \'\\d+\' f\\nsed \'s/\\(a\\)/b/\'", '
+        '"good": "already \\\\d fine", "quote": "say \\"hi\\"", "deg": "\\u00b0", '
+        '"note": "angle \\alpha"}\n```'
+    )
+    d = extract_json(reply)
+    assert d["script"] == "grep -E '\\d+' f\nsed 's/\\(a\\)/b/'"
+    assert d["good"] == "already \\d fine"  # a correct escape is not doubled
+    assert d["quote"] == 'say "hi"' and d["deg"] == "\u00b0"
+    assert d["note"] == "angle \\alpha"
+
+
+def test_extract_json_allows_raw_control_characters():
+    d = extract_json('{"script": "line1\nline2\tx"}'.replace("\\n", "\n"))
+    assert d["script"].startswith("line1")
+    raw = '{"script": "a\nb\tc"}'.replace("\\n", "\n").replace("\\t", "\t")
+    assert extract_json(raw)["script"] == "a\nb\tc"
+
+
+def test_make_plan_survives_bad_escapes(lab):
+    bad = json.dumps(PLAN).replace(
+        "print(1)", "import re; print(re.findall(r'\\\\d', 'a1'))"
+    )
+    bad = bad.replace("\\\\d", "\\d")  # the model's unescaped backslash
+    lab.replies.append("```json\n" + bad + "\n```")
+    run = lab.create(1, "selection", "eclipse")
+    lab.make_plan(run["id"], "t")
+    got = lab.get(run["id"])
+    assert got["status"] == "draft", got.get("error")
+    assert "re.findall(r'\\d'" in got["plan"]["script"]

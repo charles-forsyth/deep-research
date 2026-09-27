@@ -99,12 +99,39 @@ def _search_count(resp) -> int:
     return n
 
 
+# A backslash sequence inside a JSON string: group 1 = valid escape (kept as is),
+# otherwise an invalid one (its backslash gets doubled). Matching valid pairs first
+# keeps an already-correct `\\\\d` from being split into `\\` + `\\d`.
+_ESCAPE = re.compile(r'\\(\\|["/bfnrt]|u[0-9a-fA-F]{4})|\\')
+
+
+def _loads_lenient(body: str) -> Any:
+    """json.loads that survives what models put inside long string values.
+
+    Plans embed whole bash/Python scripts in a JSON string. Models often leave regex or
+    LaTeX backslashes unescaped (`\\d`, `\\alpha`, `\\(`) and sometimes raw newlines or
+    tabs; strict JSON rejects both ("Invalid \\escape", "Invalid control character").
+    Try strict first, then allow control characters, then double every backslash that
+    does not start a valid JSON escape, which is what the model meant.
+    """
+    try:
+        return json.loads(body)
+    except ValueError:
+        pass
+    try:
+        return json.loads(body, strict=False)
+    except ValueError:
+        pass
+    fixed = _ESCAPE.sub(lambda m: m.group(0) if m.group(1) else "\\\\", body)
+    return json.loads(fixed, strict=False)
+
+
 def extract_json(text: str) -> Any:
-    """First JSON object or array in a model reply (fenced or bare)."""
+    """First JSON object or array in a model reply (fenced or bare), parsed leniently."""
     m = re.search(r"```(?:json)?\s*\n(.*?)\n```", text or "", re.S)
     body = m.group(1) if m else (text or "")
     try:
-        return json.loads(body)
+        return _loads_lenient(body)
     except ValueError:
         pass
     start = min([i for i in (body.find("{"), body.find("[")) if i >= 0], default=-1)
@@ -113,7 +140,7 @@ def extract_json(text: str) -> Any:
     opener = body[start]
     closer = "}" if opener == "{" else "]"
     end = body.rfind(closer)
-    return json.loads(body[start : end + 1])
+    return _loads_lenient(body[start : end + 1])
 
 
 # --------------------------------------------------------------------------- targets
@@ -776,7 +803,8 @@ Requirements for the job:
   installation too (a first pip install of PyTorch-based packages can take 5-10 minutes;
   environments are cached for later runs), so leave headroom.
 
-Return JSON only, in a ```json block, with exactly these keys:
+Return JSON only, in a ```json block, with exactly these keys. It must be valid JSON: inside
+strings write every backslash as \\\\ (regexes, LaTeX, Windows paths) and line breaks as \\n.
 {{"computable": true or false,
 "title": "short name",
 "question": "the precise question this job answers",
