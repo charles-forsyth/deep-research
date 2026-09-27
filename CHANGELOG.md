@@ -7,6 +7,17 @@ releases.
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-09-26
+
+### Fixed
+- The Lab "New lab run" dialog still said "Gemini 3.1 Pro" and "~$0.10-0.20"; it now
+  says Gemini 3.8 Flash and ~$0.10. The suggestions hint now says about a cent (was
+  about 5 cents).
+
+### Docs
+- `docs/SPEC.md` brought up to v0.19.2: header version, Lab model calls listed in 13.1,
+  section 17 intro, and Flash cost figures for Lab runs (20.5).
+
 ## [0.19.1] - 2026-09-26
 
 ### Changed

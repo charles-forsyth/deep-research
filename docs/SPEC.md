@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.18.0 (package `deepresearch`) |
+| Applies to | deep-research v0.19.2 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -833,6 +833,7 @@ environment, so it follows the CLI order.
 | Search answer | `models.generate_content` | `gemini-3.8-flash` | search (CLI, dashboard) |
 | Embeddings | `models.embed_content` | `gemini-embedding-001` | search backfill and query |
 | Compare summary, briefs, audio summary script | `models.generate_content` | `gemini-3.8-flash` | dashboard |
+| Lab suggestions, plan, results note | `models.generate_content` (suggestions and plan with Google Search) | `gemini-3.8-flash` | dashboard Lab runs (section 20) |
 | Text to speech | `models.generate_content` (AUDIO) | `gemini-3.8-flash-tts` | dashboard audio export |
 | Usage | `interactions.get` | none | dashboard, opening a finished session |
 | Cancel | `interactions.cancel` | none | dashboard cancel |
@@ -1022,8 +1023,8 @@ Before tagging a release that touches the affected area:
 
 ## 17. Known gaps and limitations
 
-Real current behaviour as of v0.17.5, found by reading the source and, where noted,
-confirmed by test. Each is a candidate issue.
+Real current behaviour, first recorded against v0.17.5 by reading the source and, where
+noted, confirmed by test; items fixed since are marked with the version. Each is a candidate issue.
 
 | ID | Area | Gap | Effect |
 |---|---|---|---|
@@ -1196,8 +1197,10 @@ The estimate before submit is `partition hourly price x nodes x time limit`, fro
 partition prices in the target config (Google on-demand list prices, us-central1, taken
 from the Cloud Billing catalog on 2026-09-26). It is an upper bound: jobs usually end
 early, and the node's ~90 s boot is not billed to the job. AI cost (suggestions, plan,
-write-up) is computed from `usage_metadata` and shown on the run. Typical figures from
-testing: suggestions $0.05-0.08, a plan $0.10-0.30, a write-up about $0.02.
+write-up) is computed from `usage_metadata` and shown on the run. Measured on
+`gemini-3.8-flash` (v0.19.1): suggestions about $0.01, a plan about $0.10. (On
+`gemini-3.1-pro-preview` in v0.19.0 they were $0.04-0.05 and $0.10-0.30, and a write-up
+about $0.02.)
 
 ### 20.6 Reliability
 
@@ -1234,3 +1237,5 @@ are listed in the v0.19.0 changelog.
 | 2026-09-26 | v0.17.5 | First complete specification, written from the source. |
 | 2026-09-26 | v0.18.0 | K2, K3, K5 fixed; task limit (6.4a); REQ-DASH-12; host and origin checks. |
 | 2026-09-26 | v0.19.0 | Lab runs (section 20); `lab_runs`, `lab_suggestions` tables. |
+| 2026-09-26 | v0.19.1 | `gemini-3.8-flash` for all general model calls (12.1, 13.1, 20.1). |
+| 2026-09-26 | v0.19.2 | Header version; Lab calls in 13.1; section 17 intro; Flash cost figures in 20.5. |
