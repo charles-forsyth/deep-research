@@ -1031,8 +1031,10 @@ Requirements for the job:
   energies...) and unique identifiers; for generated inputs, that each input file exists
   and is non-empty; for benchmarks, that the server or model answers before timing starts.
   Print what was checked, e.g. "inputs OK: 100 sequences, years 2015-2024, all names
-  unique". Keep it to seconds and to things that make the result meaningless if wrong;
-  do not check the science.
+  unique". Check the files the job actually got (after the download), not whether a
+  website is reachable. Keep it to seconds and to things that make the result
+  meaningless if wrong; do not check the science. Set thresholds loosely (for example at
+  least half the requested records) so a check does not stop a run that would have worked.
 - Use $SLURM_CPUS_ON_NODE for thread counts. For MPI codes launch with `srun` (Slurm
   starts one rank per task across all nodes; set resources.nodes and optionally
   resources.ntasks_per_node). Temporary files go to $TMPDIR (private, node-local).
