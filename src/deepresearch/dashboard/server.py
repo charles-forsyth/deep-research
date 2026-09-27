@@ -391,7 +391,8 @@ class Api:
             try:
                 from google import genai
 
-                genai.Client(api_key=self._config().api_key).interactions.cancel(iid)
+                client = genai.Client(api_key=self._config().api_key)
+                client.interactions.cancel(iid)
                 notes.append("cloud interaction cancelled")
             except Exception as e:
                 notes.append(f"cloud cancel failed: {e}")

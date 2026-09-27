@@ -234,6 +234,31 @@ def test_replan_retries_only_failed_plans(lab):
         lab.replan(run["id"])  # a draft is not retried
 
 
+def test_client_is_created_once_across_threads(lab, monkeypatch):
+    # Two plans starting together used to build two clients; the loser was garbage-
+    # collected mid-request ("Cannot send a request, as the client has been closed").
+    import time as _t
+
+    from google import genai
+
+    made = []
+
+    class SlowClient:
+        def __init__(self, **kw):
+            _t.sleep(0.05)
+            made.append(self)
+
+    monkeypatch.setattr(genai, "Client", SlowClient)
+    lab._config = lambda: type("C", (), {"api_key": "k"})()
+    got = []
+    ts = [threading.Thread(target=lambda: got.append(lab._client())) for _ in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert len(made) == 1 and all(g is made[0] for g in got)
+
+
 def test_ask_raises_empty_reply_with_finish_reason(lab):
     class Resp:
         text = None
