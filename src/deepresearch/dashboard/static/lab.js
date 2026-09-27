@@ -16,10 +16,13 @@ const LAB = {
   },
 
   async refresh(el, s) {
+    if (!el) return; // the panel is not on screen (report still running, other tab)
     let data;
     try { data = await api(`/api/sessions/${s.id}/lab`); }
     catch (e) { el.querySelector(".lab-body").innerHTML = `<div class="dim">${esc(e.message)}</div>`; return; }
-    if (LAB.sid !== s.id) return;
+    // A slow reply can land after the panel was re-rendered; wiring the detached copy
+    // would cancel the live panel's poll timers and freeze its cards.
+    if (LAB.sid !== s.id || !document.body.contains(el)) return;
     const body = el.querySelector(".lab-body");
     if (!data.configured) {
       body.innerHTML = `<div class="dim">No compute target configured. Add <span class="mono">lab_targets.json</span> to the settings folder.</div>`;
@@ -78,7 +81,7 @@ const LAB = {
         <span class="status-badge ${esc(badge)}">${esc(badge)}</span>
         <b>#${r.id} ${esc(p.title || (r.scope === "selection" ? "Selected passage" : "Whole report"))}</b>
         <span class="grow"></span>
-        ${r.job_id ? `<span class="mono dim">job ${esc(r.job_id)}${r.node ? " \u00b7 " + esc(r.node) : ""}${r.elapsed ? " \u00b7 " + esc(r.elapsed) : ""}</span>` : ""}
+        ${r.job_id ? `<span class="mono dim lab-meta">${this.metaText(r)}</span>` : ""}
       </div>
       ${live || r.status === "draft" ? `<div class="lab-stage">${live ? '<span class="spinner"></span>' : ""}<span>${esc(r.stage || r.status)}</span></div>` : ""}
       ${this.stepsHtml(r)}
@@ -105,6 +108,8 @@ const LAB = {
       <div class="log lab-log" hidden></div>
     </div>`;
   },
+
+  metaText(r) { return esc(`job ${r.job_id}${r.node ? " \u00b7 " + r.node : ""}${r.elapsed ? " \u00b7 " + r.elapsed : ""}`); },
 
   stepsHtml(r) {
     const order = ["planning", "draft", "queued", "running", "fetching", "analyzing", "completed"];
@@ -165,7 +170,11 @@ const LAB = {
       const card = el.querySelector(`.lab-run[data-run="${r.id}"]`);
       if (!card) return;
       const logOpen = !card.querySelector(".lab-log").hidden;
-      if (n.status !== r.status || n.stage !== r.stage || n.elapsed !== r.elapsed || n.node !== r.node) {
+      if (n.status === r.status && n.stage === r.stage && (n.elapsed !== r.elapsed || n.node !== r.node)) {
+        // Only the clock or node moved: update that line, keep open log and details.
+        const meta = card.querySelector(".lab-meta");
+        if (meta) meta.innerHTML = this.metaText(n);
+      } else if (n.status !== r.status || n.stage !== r.stage) {
         const tmp = document.createElement("div"); tmp.innerHTML = this.runHtml(n);
         card.replaceWith(tmp.firstElementChild);
         this.wire(el, s, n);
@@ -218,7 +227,7 @@ const LAB = {
       ${scope === "selection" ? `<blockquote class="lab-quote">${esc(clip(opts.selection, 700))}</blockquote>` : ""}
       <div class="field" style="margin-top:10px"><label>What should it compute? <span class="dim">(optional)</span></label>
         <textarea id="lab-req" rows="3" placeholder="e.g. verify the scaling claim with a real benchmark; keep it under an hour">${esc(opts.request || "")}</textarea></div>
-      <div class="estimate"><span>PLANNING <b>~$0.10</b></span><span class="dim">Gemini 3.8 Flash + Google Search, 1-2 min</span></div>
+      <div class="estimate"><span>PLANNING <b>~$0.10\u20130.30</b></span><span class="dim">Gemini Flash + Google Search ($14 per 1,000 searches), 1-2 min</span></div>
       <div class="acts"><button class="btn" data-x="0">Cancel</button><button class="btn primary" data-x="1">Write the plan</button></div>`;
     $("#modal-back").hidden = false;
     const close = () => ($("#modal-back").hidden = true);

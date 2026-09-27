@@ -368,6 +368,14 @@ class Api:
         ids = [int(sid)]
         if (query.get("recursive") or ["0"])[0] == "1":
             ids += self.store.descendants(int(sid))
+        live = self.lab.active_for(ids)
+        if live:
+            # Deleting would drop the only record of a job still using the cluster.
+            raise ApiError(
+                409,
+                "Cancel the lab runs still on the cluster first: "
+                + ", ".join(f"#{r['id']} ({r['status']})" for r in live),
+            )
         for i in ids:
             self.sessions.delete_session(str(i))
         self.store.purge_session_workspace(ids)
@@ -386,16 +394,28 @@ class Api:
         if s["status"] not in ("running",):
             raise ApiError(409, f"Session is {s['status']}, not running")
         notes = []
-        iid = s.get("interaction_id") or ""
-        if iid and not iid.startswith("pending"):
+        # A recursive run starts each child as its own background task at Google;
+        # killing the local process does not stop them, so cancel every one.
+        rows = [s] + [
+            dict(r)
+            for c in self.store.descendants(int(sid))
+            if (r := self.sessions.get_session(str(c))) and r["status"] == "running"
+        ]
+        client = None
+        for row in rows:
+            iid = row.get("interaction_id") or ""
+            if not iid or iid.startswith("pending"):
+                continue
+            label = "cloud interaction" if row is s else f"child #{row['id']}"
             try:
-                from google import genai
+                if client is None:
+                    from google import genai
 
-                client = genai.Client(api_key=self._config().api_key)
+                    client = genai.Client(api_key=self._config().api_key)
                 client.interactions.cancel(iid)
-                notes.append("cloud interaction cancelled")
+                notes.append(f"{label} cancelled")
             except Exception as e:
-                notes.append(f"cloud cancel failed: {e}")
+                notes.append(f"{label} cancel failed: {e}")
         pid = s.get("pid")
         if pid:
             try:
@@ -405,7 +425,8 @@ class Api:
                 notes.append("process already gone")
             except Exception as e:
                 notes.append(f"kill failed: {e}")
-        self.store.set_status(int(sid), "cancelled")
+        for row in rows:
+            self.store.set_status(int(row["id"]), "cancelled")
         return {"status": "cancelled", "notes": notes}
 
     def followup(self, sid, query, body):

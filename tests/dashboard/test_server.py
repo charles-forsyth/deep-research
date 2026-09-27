@@ -363,3 +363,31 @@ def test_allowed_hosts_env(monkeypatch):
     monkeypatch.setenv("DR_ALLOWED_HOSTS", "research.example.org, other.example")
     assert srv.host_allowed("research.example.org:443")
     assert not srv.host_allowed("")
+
+
+def test_cancel_also_cancels_running_child_tasks(app, monkeypatch):
+    """A recursive run's children are separate background tasks at Google."""
+    import sys
+    import types
+    from unittest.mock import MagicMock
+
+    api = app["api"]
+    root = api.sessions.create_session("iid-root", "root question", pid=None)
+    kid = api.sessions.create_session("iid-kid", "child", parent_id=root, depth=2)
+    done = api.sessions.create_session("iid-done", "child 2", parent_id=root, depth=2)
+    api.sessions.update_session("iid-done", "completed", "report")
+    for iid in ("iid-root", "iid-kid"):
+        api.sessions.update_session(iid, "running")
+    client = MagicMock()
+    fake_genai = types.ModuleType("google.genai")
+    fake_genai.Client = lambda **kw: client  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setattr(sys.modules["google"], "genai", fake_genai, raising=False)
+    monkeypatch.setattr(api, "_config", lambda: types.SimpleNamespace(api_key="k"))
+
+    status, r = app["call"]("POST", f"/api/sessions/{root}/cancel")
+    assert status == 200
+    cancelled = [c.args[0] for c in client.interactions.cancel.call_args_list]
+    assert cancelled == ["iid-root", "iid-kid"]  # not the finished child
+    assert api.sessions.get_session(str(kid))["status"] == "cancelled"
+    assert api.sessions.get_session(str(done))["status"] == "completed"

@@ -7,6 +7,50 @@ releases.
 
 ## [Unreleased]
 
+## [0.19.7] - 2026-09-26
+
+Fixes from a bug-finding review of the Lab and the research agent.
+
+### Fixed
+- Cancelling a lab run could be undone. A cancel while the plan was being written came
+  back as a draft; a cancel while the job was running could be overwritten by the
+  watcher, which then paid for a write-up and marked the run completed. Background
+  writes now apply only while the run is still in the state they expect.
+- Cancelling a run after its Slurm job had ended (fetching or writing up) returned an
+  error or was overwritten. It now cancels cleanly and skips the write-up.
+- Deleting a report deleted its lab runs even while their Slurm jobs were queued or
+  running, leaving jobs on the cluster with nothing tracking them. It now refuses until
+  they are cancelled, and the dashboard shows why.
+- Cancelling a multi-level (recursive) session cancelled only the root task at Google;
+  every running child task kept running and billing. All running children are now
+  cancelled too.
+- Two different package lists could share one cached software environment (the folder
+  name was cut at 60 characters), so a job could run without packages it asked for.
+  The name now ends in a hash of the packages, channels and pip flags, and the build
+  runs under a lock so two jobs never build the same environment at once.
+- The compute estimate misread Slurm time limits: `30:00` (30 minutes) was costed as
+  30 hours and `1-12` (36 hours) as about 24.
+- A run card could freeze (and never send its completion notice) when a slow request
+  finished after the Lab panel had been redrawn. Stale replies are now ignored.
+- A running card redrew every few seconds as the elapsed time changed, closing an open
+  "Selected passage" and reloading an open log from the start. Now only the clock
+  line updates.
+- A results fetch that kept failing was retried forever and blocked every other run.
+  After 5 failed attempts the run is marked failed (the outputs stay on the cluster).
+- A streamed research task that ended failed, incomplete or over budget with partial
+  text was saved as completed; one that completed with no text stayed "running" and
+  later showed as crashed. Both are now recorded as failed, with any partial text kept.
+- `DR_TASK_TIMEOUT_MIN` was only checked when a stream reconnected, never while one
+  stayed connected.
+
+### Changed
+- Lab AI cost now includes Google Search queries ($14 per 1,000, a worst case since the
+  free monthly quota is shared), bills cached input at the cached rate, and is reported
+  even when a suggestions reply cannot be parsed or a write-up comes back empty. Briefs
+  now count thinking tokens. The planning label reads ~$0.10-0.30.
+- `GEMINI_FOLLOWUP_MODEL` now really overrides the model for Lab suggestions, plans and
+  write-ups and for dashboard briefs, comparisons and audio scripts, as 0.19.1 said.
+
 ## [0.19.6] - 2026-09-26
 
 ### Fixed
