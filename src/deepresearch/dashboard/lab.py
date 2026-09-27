@@ -528,6 +528,12 @@ class SlurmSSHTarget:
                 f"Modules after `{t.get('requires', 'module load ' + mpi)}`: "
                 + ", ".join(t.get("modules") or [])
             )
+        broken = sorted((cat.get("module_health") or {}).get("broken") or {})
+        if broken:
+            out.append(
+                "Broken modules (installed but fail to run; never load these, use "
+                "conda instead): " + ", ".join(broken)
+            )
         out.append("Tested recipes (use these load lines exactly):")
         for r in cat.get("recipes") or []:
             load = (
@@ -658,6 +664,34 @@ def validate_plan(target: SlurmSSHTarget | None, plan: dict) -> list[str]:
                     f"Module '{m}' needs `module load {needs[m]}` before it "
                     f"(add '{needs[m]}' earlier in install.modules)"
                 )
+        # modules the cluster's smoke test found broken (load but cannot run)
+        broken = ((target.catalog or {}).get("module_health") or {}).get("broken") or {}
+        for m in mods:
+            hit = broken.get(m) or next(
+                (v for k, v in broken.items() if k.split("/")[0] == m), None
+            )
+            if hit:
+                warns.append(
+                    f"Module '{m}' is broken on the cluster ({hit[:120]}); use a "
+                    "Pixi/conda environment instead"
+                )
+        # Python stacks do not mix: one environment module, never py-* or bare python
+        pyenv = [m for m in mods if m.split("/")[0] in ("python-sci", "python-ml")]
+        stray = [m for m in mods if m.split("/")[0] == "python" or m.startswith("py-")]
+        if len(pyenv) > 1:
+            warns.append(
+                "Load only one Python environment module (" + ", ".join(pyenv) + ")"
+            )
+        if stray:
+            warns.append(
+                "Python modules " + ", ".join(stray) + " are not a working stack; load "
+                "python-sci (CPU science) or python-ml (PyTorch/GPU), or use conda"
+            )
+        if pyenv and (plan.get("install") or {}).get("conda"):
+            warns.append(
+                f"{pyenv[0]} and a conda environment both provide Python; pick one "
+                "(extra packages on top of the module: pip, which builds a venv)"
+            )
         # installing something that is already a module wastes minutes
         pkgs = [
             re.split(r"[=<>!\[]", str(x))[0].lower()

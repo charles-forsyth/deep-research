@@ -1048,3 +1048,55 @@ def test_make_plan_survives_bad_escapes(lab):
     got = lab.get(run["id"])
     assert got["status"] == "draft", got.get("error")
     assert "re.findall(r'\\d'" in got["plan"]["script"]
+
+
+def _py_target():
+    tgt = labm.SlurmSSHTarget(
+        {"name": "u", "ssh_host": "h", "partitions": {"standard": {}}}
+    )
+    tgt.catalog = {
+        "modules": {
+            "core": [
+                "python-sci/2026.09",
+                "python-ml/2026.09",
+                "busco/6.1.0",
+                "octave/11.1.0",
+            ],
+            "mpi_dependent": {},
+        },
+        "module_health": {
+            "broken": {"snakemake/9.14.0": "BROKEN snakemake: No module named x"}
+        },
+    }
+    tgt.catalog["modules"]["core"].append("snakemake/9.14.0")
+    return tgt
+
+
+def test_validate_flags_broken_module_by_name_or_version():
+    tgt = _py_target()
+    for m in ("snakemake", "snakemake/9.14.0"):
+        w = labm.validate_plan(tgt, {"install": {"modules": [m]}})
+        assert any("broken on the cluster" in x for x in w), w
+    assert labm.validate_plan(tgt, {"install": {"modules": ["octave"]}}) == []
+
+
+def test_validate_python_stack_rules():
+    tgt = _py_target()
+    ok = labm.validate_plan(tgt, {"install": {"modules": ["python-sci"]}})
+    assert ok == []
+    two = labm.validate_plan(tgt, {"install": {"modules": ["python-sci", "python-ml"]}})
+    assert any("only one Python environment" in x for x in two)
+    stray = labm.validate_plan(
+        tgt, {"install": {"modules": ["python/3.12.14", "py-numpy"]}}
+    )
+    assert any("not a working stack" in x for x in stray)
+    mixed = labm.validate_plan(
+        tgt, {"install": {"modules": ["python-sci"], "conda": ["skyfield"]}}
+    )
+    assert any("both provide Python" in x for x in mixed)
+
+
+def test_describe_full_lists_broken_modules():
+    tgt = _py_target()
+    assert "Broken modules" in tgt.describe_full()
+    assert "snakemake/9.14.0" in tgt.describe_full()
