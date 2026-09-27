@@ -7,6 +7,17 @@ releases.
 
 ## [Unreleased]
 
+## [0.19.5] - 2026-09-26
+
+### Fixed
+- Two lab plans started at the same moment could fail with "Cannot send a request, as
+  the client has been closed." Each thread built its own Gemini client and the losing
+  one was garbage-collected mid-request. The Lab and the dashboard features now share
+  one client created under a lock.
+- Cancelling a running session from the dashboard never cancelled it at Google: the
+  one-line temporary client was closed before the request went out, and the note said
+  "cloud cancel failed". It now uses a named client.
+
 ## [0.19.4] - 2026-09-26
 
 ### Added

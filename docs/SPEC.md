@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.19.4 (package `deepresearch`) |
+| Applies to | deep-research v0.19.5 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1218,6 +1218,11 @@ about $0.02.)
   without search and puts "Planned without web search (...)" at the front of the
   plan's caveats, so the reviewer knows to check package names and flags. An empty reply
   from any other call fails with its finish reason, not "no JSON in model reply".
+- `Lab` and `Features` each hold one `genai.Client`, created under a lock. Without the
+  lock, two plans started together each built a client and the one that lost was
+  garbage-collected mid-request ("Cannot send a request, as the client has been
+  closed", run #14 on retry). Never call a method on an unnamed temporary
+  (`genai.Client(...).x()`): it is closed before the request is sent.
 
 ### 20.7 Tests
 
@@ -1249,3 +1254,4 @@ are listed in the v0.19.0 changelog.
 | 2026-09-26 | v0.19.2 | Header version; Lab calls in 13.1; section 17 intro; Flash cost figures in 20.5. |
 | 2026-09-26 | v0.19.3 | Empty search replies during planning: search cap and fallback (20.6). |
 | 2026-09-26 | v0.19.4 | `POST /api/lab/{rid}/replan` and the Retry plan button (20.4). |
+| 2026-09-26 | v0.19.5 | Shared Gemini client under a lock; no temporary clients (20.6). |

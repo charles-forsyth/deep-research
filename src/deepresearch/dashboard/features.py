@@ -11,6 +11,7 @@ import math
 import re
 import sqlite3
 import subprocess
+import threading
 import wave
 from datetime import datetime
 from pathlib import Path
@@ -78,6 +79,8 @@ class Features:
         self.db_path = db_path
         self._config = config_factory
         self.audio_dir = audio_dir
+        self._genai = None
+        self._client_lock = threading.Lock()
         with self._conn() as conn:
             conn.executescript(
                 """
@@ -109,12 +112,14 @@ class Features:
 
     def _client(self):
         # One long-lived client: a temporary one is garbage-collected (and its
-        # HTTP session closed) before lazily-evaluated calls finish.
-        if getattr(self, "_genai", None) is None:
-            from google import genai
+        # HTTP session closed) before lazily-evaluated calls finish. Created under a
+        # lock so two threads cannot each build one and drop the other mid-call.
+        with self._client_lock:
+            if self._genai is None:
+                from google import genai
 
-            self._genai = genai.Client(api_key=self._config().api_key)
-        return self._genai
+                self._genai = genai.Client(api_key=self._config().api_key)
+            return self._genai
 
     # ---- actual cost --------------------------------------------------------
 

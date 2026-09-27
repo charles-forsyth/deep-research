@@ -651,6 +651,7 @@ class Lab:
         self.results_dir = state_dir / "lab"
         self.targets = targets if targets is not None else load_targets(state_dir)
         self._genai = None
+        self._client_lock = threading.Lock()
         self._watch_lock = threading.Lock()
         self._watcher: threading.Thread | None = None
         self._stop = threading.Event()
@@ -701,11 +702,16 @@ class Lab:
         return conn
 
     def _client(self):
-        if self._genai is None:
-            from google import genai
+        # One shared client, created under a lock: two planning threads racing here
+        # used to build two clients, and the loser was garbage-collected (closing its
+        # HTTP session) mid-request: "Cannot send a request, as the client has been
+        # closed."
+        with self._client_lock:
+            if self._genai is None:
+                from google import genai
 
-            self._genai = genai.Client(api_key=self._config().api_key)
-        return self._genai
+                self._genai = genai.Client(api_key=self._config().api_key)
+            return self._genai
 
     def _ask(self, prompt: str, search: bool) -> tuple[str, float | None]:
         from google.genai import types
@@ -717,7 +723,8 @@ class Lab:
             if search
             else None
         )
-        resp = self._client().models.generate_content(
+        client = self._client()  # hold a reference for the whole call
+        resp = client.models.generate_content(
             model=PLAN_MODEL, contents=prompt, config=cfg
         )
         cost = _cost(getattr(resp, "usage_metadata", None))
