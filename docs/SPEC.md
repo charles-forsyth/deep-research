@@ -1281,7 +1281,7 @@ Added in v0.20.0. The cluster publishes what it can run; the Lab reads it instea
 relying on hand-written notes that go stale (before this, the config still said driver
 550, "nothing prebuilt" and an old MPI after all three had changed).
 
-- **Source.** On Ursa Major, `ursa-catalog` (repo `ursa-major-hpc`, `tools/ursa-catalog`)
+- **Source.** On Ursa Major, `ursa-catalog` (repo `ucr-slurm-production`, `tools/ursa-catalog`)
   writes `/apps/docs/catalog.json` (schema `ursa-catalog/1`) from Slurm, Lmod and
   `/apps`; no AI, no timer. It regenerates after module refreshes and login-node setup,
   and the GPU self-test records the real driver. Keys: `summary` (module and package
