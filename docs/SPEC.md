@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.20.0 (package `deepresearch`) |
+| Applies to | deep-research v0.20.1 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1247,6 +1247,12 @@ about $0.02.)
   without search and puts "Planned without web search (...)" at the front of the
   plan's caveats, so the reviewer knows to check package names and flags. An empty reply
   from any other call fails with its finish reason, not "no JSON in model reply".
+- Plans carry whole scripts inside a JSON string, and models often leave regex or LaTeX
+  backslashes unescaped (`\d`, `\alpha`) or put raw newlines in it; strict JSON rejects
+  the entire plan ("Invalid \escape", run #21). `extract_json` parses strictly first, then
+  with control characters allowed, then with every backslash that does not start a valid
+  JSON escape doubled (valid escapes such as `\\`, `\"`, `\n`, `\u00b0` are kept). The plan
+  prompt also asks for valid escaping.
 - `Lab` and `Features` each hold one `genai.Client`, created under a lock. Without the
   lock, two plans started together each built a client and the one that lost was
   garbage-collected mid-request ("Cannot send a request, as the client has been
@@ -1325,4 +1331,5 @@ relying on hand-written notes that go stale (before this, the config still said 
 | 2026-09-26 | v0.19.4 | `POST /api/lab/{rid}/replan` and the Retry plan button (20.4). |
 | 2026-09-26 | v0.19.5 | Shared Gemini client under a lock; no temporary clients (20.6). |
 | 2026-09-26 | v0.19.6 | CLI loads the user `.env` before `./.env` (12.2, 14). |
+| 2026-09-27 | v0.20.1 | Lenient plan JSON parsing (20.6). |
 | 2026-09-27 | v0.20.0 | Cluster catalog (20.9): prompts from the live catalog, pre-flight plan check, catalog API, site job header, spot `--requeue`, `ntasks_per_node` (20.1-20.8). |

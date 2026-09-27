@@ -7,6 +7,15 @@ releases.
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-09-27
+
+### Fixed
+- A lab plan could fail with "Invalid \escape" and be lost (run #21): the model left a
+  regex or LaTeX backslash unescaped inside the job script it returns as a JSON string.
+  Plans are now parsed leniently: raw newlines and tabs are accepted, and a backslash
+  that does not start a valid JSON escape is kept as a literal backslash, while correct
+  escapes are left alone. The plan prompt also asks for valid escaping.
+
 ## [0.20.0] - 2026-09-27
 
 Lab runs now know what the cluster really has.
