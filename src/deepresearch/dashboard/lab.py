@@ -300,8 +300,12 @@ class SlurmSSHTarget:
                 info.mode = 0o755 if name.endswith((".sh", ".sbatch")) else 0o644
                 tar.addfile(info, io.BytesIO(data))
         payload = base64.b64encode(buf.getvalue())
+        # Never write into a folder another run (or another history DB) left behind:
+        # move it aside so its logs and outputs survive.
         out = self.sh(
-            f"set -e; mkdir -p {d}/outputs; cd {d}; base64 -d | tar xzf -; "
+            f"set -e; if [ -e {d}/run.sbatch ] || [ -e {d}/job.log ]; then "
+            f"mv {d} {d}.prev-$(date +%Y%m%d%H%M%S); fi; "
+            f"mkdir -p {d}/outputs; cd {d}; base64 -d | tar xzf -; "
             f"sbatch --parsable run.sbatch",
             stdin=payload,
             timeout=180,

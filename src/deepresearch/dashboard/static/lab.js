@@ -264,16 +264,19 @@ const LAB = {
       ${scope === "selection" ? `<blockquote class="lab-quote">${esc(clip(opts.selection, 700))}</blockquote>` : ""}
       <div class="field" style="margin-top:10px"><label>What should it compute? <span class="dim">(optional)</span></label>
         <textarea id="lab-req" rows="3" placeholder="e.g. verify the scaling claim with a real benchmark; keep it under an hour">${esc(opts.request || "")}</textarea></div>
+      <div class="field"><label>Data to include <span class="dim">(optional; staged read-only on the cluster, the plan reads it from $DS_NAME)</span></label>
+        <div id="lab-ds"></div></div>
       <div class="estimate"><span>PLANNING <b>~$0.10\u20130.30</b></span><span class="dim">Gemini Flash + Google Search ($14 per 1,000 searches), 1-2 min</span></div>
       <div class="acts"><button class="btn" data-x="0">Cancel</button><button class="btn primary" data-x="1">Write the plan</button></div>`;
     $("#modal-back").hidden = false;
+    const pickedSources = typeof SRC !== "undefined" ? SRC.picker($("#lab-ds"), opts.data_sources || []) : () => [];
     const close = () => ($("#modal-back").hidden = true);
     $('#modal [data-x="0"]').onclick = close;
     $("#modal-back").onclick = (e) => { if (e.target.id === "modal-back") close(); };
     $('#modal [data-x="1"]').onclick = async () => {
       const btn = $('#modal [data-x="1"]'); btn.disabled = true;
       try {
-        await api(`/api/sessions/${s.id}/lab`, { method: "POST", body: { scope, selection: opts.selection || "", request: $("#lab-req").value } });
+        await api(`/api/sessions/${s.id}/lab`, { method: "POST", body: { scope, selection: opts.selection || "", request: $("#lab-req").value, data_sources: pickedSources() } });
         close();
         toast("Planning started. Watch the Lab runs section at the end of the report.", "ok");
         const el = document.querySelector("#lab-panel");
@@ -301,7 +304,8 @@ const LAB = {
       <div class="lab-grid">
         <div><span class="label">Software</span>${(p.software || []).map((x) => `<div><b>${esc(x.name)}</b> <span class="mono dim">${esc(x.source || "")}${x.version ? " " + esc(x.version) : ""}</span><div class="dim" style="font-size:11.5px">${esc(x.why || "")}</div></div>`).join("") || '<div class="dim">none</div>'}
           <div class="mono dim" style="font-size:10.5px;margin-top:4px">${[inst.modules?.length ? "modules: " + inst.modules.join(" ") : "", inst.conda?.length ? "conda: " + inst.conda.join(" ") : "", inst.pip?.length ? "pip: " + inst.pip.join(" ") : "", inst.apptainer?.length ? "containers: " + inst.apptainer.join(" ") : ""].filter(Boolean).join(" \u00b7 ")}</div></div>
-        <div><span class="label">Inputs</span>${(p.inputs || []).map((x) => `<div style="font-size:12px">${esc(x)}</div>`).join("") || '<div class="dim">none</div>'}</div>
+        <div><span class="label">Data sources <span class="dim" style="text-transform:none;letter-spacing:0">staged read-only, read via $DS_NAME</span></span><div id="lr-ds">${(p.data_sources || []).map((n) => `<span class="filechip">${esc(n)}</span>`).join(" ") || '<div class="dim">none</div>'}</div>
+          <span class="label" style="margin-top:8px;display:block">Inputs</span>${(p.inputs || []).map((x) => `<div style="font-size:12px">${esc(x)}</div>`).join("") || '<div class="dim">none</div>'}</div>
       </div>
       <div class="lab-sec"><span class="label">Parameters</span>
         <div class="lab-params">${Object.entries(params).map(([k, v]) => { const val = typeof v === "object" ? JSON.stringify(v) : String(v); return `<label ${val.length > 22 ? 'style="grid-column:span 2"' : ""}><span class="mono">${esc(k)}</span><input data-param="${esc(k)}" value="${esc(val)}" title="${esc(val)}" ${editable ? "" : "disabled"}></label>`; }).join("") || '<span class="dim">none</span>'}</div></div>
@@ -330,8 +334,11 @@ const LAB = {
     $('#modal [data-x="0"]').onclick = close;
     $("#modal-back").onclick = (e) => { if (e.target.id === "modal-back") close(); };
     if (!editable) return;
+    const pickedDs = typeof SRC !== "undefined" ? SRC.picker($("#lr-ds"), p.data_sources || []) : () => p.data_sources || [];
     const collect = () => {
       const np = JSON.parse(JSON.stringify(p));
+      const ds = pickedDs();
+      if (ds.length) np.data_sources = ds; else delete np.data_sources;
       np.parameters = {};
       $$("#modal [data-param]").forEach((i) => {
         const orig = params[i.dataset.param];
