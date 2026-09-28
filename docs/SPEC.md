@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.22.0 (package `deepresearch`) |
+| Applies to | deep-research v0.22.1 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1161,7 +1161,11 @@ Plan, Review, Queued, Running, Fetch, Write-up, Done.
   (the libstdc++ fix below). The cluster owns those settings; the path must match
   `/[\w./-]+` or it is ignored.
 - A stage file (`Installing software`, `Running`, `Done`/`Failed (exit N)`) the watcher reads.
-- Install, in this order: `module load`; a cached Pixi environment keyed by the package
+- Install, in this order: `module load`; when exactly one Python environment module
+  (`python-sci`/`python-ml`) is loaded and the plan has pip packages but no conda
+  packages, a cached venv on that module's Python (`python3 -m venv
+  --system-site-packages`, keyed by module plus pip list, built under `flock`) so the
+  module's packages stay importable (#113); otherwise a cached Pixi environment keyed by the package
   list (`~/deep-research-lab/envs/<name>-<hash>`: a readable prefix plus a hash of the
   packages, channels and pip flags, built under `flock` so two jobs never build the same
   one at once; conda-forge/bioconda, then pip inside it, with
@@ -1273,6 +1277,9 @@ about $0.02.)
   restores it. Two more checks feed it: packages the loaded Python environment module
   already provides (`PYTHON_SCI_PACKAGES`, `PYTHON_ML_PACKAGES`), and plans whose
   `catalog_generated` differs from the current catalog (made before a cluster change).
+- A run script that builds its own venv (`uv venv`, `python -m venv`, `virtualenv`) while
+  the harness builds the Python environment is flagged: that venv would come first on
+  PATH and hide the installed packages (#113).
 - The script is checked too (`check_script`, part of `validate_plan`): garbled model
   tokens such as `<unk>` (run #16 had one in place of `{` and died with a Python
   SyntaxError 35 s in), `bash -n` on the whole script, and `compile()` (never exec) of each
@@ -1374,3 +1381,4 @@ relying on hand-written notes that go stale (before this, the config still said 
 | 2026-09-27 | v0.21.0 | Fix with AI for pre-flight warnings, Undo fix; redundant-install and stale-catalog warnings; `POST /api/lab/{rid}/fix`, `/undo-fix` (20.4, 20.6). |
 | 2026-09-27 | v0.21.1 | Pre-flight checks the run script: garbled model tokens, `bash -n`, Python compile (20.6). |
 | 2026-09-27 | v0.22.0 | Fix with AI on failed runs (new draft, REVIEW note for removed options), "Checking inputs" stage in plans, write-up count rule, JSON trailing-data parse; `POST /api/lab/{rid}/fix-failed` (20.4, 20.6). |
+| 2026-09-28 | v0.22.1 | pip on top of a Python module goes into a venv on the module's Python; pre-flight flags script-built venvs (20.2, 20.6). |
