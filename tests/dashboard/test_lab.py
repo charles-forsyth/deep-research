@@ -1544,6 +1544,11 @@ def test_all_runs_lists_every_run_with_report_title(app, tmp_path):  # noqa: F81
     runs = data["runs"]
     assert [r["session_id"] for r in runs] == [b, a]  # newest first
     assert runs[0]["session_title"].startswith("Caffeine") and "script" not in runs[0]
+    assert "selection" not in runs[0] and "result_md" not in runs[0]
+    assert runs[0]["plan"] == {
+        "title": PLAN["title"],
+        "resources": {"partition": "standard"},
+    }
     assert runs[0]["target_label"] == "Fake cluster"
 
 

@@ -7,6 +7,13 @@ releases.
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-09-28
+
+### Fixed
+- **Lab runs page loads a summary, not every run in full.** `GET /api/lab/runs` returned
+  each run's selection, write-up and plan (1.4 MB for 26 runs); it now returns only what
+  the list shows.
+
 ## [0.25.0] - 2026-09-28
 
 ### Added

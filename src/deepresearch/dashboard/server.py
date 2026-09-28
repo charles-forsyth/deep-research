@@ -1113,9 +1113,38 @@ class Api:
         out = []
         for r in self.lab.all_runs():
             v = self._lab_view(r)
-            v["session_title"] = (r.get("session_prompt") or "")[:160]
-            v.pop("script", None)  # the list does not need the batch file
-            out.append(v)
+            plan = v.get("plan") or {}
+            out.append(
+                {
+                    **{
+                        k: v.get(k)
+                        for k in (
+                            "id",
+                            "session_id",
+                            "status",
+                            "stage",
+                            "error",
+                            "scope",
+                            "job_id",
+                            "estimate_usd",
+                            "ai_cost_usd",
+                            "updated_at",
+                            "created_at",
+                            "target_label",
+                            "data_sources",
+                        )
+                    },  # fmt: skip
+                    # summary only: selections, write-ups and plans are fetched per run
+                    "error": (v.get("error") or "")[:300] or None,
+                    "plan": {
+                        "title": plan.get("title"),
+                        "resources": {
+                            "partition": (plan.get("resources") or {}).get("partition")
+                        },
+                    },
+                    "session_title": (r.get("session_prompt") or "")[:160],
+                }
+            )
         return {"runs": out}
 
     def lab_list(self, sid, query, body):
