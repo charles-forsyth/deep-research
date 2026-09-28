@@ -14,6 +14,7 @@ never loses a job.
 from __future__ import annotations
 
 import datetime as dt
+import difflib
 import hashlib
 import json
 import os
@@ -1318,6 +1319,42 @@ ls -la outputs
 # --------------------------------------------------------------------------- store + service
 
 
+PLAN_DIFF_SKIP = {
+    "warnings", "plan_before_fix", "fix_changes", "fix_notes", "fix_diff",
+    "catalog_generated", "caveats",
+}  # fmt: skip
+
+
+def plan_diff(before: dict, after: dict, max_lines: int = 400) -> dict:
+    """What an AI fix changed: a unified diff of the script and the other plan fields.
+
+    Returns {"script": "<unified diff>", "fields": [{"key", "before", "after"}],
+    "truncated": bool}. Shown in plan review so the reviewer sees the edit, not only
+    the model's own summary of it.
+    """
+    a = str((before or {}).get("script") or "").splitlines()
+    b = str((after or {}).get("script") or "").splitlines()
+    lines = list(difflib.unified_diff(a, b, "before", "after", n=2, lineterm=""))
+    fields = []
+    for k in sorted(set(before or {}) | set(after or {})):
+        if k == "script" or k in PLAN_DIFF_SKIP:
+            continue
+        x, y = (before or {}).get(k), (after or {}).get(k)
+        if x != y:
+            fields.append(
+                {
+                    "key": k,
+                    "before": json.dumps(x, sort_keys=True)[:600],
+                    "after": json.dumps(y, sort_keys=True)[:600],
+                }
+            )
+    return {
+        "script": "\n".join(lines[:max_lines]),
+        "fields": fields,
+        "truncated": len(lines) > max_lines,
+    }
+
+
 NODE_FAIL_WARN = 3  # node failures before the queue label suggests another partition
 
 
@@ -1953,6 +1990,7 @@ class Lab:
             "plan_before_fix": before,
             "fix_changes": changes,
             "fix_notes": " ".join(notes),
+            "fix_diff": plan_diff(before, plan),
         }
         self._update(
             run_id,
@@ -2004,7 +2042,7 @@ class Lab:
         plan = {
             k: v
             for k, v in (run.get("plan") or {}).items()
-            if k not in ("warnings", "plan_before_fix", "fix_changes", "fix_notes")
+            if k not in PLAN_DIFF_SKIP - {"catalog_generated", "caveats"}
         }
         if not plan.get("script"):
             raise ValueError("the failed run has no plan to fix")
@@ -2075,6 +2113,9 @@ class Lab:
             )
         new["fix_changes"] = changes
         new["fix_notes"] = notes
+        new["fix_diff"] = plan_diff(
+            {k: v for k, v in plan.items() if k not in PLAN_DIFF_SKIP}, new
+        )
         new["caveats"] = (
             str(new.get("caveats") or "")
             + f" AI fix of failed run #{run_id}: "

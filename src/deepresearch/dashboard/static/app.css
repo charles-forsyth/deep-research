@@ -635,3 +635,33 @@ pre.lab-script { max-height: 300px; }
   .runs-table th:nth-child(4), .runs-table td:nth-child(4), .runs-table th:nth-child(6), .runs-table td:nth-child(6) { display: none; }
   .runs-view { padding: 12px; }
 }
+
+/* AI fix diff in plan review */
+.lab-diff { margin-top: 8px; }
+.lab-diff summary { cursor: pointer; font-size: 11.5px; }
+.lab-script.diff { white-space: pre; max-height: 360px; min-height: 0; overflow: auto; resize: none; }
+.lab-script.diff .add, .lab-diff-field .add { color: #86efac; background: rgba(52, 211, 153, .08); }
+.lab-script.diff .del, .lab-diff-field .del { color: #fca5a5; background: rgba(248, 113, 113, .08); }
+.lab-script.diff .hunk { color: var(--cyan); }
+.lab-diff-field { font: 11px var(--mono); margin: 6px 0; }
+.lab-diff-field > div { padding: 2px 6px; white-space: pre-wrap; word-break: break-all; }
+
+/* plan review sections */
+.lab-toc { position: sticky; top: -20px; z-index: 2; display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 6px 0 8px; margin-bottom: 4px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 11.5px; }
+.lab-toc a { color: var(--muted, #8a97a8); text-decoration: none; }
+.lab-toc a:hover { color: var(--cyan); }
+.lab-h { margin: 16px 0 4px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--cyan); border-bottom: 1px solid var(--line); padding-bottom: 3px; }
+
+/* open dataset discovery */
+.src-disc-bar { display: flex; gap: 6px; margin-bottom: 6px; }
+.src-disc-bar input { flex: 1; background: var(--bg-2); border: 1px solid var(--line-2); color: var(--text); border-radius: 5px; padding: 6px 8px; }
+.src-hit { border-top: 1px solid var(--line); padding: 10px 0; }
+.src-hit-files { margin-top: 4px; font-size: 11.5px; }
+.src-hit-files > div { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.src-hit-files .src-uri { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.src-hit-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.src-hit-lic { font-size: 11px; white-space: nowrap; }
+.src-hit-page { color: var(--cyan); }
+#src-disc .src-card { max-height: 70vh; overflow-y: auto; padding-bottom: 14px; }
+.lab-diff-field .chg { padding: 2px 6px; }
+.lab-diff-field .chg .del, .lab-diff-field .chg .add { padding: 0 3px; border-radius: 3px; }

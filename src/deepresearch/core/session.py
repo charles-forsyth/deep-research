@@ -169,6 +169,16 @@ class SessionManager:
             return result
 
     @db_retry()
+    def find_session_since(self, prompt: str, since_iso: str) -> int | None:
+        """Newest top-level session with this prompt created at or after `since_iso`."""
+        with sqlite3.connect(self.db_path, timeout=10) as conn:
+            row = conn.execute(
+                "SELECT id FROM sessions WHERE prompt = ? AND created_at >= ? "
+                "ORDER BY id DESC LIMIT 1",
+                (prompt, since_iso),
+            ).fetchone()
+        return int(row[0]) if row else None
+
     def get_session(self, session_id_or_interaction_id: str):
         with sqlite3.connect(self.db_path, timeout=10) as conn:
             conn.row_factory = sqlite3.Row

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.25.1 (package `deepresearch`) |
+| Applies to | deep-research v0.26.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1449,7 +1449,35 @@ stores left by older versions. Named stores (such as future `deep-research-sourc
 indexes, or stores the user made) and stores a data source points at are kept and listed.
 `--all` deletes everything, as before.
 
-### 21.7 Known gaps
+### 21.7 Saved search indexes
+
+`deep-research sources index NAME` (or "build" on the source page, `POST
+/api/sources/{id}/index`) uploads the source's readable files once into a File Search Store
+named `deep-research-source-<name>` and records `options.store` and `options.store_hash`
+(the manifest hash it was built from). Research runs that include an indexed source search
+that store instead of re-uploading. When the manifest hash changes the index is stale and
+is rebuilt on next use; the old store is deleted. `--drop` / `DELETE .../index` and
+deleting the source remove the store. `cleanup` never deletes these stores (21.6).
+
+### 21.8 Open dataset discovery
+
+Google Dataset Search has no API, so `deep-research sources discover QUERY` (the "Find open
+datasets" panel, `GET /api/sources/discover?q=`) searches catalogs that do, in parallel:
+Data.gov (v4 Catalog API; `DATA_GOV_API_KEY` or the shared `DEMO_KEY`), Zenodo (datasets,
+no key) and the Hugging Face Hub (public, ungated datasets). Hits show title, catalog,
+license, publisher, page and direct file links; "add as source" makes a `web` source for
+one file. Nothing is downloaded during search; a failing catalog is reported, not fatal.
+
+### 21.9 Provenance
+
+Every report and Lab run carries an inputs fingerprint (first 16 hex digits of a SHA-256
+over canonical JSON). Reports: prompt, upload names and sizes, data sources with the
+manifest hash they had when used. Lab runs: script, install list, resources, parameters and
+data sources with hashes. It is shown in the report inspector ("inputs") and on Lab run
+cards, printed by `show`, and written into Markdown and JSON exports. Same inputs, same
+fingerprint; a changed source changes it.
+
+### 21.10 Known gaps
 - Read-only: nothing is written back to buckets.
 - The dashboard has no login; anyone who can reach it can browse sources under the
   allowed roots (see section 14).
@@ -1480,3 +1508,4 @@ indexes, or stores the user made) and stores a data source points at are kept an
 | 2026-09-28 | v0.24.0 | Data sources in research runs and Ask (21.5); `cleanup` keeps named stores, `--all` (21.6). |
 | 2026-09-28 | v0.25.0 | Queue status counts NODE_FAIL requeues (`node_fails`); `GET /api/lab/runs` and the Lab runs page; compact selection toolbar (11). |
 | 2026-09-28 | v0.25.1 | `GET /api/lab/runs` returns a summary per run. |
+| 2026-09-28 | v0.26.0 | Saved per-source indexes (21.7), open dataset discovery (21.8), provenance fingerprints (21.9); plan review sections and AI fix diff (`plan.fix_diff`, 20.4). |

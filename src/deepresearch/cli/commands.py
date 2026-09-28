@@ -46,18 +46,28 @@ def detach_process(args_list: list[str], log_path: str) -> int:
 
 
 def _source_uploads(args) -> list[str] | None:
-    """Fetch --source data into local folders and add them to the uploads."""
+    """--source: indexed sources join --stores (their saved index is reused; rebuilt
+    if the content changed); the others are fetched into folders and uploaded."""
     names = getattr(args, "source", None) or []
     if not names:
         return args.upload
     from deepresearch.sources import SourceRegistry
+    from deepresearch.sources.index import index_state, stores_for
     from deepresearch.sources.usage import research_uploads, resolve
 
-    srcs = resolve(SourceRegistry(user_db_path), names)
-    paths, notes = research_uploads(srcs)
+    reg = SourceRegistry(user_db_path)
+    srcs = resolve(reg, names)
+    client = None
+    if any(index_state(s) != "none" for s in srcs):
+        client = genai.Client(api_key=DeepResearchConfig().api_key)
+    stores, rest = stores_for(reg, srcs, client)
+    if stores:
+        print(f"[INFO] data source indexes: {', '.join(stores)}")
+        args.stores = (args.stores or []) + stores
+    paths, notes = research_uploads(rest) if rest else ([], [])
     for n in notes:
         print(f"[INFO] data source {n}")
-    return (args.upload or []) + paths
+    return (args.upload or []) + paths or None
 
 
 def _record_source_use(args, session_id) -> None:
@@ -80,6 +90,11 @@ def handle_research(args):
         print(f"[ERROR] {e}")
         sys.exit(2)
     _record_source_use(args, args.adopt_session)
+    started = None
+    if getattr(args, "source", None) and not args.adopt_session:
+        from datetime import datetime
+
+        started = datetime.now().isoformat()
     request = ResearchRequest(
         prompt=args.prompt,
         stores=args.stores,
@@ -103,6 +118,12 @@ def handle_research(args):
         agent.start_research_stream(request)
     else:
         agent.start_research_poll(request)
+    if started:
+        # a foreground run had no session id up front; record the sources against
+        # the session it created (newest with this prompt, created after we started)
+        row = SessionManager().find_session_since(args.prompt, started)
+        if row:
+            _record_source_use(args, row)
 
 
 def handle_search(args):
@@ -348,12 +369,20 @@ def handle_show(args):
     if not session:
         show_console.print(f"[bold red][ERROR] Session '{args.id}' not found.[/]")
     else:
+        from deepresearch.sources.provenance import session_provenance
+
+        prov = session_provenance(user_db_path, dict(session))
+        used = ", ".join(
+            f"{d['name']}@{(d['manifest_hash'] or '')[:8]}" for d in prov["sources"]
+        )
         show_console.print(
             Panel(
                 f"[bold]Interaction ID:[/bold] {session['interaction_id']}\n"
                 f"[bold]Date:[/bold] {session['created_at']}\n"
                 f"[bold]Status:[/bold] {session['status']}\n"
-                f"[bold]Files:[/bold] {session['files']}",
+                f"[bold]Files:[/bold] {session['files']}\n"
+                + (f"[bold]Data sources:[/bold] {used}\n" if used else "")
+                + f"[bold]Inputs fingerprint:[/bold] {prov['fingerprint']}",
                 title=f"Session #{session['id']}",
                 subtitle="Metadata",
             )

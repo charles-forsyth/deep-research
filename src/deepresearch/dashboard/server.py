@@ -243,12 +243,15 @@ class Api:
         r("GET", r"/api/lab/(\d+)/log", self.lab_log)
         r("GET", r"/api/lab/(\d+)/file", self.lab_file)
         r("DELETE", r"/api/lab/(\d+)", self.lab_delete)
+        r("GET", r"/api/sources/discover", self.sources_discover)
         r("GET", r"/api/sources", self.sources_list)
         r("POST", r"/api/sources", self.sources_add)
         r("GET", r"/api/sources/(\d+)", self.sources_get)
         r("PATCH", r"/api/sources/(\d+)", self.sources_patch)
         r("DELETE", r"/api/sources/(\d+)", self.sources_delete)
         r("POST", r"/api/sources/(\d+)/test", self.sources_test)
+        r("POST", r"/api/sources/(\d+)/index", self.sources_index)
+        r("DELETE", r"/api/sources/(\d+)/index", self.sources_index_drop)
         r("GET", r"/api/sources/(\d+)/browse", self.sources_browse)
         r("GET", r"/api/sources/(\d+)/preview", self.sources_preview)
 
@@ -362,6 +365,9 @@ class Api:
         s["annotations"] = self.store.list_annotations(int(sid))
         s["log_available"] = (LOG_DIR / f"session_{sid}.log").exists()
         s["run"] = self._run_meta(int(sid))
+        from deepresearch.sources.provenance import session_provenance
+
+        s["provenance"] = session_provenance(self.db_path, s)
         with sqlite3.connect(self.db_path, timeout=10) as conn:
             s["reruns"] = [
                 r[0]
@@ -536,9 +542,13 @@ class Api:
         else:
             md = f"# {s['prompt']}\n\n{s.get('result') or ''}"
         anns = self.store.list_annotations(int(sid))
+        from deepresearch.sources.provenance import session_provenance
+
+        prov = session_provenance(self.db_path, s)
         if fmt == "json":
             s.pop("embedding", None)
             s["annotations"] = anns
+            s["provenance"] = prov
             if recursive:
                 s["recursive_markdown"] = md
             return {"filename": f"session_{sid}.json", "content": s}
@@ -548,6 +558,20 @@ class Api:
                 md += f"> {a['quote']}\n\n"
                 if a["note"]:
                     md += f"{a['note']}\n\n"
+        md += (
+            "\n\n---\n\n*Provenance: inputs fingerprint "
+            f"`{prov['fingerprint']}`"
+            + (
+                "; data sources "
+                + ", ".join(
+                    f"{d['name']} ({d['uri']}, content {(d['manifest_hash'] or '')[:12]})"
+                    for d in prov["sources"]
+                )
+                if prov["sources"]
+                else ""
+            )
+            + ".*\n"
+        )
         return {"filename": f"session_{sid}.md", "content": md}
 
     def start_research(self, query, body):
@@ -795,7 +819,10 @@ class Api:
         return s
 
     def _source_view(self, s, full: bool = False, entries: int = 20) -> dict:
+        from deepresearch.sources.index import index_state
+
         d = s.public()
+        d["index_state"] = index_state(s)
         if d.get("manifest"):
             d["manifest"]["entries"] = d["manifest"]["entries"][
                 : 200 if full else entries
@@ -875,10 +902,53 @@ class Api:
             raise ApiError(400, e.errors()[0]["msg"]) from e
         return self._source_view(s)
 
+    def _genai(self):
+        from google import genai
+
+        if not hasattr(self, "_genai_client"):
+            self._genai_client = genai.Client(api_key=self._config().api_key)
+        return self._genai_client
+
     def sources_delete(self, sid, query, body):
         s = self._source(sid)
+        if s.options.get("store"):
+            from deepresearch.sources.index import drop_index
+
+            try:
+                drop_index(self.sources, s, self._genai())
+            except Exception:
+                pass  # the source goes anyway; `cleanup --all` can remove the store
         self.sources.delete(s.id)
         return {"deleted": s.name}
+
+    def sources_discover(self, query, body):
+        from deepresearch.sources.discover import discover
+
+        q = ((query.get("q") or [""])[0]).strip()
+        if len(q) < 2:
+            raise ApiError(400, "Type at least 2 characters")
+        cats = [c for c in (query.get("catalog") or []) if c]
+        return discover(q[:200], cats or None, 6)
+
+    def sources_index(self, sid, query, body):
+        from deepresearch.sources.index import build_index
+
+        try:
+            s = build_index(
+                self.sources, self._source(sid), self._genai(), log=lambda m: None
+            )
+        except Exception as e:
+            raise ApiError(502, f"Could not build the index: {e}") from e
+        return self._source_view(s)
+
+    def sources_index_drop(self, sid, query, body):
+        from deepresearch.sources.index import drop_index
+
+        try:
+            s = drop_index(self.sources, self._source(sid), self._genai())
+        except Exception as e:
+            raise ApiError(502, f"Could not delete the index: {e}") from e
+        return self._source_view(s)
 
     def sources_test(self, sid, query, body):
         from deepresearch.sources.service import check
@@ -1082,6 +1152,9 @@ class Api:
     def _lab_view(self, run: dict) -> dict:
         tgt = self.lab.target(run.get("target"))
         run["target_label"] = tgt.label if tgt else None
+        from deepresearch.sources.provenance import lab_provenance
+
+        run["provenance"] = lab_provenance(self.db_path, run)
         return run
 
     def lab_targets(self, query, body):

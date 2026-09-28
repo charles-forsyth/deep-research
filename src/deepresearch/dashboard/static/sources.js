@@ -27,10 +27,13 @@ const SRC = {
       <div class="src-head"><h2>Data sources</h2>
         <span class="dim">Places your data lives. Use them in research, follow-ups and Lab runs.</span>
         <button class="btn primary small" id="src-add">+ Add source</button>
+        <button class="btn small" id="src-find">Find open datasets</button>
         <button class="btn small" id="src-reload">Refresh</button></div>
       <div id="src-form" hidden></div>
+      <div id="src-disc" hidden></div>
       <div id="src-body"><div class="dim">Loading\u2026</div></div></div>`;
     $("#src-add", v).onclick = () => this.form(v);
+    $("#src-find", v).onclick = () => this.discover(v);
     $("#src-reload", v).onclick = () => this.render(v);
     try { await this.load(); } catch (e) { $("#src-body", v).innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
     const body = $("#src-body", v);
@@ -48,6 +51,43 @@ const SRC = {
         <td class="mono src-uri" title="${esc(s.uri)}">${esc(s.uri)}</td></tr>`;
     }).join("")}</tbody></table>`;
     $$("tr[data-id]", body).forEach((tr) => (tr.onclick = () => openTab({ key: `src${tr.dataset.id}`, kind: "source", id: Number(tr.dataset.id), title: this.list.find((s) => s.id == tr.dataset.id)?.name || "Source" })));
+  },
+
+  discover(v) {
+    const d = $("#src-disc", v); d.hidden = false;
+    d.innerHTML = `<div class="src-card">
+      <div class="src-disc-bar"><input id="sd-q" placeholder="Search Data.gov, Zenodo and Hugging Face, e.g. ozone monitoring 2024" autocomplete="off"><button class="btn primary small" id="sd-go">Search</button><button class="btn small" id="sd-close">Close</button></div>
+      <div class="dim" style="font-size:11.5px">Nothing is downloaded while you search. Check each dataset's license before you use it.</div>
+      <div id="sd-res"></div></div>`;
+    $("#sd-close", d).onclick = () => { d.hidden = true; };
+    const run = async () => {
+      const q = $("#sd-q", d).value.trim(); if (q.length < 2) return;
+      const box = $("#sd-res", d); box.innerHTML = '<span class="spinner"></span> searching\u2026';
+      let out;
+      try { out = await api(`/api/sources/discover?q=${encodeURIComponent(q)}`); } catch (e) { box.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
+      const errs = Object.entries(out.errors || {}).map(([c, e]) => `<div class="dim" style="font-size:11px">${esc(c)} unavailable: ${esc(clip(e, 120))}</div>`).join("");
+      box.innerHTML = errs + (out.results.length ? out.results.map((r, i) => `<div class="src-hit">
+        <div class="src-hit-h"><b>${esc(r.title)}</b> <span class="chip">${esc({ datagov: "Data.gov", zenodo: "Zenodo", huggingface: "Hugging Face" }[r.catalog] || r.catalog)}</span> <span class="dim src-hit-lic">${esc(r.license || "license not stated")}${r.publisher ? " \u00b7 " + esc(clip(r.publisher, 60)) : ""}</span></div>
+        ${r.description ? `<div class="dim" style="font-size:12px">${esc(clip(r.description, 260))}</div>` : ""}
+        <div style="font-size:11.5px">${r.page ? `<a class="src-hit-page" href="${esc(r.page)}" target="_blank" rel="noopener">dataset page \u2197</a>` : ""}</div>
+        ${r.files.length ? `<div class="src-hit-files">${r.files.slice(0, 5).map((f, j) => `<div><span class="mono dim">${esc(f.format || "?")}</span> <span class="mono src-uri" title="${esc(f.url)}">${esc(f.title || f.url)}</span> <button class="linkbtn" data-add="${i}:${j}">add as source</button></div>`).join("")}</div>` : '<div class="dim" style="font-size:11px">No direct download links; open the dataset page.</div>'}
+      </div>`).join("") : '<div class="dim">No datasets found.</div>');
+      $$("[data-add]", box).forEach((b) => (b.onclick = async () => {
+        const [i, j] = b.dataset.add.split(":").map(Number);
+        const r = out.results[i], f = r.files[j];
+        const base = (f.title || r.title || "dataset").toLowerCase().replace(/\.[a-z0-9]+$/, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "") || "dataset";
+        const name = prompt("Name for this source", base); if (!name) return;
+        b.disabled = true; b.textContent = "testing\u2026";
+        try {
+          const s = await api("/api/sources", { method: "POST", body: { name, uri: f.url, kind: "web", title: clip(r.title, 120), description: `${r.page || ""} (license: ${r.license || "not stated"})`.trim(), tags: [r.catalog] } });
+          toast(s.status === "ok" ? `Added ${s.name}` : `Saved ${s.name}, but it is unreachable: ${s.last_error}`, s.status === "ok" ? "ok" : "err");
+          b.textContent = "added";
+        } catch (e) { toast(e.message, "err"); b.disabled = false; b.textContent = "add as source"; }
+      }));
+    };
+    $("#sd-go", d).onclick = run;
+    $("#sd-q", d).onkeydown = (e) => { if (e.key === "Enter") run(); };
+    $("#sd-q", d).focus();
   },
 
   form(v) {
@@ -100,12 +140,21 @@ const SRC = {
         <div><span class="dim">Level</span><span>${esc(s.protection_level)} (label only)</span></div>
         ${s.auth_ref ? `<div><span class="dim">Credentials</span><span><span class="mono">${esc(s.auth_ref)}</span></span></div>` : ""}
         <div><span class="dim">Checked</span><span>${esc(s.last_checked || "never")}</span></div>
+        <div><span class="dim">Search index</span><span>${{ none: "none (research runs upload its files each time)", current: "saved and current", stale: "saved, but the source changed; rebuilt on next use" }[s.index_state] || "-"}
+          <button class="linkbtn" id="sd-index">${s.index_state === "none" ? "build" : "rebuild"}</button>${s.index_state !== "none" ? ' <button class="linkbtn" id="sd-unindex">delete</button>' : ""}</span></div>
         <div><span class="dim">Used by</span><span>${s.used_by.length ? s.used_by.slice(0, 12).map((u) => `${esc(u.used_by_kind)} #${u.used_by_id}`).join(", ") : "nothing yet"}</span></div>
       </div>
       <div class="src-split"><div class="src-tree"><div class="src-crumbs" id="sd-crumbs"></div><div id="sd-items"></div></div>
         <div class="src-preview" id="sd-prev"><div class="dim">Pick a file to preview it.</div></div></div></div>`;
     $("#sd-test", v).onclick = async () => { $("#sd-test", v).disabled = true; try { const r = await api(`/api/sources/${id}/test`, { method: "POST" }); toast(r.status === "ok" ? "Reachable" : r.last_error, r.status === "ok" ? "ok" : "err"); } catch (e) { toast(e.message, "err"); } this.renderOne(v, id); };
     $("#sd-del", v).onclick = async () => { if (!confirm(`Delete source ${s.name}? The data itself is not touched.`)) return; await api(`/api/sources/${id}`, { method: "DELETE" }); toast("Deleted", "ok"); closeTab(`src${id}`); };
+    $("#sd-index", v).onclick = async () => {
+      const b = $("#sd-index", v); b.disabled = true; b.textContent = "building\u2026";
+      try { await api(`/api/sources/${id}/index`, { method: "POST" }); toast("Index saved; research runs will reuse it", "ok"); } catch (e) { toast(e.message, "err"); }
+      this.renderOne(v, id);
+    };
+    const un = $("#sd-unindex", v);
+    if (un) un.onclick = async () => { try { await api(`/api/sources/${id}/index`, { method: "DELETE" }); toast("Index deleted", "ok"); } catch (e) { toast(e.message, "err"); } this.renderOne(v, id); };
     this.browse(v, id, "");
   },
 

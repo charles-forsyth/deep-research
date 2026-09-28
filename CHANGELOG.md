@@ -7,6 +7,27 @@ releases.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-09-28
+
+### Added
+- **Find open datasets.** `deep-research sources discover QUERY` and a "Find open
+  datasets" panel on the Sources page search Data.gov, Zenodo and Hugging Face at once and
+  show license, publisher and direct file links; "add as source" turns a file into a data
+  source. Nothing is downloaded while searching.
+- **Saved search indexes per source.** `deep-research sources index NAME` (or "build" on the
+  source page) uploads a source once into a named File Search Store; research runs reuse it
+  instead of uploading the files every time, and rebuild it when the source changes.
+- **Provenance fingerprint.** Every report and Lab run shows an "inputs" fingerprint of what
+  it was built from (prompt, uploads, script, data sources with their content hash); `show`
+  prints it and exports include it.
+- **Plan review in sections, with the AI fix diff.** Review reads as 1 What and why, 2
+  Software and data, 3 Settings, 4 Result check, 5 Script, with a jump bar. After Fix with
+  AI, "What changed" shows the actual edit (script diff and changed settings such as
+  "partition: spot -> standard"), not only the AI's summary.
+
+### Fixed
+- Foreground `research --source` runs now record which sources the report used.
+
 ## [0.25.1] - 2026-09-28
 
 ### Fixed
