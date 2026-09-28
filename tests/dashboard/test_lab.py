@@ -1216,6 +1216,9 @@ def test_fix_plan_repairs_and_rechecks(tmp_path):
     assert out["plan"]["install"]["modules"] == ["python-sci", "ffmpeg/8.1"]
     assert out["plan"]["plan_before_fix"]["install"]["modules"][0] == "python/3.12.14"
     assert out["status"] == "draft"  # never submits
+    diff = out["plan"]["fix_diff"]
+    assert {f["key"] for f in diff["fields"]} == {"install"}
+    assert "python/3.12.14" in diff["fields"][0]["before"]
     back = lab.undo_fix(rid)
     assert back["plan"]["install"]["modules"][0] == "python/3.12.14"
 
@@ -1379,6 +1382,10 @@ def test_fix_failed_makes_new_draft_and_leaves_failed_run(tmp_path):
     assert out["id"] != rid and out["status"] == "draft" and out["rerun_of"] == rid
     assert out["plan"]["script"] == "python3 x.py"
     assert out["fix"]["changes"] == ["drop --bad-flag (unrecognized argument)"]
+    d = out["plan"]["fix_diff"]["script"]
+    assert "+python3 x.py" in d and any(
+        ln.startswith("-") and not ln.startswith("---") for ln in d.splitlines()
+    )
     assert (
         lab.get(rid)["status"] == "failed"
         and lab.get(rid)["plan"]["script"] == plan["script"]
@@ -1558,3 +1565,16 @@ def test_all_runs_without_sessions_table(tmp_path):
     )
     lab.create(1, "document", "t", plan=dict(PLAN))
     assert lab.all_runs()[0]["session_prompt"] is None
+
+
+def test_plan_diff_script_and_fields():
+    from deepresearch.dashboard.lab import plan_diff
+
+    a = {"script": "a\nb\nc", "resources": {"partition": "spot"}, "warnings": ["w"]}
+    b = {"script": "a\nB\nc", "resources": {"partition": "standard"}, "warnings": []}
+    d = plan_diff(a, b)
+    assert "-b" in d["script"].splitlines() and "+B" in d["script"].splitlines()
+    assert [f["key"] for f in d["fields"]] == ["resources"]  # warnings ignored
+    assert plan_diff(a, a) == {"script": "", "fields": [], "truncated": False}
+    big = plan_diff({"script": "x\n" * 900}, {"script": "y\n" * 900}, max_lines=50)
+    assert big["truncated"] and len(big["script"].splitlines()) == 50

@@ -348,12 +348,20 @@ def handle_show(args):
     if not session:
         show_console.print(f"[bold red][ERROR] Session '{args.id}' not found.[/]")
     else:
+        from deepresearch.sources.provenance import session_provenance
+
+        prov = session_provenance(user_db_path, dict(session))
+        used = ", ".join(
+            f"{d['name']}@{(d['manifest_hash'] or '')[:8]}" for d in prov["sources"]
+        )
         show_console.print(
             Panel(
                 f"[bold]Interaction ID:[/bold] {session['interaction_id']}\n"
                 f"[bold]Date:[/bold] {session['created_at']}\n"
                 f"[bold]Status:[/bold] {session['status']}\n"
-                f"[bold]Files:[/bold] {session['files']}",
+                f"[bold]Files:[/bold] {session['files']}\n"
+                + (f"[bold]Data sources:[/bold] {used}\n" if used else "")
+                + f"[bold]Inputs fingerprint:[/bold] {prov['fingerprint']}",
                 title=f"Session #{session['id']}",
                 subtitle="Metadata",
             )

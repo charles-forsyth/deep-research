@@ -362,6 +362,9 @@ class Api:
         s["annotations"] = self.store.list_annotations(int(sid))
         s["log_available"] = (LOG_DIR / f"session_{sid}.log").exists()
         s["run"] = self._run_meta(int(sid))
+        from deepresearch.sources.provenance import session_provenance
+
+        s["provenance"] = session_provenance(self.db_path, s)
         with sqlite3.connect(self.db_path, timeout=10) as conn:
             s["reruns"] = [
                 r[0]
@@ -536,9 +539,13 @@ class Api:
         else:
             md = f"# {s['prompt']}\n\n{s.get('result') or ''}"
         anns = self.store.list_annotations(int(sid))
+        from deepresearch.sources.provenance import session_provenance
+
+        prov = session_provenance(self.db_path, s)
         if fmt == "json":
             s.pop("embedding", None)
             s["annotations"] = anns
+            s["provenance"] = prov
             if recursive:
                 s["recursive_markdown"] = md
             return {"filename": f"session_{sid}.json", "content": s}
@@ -548,6 +555,20 @@ class Api:
                 md += f"> {a['quote']}\n\n"
                 if a["note"]:
                     md += f"{a['note']}\n\n"
+        md += (
+            "\n\n---\n\n*Provenance: inputs fingerprint "
+            f"`{prov['fingerprint']}`"
+            + (
+                "; data sources "
+                + ", ".join(
+                    f"{d['name']} ({d['uri']}, content {(d['manifest_hash'] or '')[:12]})"
+                    for d in prov["sources"]
+                )
+                if prov["sources"]
+                else ""
+            )
+            + ".*\n"
+        )
         return {"filename": f"session_{sid}.md", "content": md}
 
     def start_research(self, query, body):
@@ -1082,6 +1103,9 @@ class Api:
     def _lab_view(self, run: dict) -> dict:
         tgt = self.lab.target(run.get("target"))
         run["target_label"] = tgt.label if tgt else None
+        from deepresearch.sources.provenance import lab_provenance
+
+        run["provenance"] = lab_provenance(self.db_path, run)
         return run
 
     def lab_targets(self, query, body):

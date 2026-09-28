@@ -889,7 +889,9 @@ function renderRight() {
         <span class="k">words</span><span class="v">${fmtN((s.result || "").split(/\s+/).filter(Boolean).length)}</span>
         <span class="k">sources</span><span class="v">${fmtN(extractSources(s.result || "").length)} unique</span>
         <span class="k">cost</span><span class="v" id="cost-v"><span class="dim">\u2026</span></span>
+        ${s.provenance ? `<span class="k">inputs</span><span class="v"><span class="mono" title="Fingerprint of the prompt, uploads and data sources (with their content hash) this report was built from. Same inputs, same fingerprint.">${esc(s.provenance.fingerprint)}</span></span>` : ""}
       </div>
+      ${s.provenance && s.provenance.sources.length ? `<div class="section label">Data sources used</div>${s.provenance.sources.map((d) => `<div class="mono dim" style="font-size:11px" title="${esc(d.uri)}">${esc(d.name)} <span class="dim">@${esc((d.manifest_hash || "").slice(0, 8))}</span></div>`).join("")}` : ""}
       <div id="cost-detail" class="mono dim" style="font-size:10.5px;margin-top:4px"></div>
       <div class="section label">Audio</div><div id="audio-list" class="dim" style="font-size:11.5px">\u2026</div>
       <div class="section label">Tags</div>

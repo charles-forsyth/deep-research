@@ -635,3 +635,19 @@ pre.lab-script { max-height: 300px; }
   .runs-table th:nth-child(4), .runs-table td:nth-child(4), .runs-table th:nth-child(6), .runs-table td:nth-child(6) { display: none; }
   .runs-view { padding: 12px; }
 }
+
+/* AI fix diff in plan review */
+.lab-diff { margin-top: 8px; }
+.lab-diff summary { cursor: pointer; font-size: 11.5px; }
+.lab-script.diff { white-space: pre; max-height: 360px; overflow: auto; }
+.lab-script.diff .add, .lab-diff-field .add { color: #86efac; background: rgba(52, 211, 153, .08); }
+.lab-script.diff .del, .lab-diff-field .del { color: #fca5a5; background: rgba(248, 113, 113, .08); }
+.lab-script.diff .hunk { color: var(--cyan); }
+.lab-diff-field { font: 11px var(--mono); margin: 6px 0; }
+.lab-diff-field > div { padding: 2px 6px; white-space: pre-wrap; word-break: break-all; }
+
+/* plan review sections */
+.lab-toc { position: sticky; top: -20px; z-index: 2; display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 6px 0 8px; margin-bottom: 4px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 11.5px; }
+.lab-toc a { color: var(--muted, #8a97a8); text-decoration: none; }
+.lab-toc a:hover { color: var(--cyan); }
+.lab-h { margin: 16px 0 4px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--cyan); border-bottom: 1px solid var(--line); padding-bottom: 3px; }
