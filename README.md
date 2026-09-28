@@ -108,6 +108,8 @@ deep-research sources test ceph-data  # list it, count files, record a manifest
 deep-research sources browse ceph-data
 deep-research research "Summarize the lab notes" --source lab-notes
 deep-research followup 12 "Does our data agree?" --source ceph-data
+deep-research sources discover "surface ozone europe"   # Data.gov, Zenodo, Hugging Face
+deep-research sources index lab-notes   # save a search index research runs reuse
 ```
 
 A bare prompt runs `research`. `deep-research <command> --help` documents every option.
