@@ -320,7 +320,12 @@ mark.find { background: rgba(250, 204, 21, .35); color: #fff; border-radius: 2px
   background: rgba(10, 14, 20, .96); border: 1px solid var(--line-2); border-radius: 8px;
   box-shadow: 0 12px 30px rgba(0, 0, 0, .55), 0 0 0 1px rgba(34, 211, 238, .08);
 }
-.selbar button { background: none; border: 0; padding: 4px 8px; border-radius: 5px; font: 11.5px var(--mono); color: var(--text); }
+.selbar button { background: none; border: 0; padding: 3px 7px; border-radius: 5px; font: 11px var(--mono); color: var(--text); display: inline-flex; align-items: center; gap: 5px; }
+.selbar .sw { display: inline-block; }
+.selbar button > .sw { width: 10px; height: 10px; margin: 0; }
+.selbar .sel-more { padding: 3px 4px; opacity: .7; }
+.selbar .sel-colors { display: inline-flex; align-items: center; }
+.selbar .sel-colors[hidden] { display: none; }
 .selbar button:hover { background: rgba(34, 211, 238, .12); color: var(--cyan); }
 .selbar .sep { width: 1px; height: 18px; background: var(--line-2); margin: 0 4px; }
 .selbar .sw { width: 16px; height: 16px; padding: 0; border-radius: 50%; margin: 0 2px; }

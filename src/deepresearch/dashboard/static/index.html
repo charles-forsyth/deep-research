@@ -91,11 +91,14 @@
   <button data-act="copy" title="Copy">Copy</button>
   <button data-act="quote" title="Send to notebook as a cited quote">&rarr; Notebook</button>
   <span class="sep"></span>
-  <button data-act="hl" data-color="amber" class="sw amber" title="Highlight"></button>
-  <button data-act="hl" data-color="cyan" class="sw cyan" title="Highlight"></button>
-  <button data-act="hl" data-color="magenta" class="sw magenta" title="Highlight"></button>
-  <button data-act="hl" data-color="green" class="sw green" title="Highlight"></button>
-  <button data-act="note" title="Highlight and add a note">+ Note</button>
+  <button data-act="hl" data-color="amber" title="Highlight (amber)"><span class="sw amber"></span> Highlight</button>
+  <button data-act="more" class="sel-more" title="Other highlight colors" aria-label="Other highlight colors">&#9662;</button>
+  <span class="sel-colors" hidden>
+    <button data-act="hl" data-color="cyan" class="sw cyan" title="Highlight (cyan)"></button>
+    <button data-act="hl" data-color="magenta" class="sw magenta" title="Highlight (magenta)"></button>
+    <button data-act="hl" data-color="green" class="sw green" title="Highlight (green)"></button>
+  </span>
+  <button data-act="note" title="Highlight and add a note">Note</button>
   <button data-act="ask" title="Ask a follow-up about this passage">Ask</button>
   <button data-act="lab" title="Plan a real computation on the cluster from this passage">&#9879; Lab run</button>
 </div>

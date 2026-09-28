@@ -526,9 +526,9 @@ function applyAnnotations(art, anns) {
 
 // ---------------------------------------------------------------- selection toolbar
 let SEL = null;
-function hideSelbar() { $("#selbar").hidden = true; SEL = null; }
+function hideSelbar() { $("#selbar").hidden = true; $("#selbar .sel-colors").hidden = true; SEL = null; }
 document.addEventListener("mouseup", (e) => {
-  if (e.target.closest("#selbar")) return;
+  if (e.target instanceof Element && e.target.closest("#selbar")) return;
   setTimeout(() => {
     const sel = window.getSelection();
     const art = $("#report") || $(".nb .preview");
@@ -559,6 +559,7 @@ $("#selbar").addEventListener("click", async (e) => {
   const t = currentTab();
   const sid = t?.kind === "session" ? t.id : null;
   const act = b.dataset.act;
+  if (act === "more") { const c = $("#selbar .sel-colors"); c.hidden = !c.hidden; return; }
   if (act === "copy") { await copyText(SEL.text); }
   else if (act === "quote") {
     const src = sid ? `\n>\n> *Session #${sid}*` : "";
