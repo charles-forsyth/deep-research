@@ -1006,6 +1006,7 @@ function paletteItems(q) {
     ["cmd", "New notebook", () => NB.create()],
     ["cmd", "Research map", openMap],
     ["cmd", "Data sources", openSources],
+    ["cmd", "Lab runs", openLabRuns],
     ["cmd", "Mission control", () => openTab({ key: "home", kind: "home", title: "Mission control" })],
     ["cmd", "Refresh archive", () => { loadSessions(); loadStats(); }],
     ...S.notebooks.map((n) => ["notebook", n.title, () => openNotebook(n.id, n.title)]),
@@ -1048,6 +1049,8 @@ $("#scrim").onclick = closeDrawers;
 $("#btn-new").onclick = () => { closeDrawers(); openLaunch(); };
 $("#btn-sources").onclick = () => { closeDrawers(); openSources(); };
 $("#btn-labruns").onclick = () => { closeDrawers(); openLabRuns(); };
+$("#nav-labruns").onclick = () => { closeDrawers(); openLabRuns(); };
+$("#nav-sources").onclick = () => { closeDrawers(); openSources(); };
 $("#btn-palette").onclick = openPalette;
 $("#q").addEventListener("input", debounce((e) => { S.q = e.target.value.trim(); loadSessions(); }, 250));
 $("#roots-only").onchange = (e) => { S.rootsOnly = e.target.checked; renderSessionList(); };

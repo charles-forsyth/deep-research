@@ -114,6 +114,11 @@ input, textarea, select { font: inherit; color: var(--text); }
 }
 .toggle-row { display: flex; justify-content: space-between; padding: 0 12px 8px; font-size: 11px; color: var(--dim); }
 .session-list { overflow-y: auto; flex: 1; padding: 0 6px 12px; }
+/* Lab runs / Data sources shortcuts at the bottom of the archive; only shown on narrow
+   screens, where the top bar has no room for them */
+.left-nav { display: none; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); }
+.left-nav .btn { flex: 1; }
+
 .sess {
   display: grid; grid-template-columns: 10px 1fr auto; gap: 8px; padding: 8px 8px; margin: 2px 0;
   border-radius: var(--radius); border: 1px solid transparent; cursor: pointer; align-items: start;
@@ -471,6 +476,12 @@ html, body { overflow-x: hidden; }
   .brand-name { letter-spacing: .14em; white-space: nowrap; }
   .brand-sub { display: none; }
   #btn-palette { display: none; }
+  #btn-labruns, #btn-sources { display: none; }
+  .left-nav { display: flex; }
+  .runs-table th:nth-child(5), .runs-table td:nth-child(5) { display: none; }
+  .runs-view .runs-table td:nth-child(3) { min-width: 0; }
+  .runs-view .runs-table td, .runs-view .runs-table th { padding: 7px 4px; }
+  .runs-view .runs-table .status-badge { font-size: 9.5px; padding: 1px 5px; }
   .btn-new .lbl, #btn-new .lbl { display: none; }
   .top-actions { gap: 6px; }
   .statusbar { gap: 12px; }
