@@ -5,6 +5,7 @@ No network: Gemini is replaced by canned replies and the Slurm target by an in-m
 
 import io
 import json
+import subprocess
 import tarfile
 import threading
 import urllib.request
@@ -1442,3 +1443,41 @@ def test_validate_flags_script_venv_that_hides_packages():
     assert any("builds its own Python venv" in x for x in w), w
     plan["script"] = "python3 run.py\n"
     assert not any("own Python venv" in x for x in labm.validate_plan(tgt, plan))
+
+
+def test_submit_moves_an_old_run_folder_aside_instead_of_overwriting(
+    tmp_path, monkeypatch
+):
+    """A run id can repeat (fresh DB, restore); the old folder's logs must survive."""
+    from deepresearch.dashboard.lab import SlurmSSHTarget
+
+    tgt = SlurmSSHTarget(
+        {
+            "name": "t",
+            "type": "slurm-ssh",
+            "ssh_host": "x",
+            "remote_root": str(tmp_path / "root"),
+            "partitions": {"standard": {"cpus": 1}},
+        }
+    )
+    old = tmp_path / "root" / "run_1"
+    (old / "outputs").mkdir(parents=True)
+    (old / "job.log").write_text("old log")
+    (old / "outputs" / "result.txt").write_text("old result")
+
+    def sh(cmd, stdin=None, timeout=120):
+        cmd = cmd.replace("sbatch --parsable run.sbatch", "echo 99")
+        r = subprocess.run(
+            ["bash", "-c", cmd], input=stdin, capture_output=True, check=True
+        )
+        return r.stdout.decode()
+
+    monkeypatch.setattr(tgt, "sh", sh)
+    assert tgt.submit(1, {"run.sbatch": "#!/bin/bash\n", "plan.json": "{}"}) == "99"
+    prev = [
+        p for p in (tmp_path / "root").iterdir() if p.name.startswith("run_1.prev-")
+    ]
+    assert len(prev) == 1
+    assert (prev[0] / "outputs" / "result.txt").read_text() == "old result"
+    assert (tmp_path / "root" / "run_1" / "run.sbatch").exists()
+    assert not (tmp_path / "root" / "run_1" / "job.log").exists()

@@ -7,6 +7,28 @@ releases.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-09-28
+
+### Added
+- **Data sources.** A shared registry of places data lives: web/open datasets, GCS buckets,
+  S3 buckets including CephRDS (through rclone remotes), folders and files in your home
+  directory, and your own reports and notebooks. The registry stores references and
+  credential references, never data or secrets. `deep-research sources
+  add|list|show|test|browse|preview|rm`; `/api/sources` endpoints; a Sources page in the
+  dashboard with a folder browser and file preview.
+- **Data sources in Lab runs.** Pick sources in the New lab run dialog or in plan review.
+  Sources the cluster cannot reach (CephRDS behind the campus VPN, local files) are relayed:
+  fetched on this machine and uploaded to a cached, read-only copy on the cluster. Web and
+  GCS sources are downloaded on the node in a "Staging data" stage. The job reads
+  `$DS_<NAME>`; `sources.json` records exactly which data (manifest hash) a run used. The
+  planner is told about the chosen sources, and pre-flight warns about unknown or failing
+  sources, oversized relays, and scripts that never read their data.
+
+### Fixed
+- **Lab submit never overwrites an existing run folder.** A reused run id (fresh database,
+  restore) used to write into the old `run_N` on the cluster and replace its logs; the old
+  folder is now renamed `run_N.prev-<timestamp>` first.
+
 ## [0.22.1] - 2026-09-28
 
 ### Fixed

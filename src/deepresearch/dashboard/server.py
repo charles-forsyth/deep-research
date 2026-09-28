@@ -171,6 +171,9 @@ class Api:
         self._embed_lock = threading.Lock()
         self.fx = Features(db_path, self._config, AUDIO_DIR)
         self.lab = lab or Lab(db_path, self._config, STATE_DIR)
+        from deepresearch.sources import SourceRegistry
+
+        self.sources = SourceRegistry(db_path)
         self._jobs: dict[int, dict] = {}
         self._job_seq = 0
         self._jobs_lock = threading.Lock()
@@ -239,6 +242,14 @@ class Api:
         r("GET", r"/api/lab/(\d+)/log", self.lab_log)
         r("GET", r"/api/lab/(\d+)/file", self.lab_file)
         r("DELETE", r"/api/lab/(\d+)", self.lab_delete)
+        r("GET", r"/api/sources", self.sources_list)
+        r("POST", r"/api/sources", self.sources_add)
+        r("GET", r"/api/sources/(\d+)", self.sources_get)
+        r("PATCH", r"/api/sources/(\d+)", self.sources_patch)
+        r("DELETE", r"/api/sources/(\d+)", self.sources_delete)
+        r("POST", r"/api/sources/(\d+)/test", self.sources_test)
+        r("GET", r"/api/sources/(\d+)/browse", self.sources_browse)
+        r("GET", r"/api/sources/(\d+)/preview", self.sources_preview)
 
     def _route(self, method: str, pattern: str, fn: Callable) -> None:
         self.routes.append((method, re.compile(f"^{pattern}$"), fn))
@@ -749,6 +760,131 @@ class Api:
             ]
         }
 
+    # ---- data sources ------------------------------------------------------
+
+    def _source(self, sid):
+        s = self.sources.get(int(sid))
+        if not s:
+            raise ApiError(404, f"Source {sid} not found")
+        return s
+
+    def _source_view(self, s, full: bool = False, entries: int = 20) -> dict:
+        d = s.public()
+        if d.get("manifest"):
+            d["manifest"]["entries"] = d["manifest"]["entries"][
+                : 200 if full else entries
+            ]
+        return d
+
+    def sources_list(self, query, body):
+        from deepresearch.sources.adapters import local_roots
+
+        return {
+            "sources": [self._source_view(s, entries=0) for s in self.sources.list()],
+            "local_roots": [str(r) for r in local_roots()],
+        }
+
+    def sources_add(self, query, body):
+        from pydantic import ValidationError
+
+        from deepresearch.cli.sources import guess_kind
+        from deepresearch.sources import DataSource
+        from deepresearch.sources.service import check
+
+        b = dict(body or {})
+        uri = str(b.get("uri") or "").strip()
+        if not uri:
+            raise ApiError(400, "uri is required")
+        b["uri"] = uri
+        b["kind"] = b.get("kind") or guess_kind(uri)
+        if b["kind"].startswith("local_"):
+            b["uri"] = os.path.abspath(os.path.expanduser(uri))
+        b.setdefault("protection_level", "P1" if b["kind"] == "web" else "P2")
+        keep = set(DataSource.model_fields) - {
+            "id",
+            "status",
+            "last_checked",
+            "last_error",
+            "manifest",
+            "created_at",
+            "updated_at",
+        }
+        try:
+            s = DataSource(**{k: v for k, v in b.items() if k in keep})
+            s = self.sources.add(s)
+        except ValidationError as e:
+            raise ApiError(400, e.errors()[0]["msg"]) from e
+        except ValueError as e:
+            raise ApiError(409, str(e)) from e
+        if b.get("test", True):
+            s = check(self.sources, s)
+        return self._source_view(s)
+
+    def sources_get(self, sid, query, body):
+        s = self._source(sid)
+        d = self._source_view(s, full=True)
+        d["used_by"] = self.sources.uses(s)
+        return d
+
+    def sources_patch(self, sid, query, body):
+        from pydantic import ValidationError
+
+        s = self._source(sid)
+        editable = (
+            "title",
+            "description",
+            "tags",
+            "options",
+            "auth_ref",
+            "protection_level",
+            "staging",
+        )
+        data = s.model_dump()
+        data.update({k: v for k, v in (body or {}).items() if k in editable})
+        try:
+            from deepresearch.sources import DataSource
+
+            s = self.sources.update(DataSource(**data))
+        except ValidationError as e:
+            raise ApiError(400, e.errors()[0]["msg"]) from e
+        return self._source_view(s)
+
+    def sources_delete(self, sid, query, body):
+        s = self._source(sid)
+        self.sources.delete(s.id)
+        return {"deleted": s.name}
+
+    def sources_test(self, sid, query, body):
+        from deepresearch.sources.service import check
+
+        return self._source_view(check(self.sources, self._source(sid)))
+
+    def sources_browse(self, sid, query, body):
+        from deepresearch.sources.adapters import SourceError, adapter_for
+
+        path = (query.get("path") or [""])[0]
+        try:
+            return {"path": path, "items": adapter_for(self._source(sid)).list(path)}
+        except SourceError as e:
+            raise ApiError(502, str(e)) from e
+
+    def sources_preview(self, sid, query, body):
+        from deepresearch.sources.adapters import SourceError, adapter_for
+
+        path = (query.get("path") or [""])[0]
+        try:
+            data = adapter_for(self._source(sid)).preview(path, 64_000)
+        except SourceError as e:
+            raise ApiError(502, str(e)) from e
+        text = data.decode("utf-8", "replace")
+        binary = text.count("\ufffd") > len(text) // 20
+        return {
+            "path": path,
+            "binary": binary,
+            "text": "" if binary else text,
+            "bytes": len(data),
+        }
+
     # ---- v0.17: cost, timeline, map, compare, briefs, audio -----------------
 
     def session_usage(self, sid, query, body):
@@ -994,9 +1130,18 @@ class Api:
             if not text.strip():
                 raise ApiError(400, "This session has no report yet")
         request = (body.get("request") or "").strip()[:4000]
-        run = self.lab.create(
-            int(sid), scope, text[:120000], request, body.get("target")
-        )
+        ds = [str(x) for x in body.get("data_sources") or []]
+        try:
+            run = self.lab.create(
+                int(sid),
+                scope,
+                text[:120000],
+                request,
+                body.get("target"),
+                data_sources=ds or None,
+            )
+        except ValueError as e:
+            raise ApiError(400, str(e)) from e
         threading.Thread(
             target=self.lab.make_plan, args=(run["id"], s["prompt"]), daemon=True
         ).start()

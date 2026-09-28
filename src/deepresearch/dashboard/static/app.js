@@ -221,6 +221,7 @@ function openLaunch(prefill) { S.launchPrefill = prefill || null; openTab({ key:
 function openSearch() { openTab({ key: "search", kind: "search", title: "Semantic search" }); }
 function openTree(id) { openTab({ key: `t${id}`, kind: "tree", id: Number(id), title: `Tree #${id}` }); }
 function openMap() { openTab({ key: "map", kind: "map", title: "Research map" }); }
+function openSources() { openTab({ key: "sources", kind: "sources", title: "Data sources" }); }
 function openCompare(a, b) { openTab({ key: `c${a}-${b}`, kind: "compare", a: Number(a), b: Number(b), title: `#${a} \u21C4 #${b}` }); }
 
 function renderStage() {
@@ -234,7 +235,7 @@ function renderStage() {
   const v = document.createElement("div");
   v.className = "view";
   stage.appendChild(v);
-  const renderers = { home: renderHome, session: renderSession, notebook: renderNotebook, launch: renderLaunch, search: renderSearch, tree: renderTree, map: renderMap, compare: renderCompare };
+  const renderers = { home: renderHome, session: renderSession, notebook: renderNotebook, launch: renderLaunch, search: renderSearch, tree: renderTree, map: renderMap, compare: renderCompare, sources: (v) => SRC.render(v), source: (v, t) => SRC.renderOne(v, t.id) };
   (renderers[t.kind] || renderHome)(v, t);
   renderRight();
 }
@@ -994,6 +995,7 @@ function paletteItems(q) {
     ["cmd", "Semantic search", openSearch],
     ["cmd", "New notebook", () => NB.create()],
     ["cmd", "Research map", openMap],
+    ["cmd", "Data sources", openSources],
     ["cmd", "Mission control", () => openTab({ key: "home", kind: "home", title: "Mission control" })],
     ["cmd", "Refresh archive", () => { loadSessions(); loadStats(); }],
     ...S.notebooks.map((n) => ["notebook", n.title, () => openNotebook(n.id, n.title)]),
@@ -1034,6 +1036,7 @@ $("#btn-left").onclick = () => drawer("left");
 $("#btn-right").onclick = () => drawer("right");
 $("#scrim").onclick = closeDrawers;
 $("#btn-new").onclick = () => { closeDrawers(); openLaunch(); };
+$("#btn-sources").onclick = () => { closeDrawers(); openSources(); };
 $("#btn-palette").onclick = openPalette;
 $("#q").addEventListener("input", debounce((e) => { S.q = e.target.value.trim(); loadSessions(); }, 250));
 $("#roots-only").onchange = (e) => { S.rootsOnly = e.target.checked; renderSessionList(); };

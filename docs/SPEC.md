@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.22.1 (package `deepresearch`) |
+| Applies to | deep-research v0.23.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -35,6 +35,7 @@ in [section 17](#17-known-gaps-and-limitations).
 18. [Build, release and operations](#18-build-release-and-operations)
 19. [Extension guide](#19-extension-guide)
 20. [Lab runs](#20-lab-runs)
+21. [Data sources](#21-data-sources)
 
 ---
 
@@ -1360,6 +1361,79 @@ relying on hand-written notes that go stale (before this, the config still said 
   first; conda/pip packages that are already modules; a local container path not in
   `/apps/containers`. Warnings never block submit; the review dialog lists them.
 
+## 21. Data sources
+
+A data source is a named reference to data that lives somewhere else: an open dataset
+on the web, a GCS bucket or prefix, an S3 bucket (including CephRDS) through an rclone
+remote, a folder or file under the user's home directory, or one of the user's own
+reports or notebooks. The registry stores the reference and a credential *reference*
+(`auth_ref`, for example `rclone:ceph` or `gcloud`), never data or secret values. The CLI,
+the dashboard and Lab runs share one registry (table `data_sources` in the history DB,
+plus `data_source_uses`).
+
+### 21.1 Record
+
+| Field | Meaning |
+|---|---|
+| `name` | Unique slug; the Lab job variable is `DS_<NAME>` (upper case, `-` to `_`). |
+| `kind` | `web`, `gcs`, `s3`, `local_folder`, `local_file`, `report`, `notebook`. |
+| `uri` | `https://...`, `gs://bucket/prefix`, `s3://bucket/prefix`, an absolute path, or a session/notebook id. |
+| `auth_ref` | How to reach it: `rclone:<remote>` for S3, `gcloud` for GCS, empty for public web and local. |
+| `protection` | P1-P4, shown for information. Nothing is blocked on it (decision 2026-09-28). |
+| `staging` | `auto`, `relay` or `direct` (21.3). `auto` = direct for web and GCS, relay otherwise. |
+| `status`, `last_error`, `last_tested` | Result of the last test. |
+| `manifest` | File count, total bytes, format counts, up to 5,000 entries, a content hash, `truncated`. |
+
+### 21.2 Adapters
+
+Each kind has an adapter with `test()`, `list(path)`, `preview(path)` (first 64 KB),
+`fetch(dest)` and, where the cluster can do it, `direct_snippet()`. Buckets use tools that
+are already installed on the laptop and the cluster (`gcloud storage`, `rclone`), so no new
+Python dependencies. Local sources must resolve (after symlinks) inside the allowed roots:
+`DR_LOCAL_ROOTS` (path-separator list) or the user's home directory. Path traversal in
+browse and preview is rejected. Browsing reuses the stored manifest when it is complete, so
+folder clicks do not re-list a bucket over the VPN.
+
+### 21.3 Lab staging
+
+Selected sources are listed in `plan.data_sources`. On submit:
+
+- **relay**: the dashboard machine fetches the source (local files, CephRDS over the campus
+  VPN, anything the cluster cannot reach), tars it and uploads it to
+  `<remote_root>/data/<name>-<manifest hash>/` before `sbatch`. A copy that is already
+  there (same hash) is reused. Default cap 2 GB per source (`options.max_relay_bytes`).
+- **direct**: the job downloads the source on the node in a `Staging data` stage (curl for
+  web, `gcloud storage rsync` for GCS, `rclone copy` for S3 remotes the cluster has),
+  under a `flock` so parallel jobs share one download.
+
+Either way the copy is made read-only, the job exports `DS_<NAME>`, `sources.json` in the
+run folder records name, kind, URI, mode, manifest hash and path, and the use is recorded
+in `data_source_uses`. The planner is told which sources were chosen, their variables and
+a sample of their files, and is told never to download them again. Pre-flight warns on an
+unknown source, a source that failed its last test, a relay source over the cap, and a
+script that never reads its `DS_` variable.
+
+Run folders are never overwritten: if `run_N` already holds a `run.sbatch` or `job.log`
+(a reused run id after a fresh DB or a restore), it is renamed `run_N.prev-<timestamp>`
+first.
+
+### 21.4 Interfaces
+
+- CLI: `deep-research sources add|list|show|test|browse|preview|rm`.
+- API: `GET/POST /api/sources`, `GET/PATCH/DELETE /api/sources/{id}`,
+  `POST /api/sources/{id}/test`, `GET /api/sources/{id}/browse?path=`,
+  `GET /api/sources/{id}/preview?path=`; `POST /api/sessions/{sid}/lab` accepts
+  `data_sources`.
+- Dashboard: Sources page (library, add form, test, folder browser, preview) and a source
+  picker in the New lab run dialog and in plan review.
+
+### 21.5 Known gaps
+
+- Sources are not yet offered to research runs or Ask-on-report (plan phase 3).
+- Read-only: nothing is written back to buckets.
+- The dashboard has no login; anyone who can reach it can browse sources under the
+  allowed roots (see section 14).
+
 ---
 
 ## Document history
@@ -1382,3 +1456,4 @@ relying on hand-written notes that go stale (before this, the config still said 
 | 2026-09-27 | v0.21.1 | Pre-flight checks the run script: garbled model tokens, `bash -n`, Python compile (20.6). |
 | 2026-09-27 | v0.22.0 | Fix with AI on failed runs (new draft, REVIEW note for removed options), "Checking inputs" stage in plans, write-up count rule, JSON trailing-data parse; `POST /api/lab/{rid}/fix-failed` (20.4, 20.6). |
 | 2026-09-28 | v0.22.1 | pip on top of a Python module goes into a venv on the module's Python; pre-flight flags script-built venvs (20.2, 20.6). |
+| 2026-09-28 | v0.23.0 | Data sources (section 21): registry, adapters, CLI, API, Sources page, Lab staging (relay/direct), run folders never overwritten. |

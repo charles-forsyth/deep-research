@@ -55,6 +55,10 @@ the cited reports it produces. Everything lives in a local SQLite history on you
 - **Brief builder**: turn a report or notebook into an executive brief, slide outline or email.
 - **Research map**: every report placed by topic similarity, clustered and clickable.
 - **Re-run and compare**: repeat a question later and see what changed, source by source.
+- **Data sources**: register web datasets, GCS buckets, S3/CephRDS buckets and folders in your
+  home directory once, browse and preview them, and include them in Lab runs. Data the cluster
+  cannot reach (CephRDS behind the campus VPN, local files) is uploaded from your machine; web
+  and GCS data is downloaded on the node. Jobs read it read-only from `$DS_<NAME>`.
 - Works on phones and tablets; `Ctrl+K` command palette on desktop.
 
 | Reader with citation cards | Research map |
@@ -98,6 +102,9 @@ deep-research search "What did I find about error correction?"
 deep-research tree                    # recursive runs as a tree
 deep-research delete 12
 deep-research cleanup                 # delete all File Search Stores on this key (asks first)
+deep-research sources add ceph-data s3://my-bucket/project --auth rclone:ceph
+deep-research sources test ceph-data  # list it, count files, record a manifest
+deep-research sources browse ceph-data
 ```
 
 A bare prompt runs `research`. `deep-research <command> --help` documents every option.
