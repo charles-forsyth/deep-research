@@ -5,6 +5,20 @@ from rich.console import Console
 
 console = Console(width=120)
 
+# Display-name prefixes. `cleanup` deletes temporary stores (and unnamed leftovers from
+# older versions) by default; it never deletes source indexes or other named stores
+# unless --all is given.
+TEMP_STORE_PREFIX = "deep-research-temp-"
+SOURCE_STORE_PREFIX = "deep-research-source-"
+
+
+def is_disposable_store(store, protected: set[str] | None = None) -> bool:
+    """True for stores `cleanup` may delete without --all."""
+    if store.name in (protected or set()):
+        return False
+    name = getattr(store, "display_name", None) or ""
+    return name == "" or name.startswith(TEMP_STORE_PREFIX)
+
 
 class FileManager:
     def __init__(self, client):
@@ -16,7 +30,9 @@ class FileManager:
         console.print(
             f"[bold cyan][INFO][/] Uploading {len(paths)} items to a new File Search Store..."
         )
-        store = self.client.file_search_stores.create()
+        store = self.client.file_search_stores.create(
+            config={"display_name": f"{TEMP_STORE_PREFIX}{int(time.time())}"}
+        )
         self.created_stores.append(store.name)
         console.print(f"[bold cyan][INFO][/] Created temporary store: {store.name}")
 

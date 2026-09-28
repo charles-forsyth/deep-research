@@ -212,16 +212,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser_cleanup = subparsers.add_parser(
         "cleanup",
-        help="Delete ALL File Search Stores on this API key",
+        help="Delete temporary File Search Stores left on this API key",
         description=(
-            "Delete ALL File Search Stores on this API key, with their "
-            "documents. That includes stores you pass with --stores, "
-            "not only temporary ones left behind by crashed uploads. Asks for "
-            "confirmation unless --force is given."
+            "Delete temporary File Search Stores (uploads from past runs, and "
+            "unnamed leftovers from older versions) with their documents. Named "
+            "stores, such as data source indexes, are kept. --all deletes ALL "
+            "File Search Stores on this API key, including stores you pass with "
+            "--stores. Asks for confirmation unless --force is given."
         ),
     )
     parser_cleanup.add_argument(
         "--force", action="store_true", help="Delete without confirmation"
+    )
+    parser_cleanup.add_argument(
+        "--all",
+        action="store_true",
+        help="Also delete named stores (data source indexes, your own stores)",
     )
 
     parser_tree = subparsers.add_parser(

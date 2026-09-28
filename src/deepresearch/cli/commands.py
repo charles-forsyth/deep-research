@@ -341,21 +341,40 @@ def handle_cleanup(args):
         console.print(f"[bold red][ERROR][/] Failed to list stores: {e}")
         return
 
+    from deepresearch.storage.files import is_disposable_store
+
+    protected = _protected_stores()
+    keep = (
+        []
+        if getattr(args, "all", False)
+        else [s for s in stores if not is_disposable_store(s, protected)]
+    )
+    kept = {s.name for s in keep}
+    stores = [s for s in stores if s.name not in kept]
+    if keep:
+        console.print(
+            f"[bold cyan][INFO][/] Keeping {len(keep)} named store(s) "
+            "(data source indexes or stores you created); use --all to include them:"
+        )
+        for s in keep:
+            console.print(f"  {s.name}  {getattr(s, 'display_name', '') or ''}")
+
     if not stores:
-        console.print("[bold green]No active stores found. System is clean![/]")
+        console.print("[bold green]No temporary stores found. System is clean![/]")
         return
 
-    table = Table(title=f"Found {len(stores)} Active Cloud Stores")
+    table = Table(title=f"Found {len(stores)} store(s) to delete")
     table.add_column("Name (ID)", style="cyan")
+    table.add_column("Display name")
     table.add_column("Create Time", style="dim")
 
     for s in stores:
         created = getattr(s, "create_time", "Unknown")
-        table.add_row(s.name, str(created))
+        table.add_row(s.name, str(getattr(s, "display_name", "") or ""), str(created))
 
     console.print(table)
     console.print(
-        "[bold yellow]WARNING: This will delete ALL listed stores and their files.[/]"
+        "[bold yellow]WARNING: This will delete the listed stores and their files.[/]"
     )
 
     if not args.force:
@@ -394,6 +413,21 @@ def handle_cleanup(args):
                 console.print(f"[bold red]Failed to delete {s.name}:[/] {e}")
 
     console.print("[bold green]Cleanup Complete![/]")
+
+
+def _protected_stores() -> set[str]:
+    """Store names the data source registry points at (options.store)."""
+    try:
+        from deepresearch.sources import SourceRegistry
+        from deepresearch.core.config import user_db_path
+
+        return {
+            str(s.options.get("store"))
+            for s in SourceRegistry(user_db_path).list(include_temporary=True)
+            if s.options.get("store")
+        }
+    except Exception:
+        return set()
 
 
 def handle_tree(args):

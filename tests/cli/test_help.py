@@ -63,9 +63,10 @@ def test_start_forwards_stores_to_child(mock_mgr, mock_detach):
     assert child_args[i + 1] == "fileSearchStores/abc"
 
 
-def test_cleanup_help_warns_it_deletes_everything():
+def test_cleanup_help_explains_default_and_all():
     text = " ".join(_sub_help("cleanup").split())
-    assert "ALL File Search Stores" in text
+    assert "Named stores, such as data source indexes, are kept" in text
+    assert "--all deletes ALL File Search Stores" in text
     assert "--stores" in text
 
 
