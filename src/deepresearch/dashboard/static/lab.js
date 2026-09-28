@@ -37,6 +37,11 @@ const LAB = {
       </div>
       <div class="lab-sug">${sug ? this.sugHtml(sug) : `<div class="lab-sug-empty"><button class="btn small" data-l="sug">Suggest computations for this report</button> <span class="dim" style="font-size:11px">Gemini reads the report and proposes up to 3 runnable jobs (about a cent)</span></div>`}</div>
       <div class="lab-runs">${data.runs.map((r) => this.runHtml(r)).join("")}</div>`;
+    if (S.scrollToLab) {  // arrived from the Lab runs page: show that run
+      const card = body.querySelector(`.lab-run[data-run="${S.scrollToLab}"]`);
+      S.scrollToLab = null;
+      if (card) setTimeout(() => { card.scrollIntoView({ behavior: "smooth", block: "center" }); card.classList.add("flash"); }, 150);
+    }
     body.querySelector('[data-l="doc"]').onclick = () => this.startDialog(s, { scope: "document" });
     this.catalogLine(body.querySelector(".lab-cat"));
     body.querySelector('[data-l="sug"]')?.addEventListener("click", (e) => this.loadSuggestions(el, s, e.target));
@@ -398,5 +403,38 @@ const LAB = {
       const first = t.targets[0];
       if (first) { this.targetLabel = first.label; this.partitions = first.partitions; }
     } catch { /* optional */ }
+  },
+
+  // ------------------------------------------------------------------ all runs page
+  async renderAll(v) {
+    v.innerHTML = `<div class="runs-view"><div class="runs-head"><h2>Lab runs</h2>
+      <select id="runs-filter"><option value="">All</option><option value="live">Running or queued</option><option value="draft">Waiting for review</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select>
+      <span class="grow"></span><span class="dim" id="runs-count"></span></div>
+      <div id="runs-body"><span class="spinner"></span></div></div>`;
+    const live = ["planning", "submitting", "queued", "running", "fetching", "analyzing"];
+    const draw = (runs) => {
+      const f = $("#runs-filter").value;
+      const shown = runs.filter((r) => !f || (f === "live" ? live.includes(r.status) : f === "failed" ? ["failed", "plan_failed"].includes(r.status) : r.status === f));
+      $("#runs-count").textContent = `${shown.length} of ${runs.length}`;
+      $("#runs-body").innerHTML = shown.length ? `<table class="runs-table"><thead><tr><th>#</th><th>Status</th><th>What</th><th>Report</th><th>Where</th><th title="worst case: nodes x time limit x list price">Max cost</th><th>Updated</th></tr></thead><tbody>${shown.map((r) => {
+        const p = r.plan || {};
+        const badge = { draft: "review", plan_failed: "failed", submitting: "running", fetching: "running", analyzing: "running" }[r.status] || r.status;
+        const cost = r.estimate_usd != null ? "\u2264 $" + (+r.estimate_usd).toFixed(2) : "";
+        return `<tr data-sid="${r.session_id}" data-rid="${r.id}">
+          <td class="mono">${r.id}</td>
+          <td><span class="status-badge ${esc(badge)}">${esc(badge)}</span></td>
+          <td><div class="runs-title">${esc(p.title || (r.scope === "selection" ? "Selected passage" : "Whole report"))}</div><div class="dim runs-stage">${esc(r.error ? clip(r.error, 140) : (r.stage || ""))}</div></td>
+          <td class="runs-report" title="${esc(r.session_title || "")}">#${r.session_id} ${esc(clip(r.session_title || "", 60))}</td>
+          <td class="mono dim">${esc((p.resources || {}).partition || "")}${r.job_id ? `<div>job ${esc(r.job_id)}</div>` : ""}</td>
+          <td class="mono dim">${esc(cost)}</td>
+          <td class="dim">${esc(ago(r.updated_at))}</td></tr>`;
+      }).join("")}</tbody></table>` : `<div class="dim" style="padding:20px">No lab runs${f ? " match this filter" : " yet. Start one from any report"}.</div>`;
+      $$("#runs-body tr[data-sid]").forEach((tr) => (tr.onclick = () => { S.scrollToLab = +tr.dataset.rid; openSession(+tr.dataset.sid); }));
+    };
+    try {
+      const { runs } = await api("/api/lab/runs");
+      $("#runs-filter").onchange = () => draw(runs);
+      draw(runs);
+    } catch (e) { $("#runs-body").innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; }
   },
 };

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.24.0 (package `deepresearch`) |
+| Applies to | deep-research v0.25.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1478,3 +1478,4 @@ indexes, or stores the user made) and stores a data source points at are kept an
 | 2026-09-28 | v0.22.1 | pip on top of a Python module goes into a venv on the module's Python; pre-flight flags script-built venvs (20.2, 20.6). |
 | 2026-09-28 | v0.23.0 | Data sources (section 21): registry, adapters, CLI, API, Sources page, Lab staging (relay/direct), run folders never overwritten. |
 | 2026-09-28 | v0.24.0 | Data sources in research runs and Ask (21.5); `cleanup` keeps named stores, `--all` (21.6). |
+| 2026-09-28 | v0.25.0 | Queue status counts NODE_FAIL requeues (`node_fails`); `GET /api/lab/runs` and the Lab runs page; compact selection toolbar (11). |

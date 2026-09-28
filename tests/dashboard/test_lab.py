@@ -455,6 +455,52 @@ def test_status_parses_sacct_squeue_stage(monkeypatch):
     st = tgt.status(1, "99")
     assert st["slurm_state"] == "RUNNING" and st["stage"] == "Installing software"
     assert st["log_size"] == 1234 and st["node"] == "node-1"
+    assert st["node_fails"] == 0  # old output without the NODE_FAIL count
+
+
+def test_status_counts_node_failures(monkeypatch):
+    """Run #29: 14 NODE_FAIL requeues looked like a normal 'waiting for a node'."""
+    tgt = labm.SlurmSSHTarget({"name": "x", "ssh_host": "h", "partitions": {}})
+    out = (
+        "PENDING|00:00:00|None assigned|0:0|None\n::SQ::\nPENDING|BeginTime|0:00|\n"
+        "::NF::\n14\n::ST::\n\n::SZ::\n0\n"
+    )
+    monkeypatch.setattr(tgt, "sh", lambda cmd, stdin=None, timeout=120: out)
+    st = tgt.status(1, "202")
+    assert st["slurm_state"] == "PENDING" and st["node_fails"] == 14
+
+
+def test_queue_label_says_when_nodes_keep_failing(tmp_path):
+    fake = FakeTarget()
+    fake.state = "PENDING"
+    lab = Lab(str(tmp_path / "h.db"), lambda: None, tmp_path, targets={"fake": fake})
+    lab.ensure_watcher = lambda: None  # type: ignore[method-assign]
+    plan = {**PLAN, "resources": {**PLAN["resources"], "partition": "spot"}}
+    run = lab.create(1, "document", "t", plan=plan)
+    lab.submit(run["id"])
+    base = fake.status
+
+    fake.status = lambda rid, jid: {
+        **base(rid, jid),
+        "reason": "BeginTime",
+        "node_fails": 1,
+    }
+    lab.poll(lab.get(run["id"]))
+    st = lab.get(run["id"])["stage"]
+    assert (
+        st.startswith("Requeued after 1 node failure on spot") and "another" not in st
+    )
+
+    fake.status = lambda rid, jid: {**base(rid, jid), "node_fails": 14}
+    lab.poll(lab.get(run["id"]))
+    st = lab.get(run["id"])["stage"]
+    assert (
+        "14 node failures on spot" in st and "resubmitting on another partition" in st
+    )
+
+    fake.status = lambda rid, jid: {**base(rid, jid), "node_fails": 0}
+    lab.poll(lab.get(run["id"]))
+    assert lab.get(run["id"])["stage"] == "Queued, waiting for a node"
 
 
 # ---- HTTP API ----------------------------------------------------------------
@@ -1484,3 +1530,26 @@ def test_submit_moves_an_old_run_folder_aside_instead_of_overwriting(
     assert (prev[0] / "outputs" / "result.txt").read_text() == "old result"
     assert (tmp_path / "root" / "run_1" / "run.sbatch").exists()
     assert not (tmp_path / "root" / "run_1" / "job.log").exists()
+
+
+def test_all_runs_lists_every_run_with_report_title(app, tmp_path):  # noqa: F811
+    api = app["api"]
+    api.lab.targets = {"fake": FakeTarget()}
+    a = _seed(api, "Aspirin question", "Aspirin MW is 180.")
+    b = _seed(api, "Caffeine question", "Caffeine MW is 194.")
+    api.lab.create(a, "document", "x", plan=dict(PLAN))
+    api.lab.create(b, "document", "y", plan=dict(PLAN))
+    status, data = app["call"]("GET", "/api/lab/runs")
+    assert status == 200
+    runs = data["runs"]
+    assert [r["session_id"] for r in runs] == [b, a]  # newest first
+    assert runs[0]["session_title"].startswith("Caffeine") and "script" not in runs[0]
+    assert runs[0]["target_label"] == "Fake cluster"
+
+
+def test_all_runs_without_sessions_table(tmp_path):
+    lab = Lab(
+        str(tmp_path / "h.db"), lambda: None, tmp_path, targets={"fake": FakeTarget()}
+    )
+    lab.create(1, "document", "t", plan=dict(PLAN))
+    assert lab.all_runs()[0]["session_prompt"] is None

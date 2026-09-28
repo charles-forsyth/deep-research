@@ -7,6 +7,25 @@ releases.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-09-28
+
+### Added
+- **Lab runs page.** Every Lab run in one list, newest first, with status, the report it
+  belongs to, partition and job id, worst-case cost and last update, and a status filter.
+  Click a row to open its report at that run. `GET /api/lab/runs`. On phones, Lab runs and
+  Data sources move from the top bar to the bottom of the archive panel and the command
+  palette.
+
+### Fixed
+- **Queued runs no longer hide node failures.** A spot job that Slurm keeps requeueing after
+  node failures (run #29: 15 NODE_FAIL attempts, shown as "Queued, waiting for a node")
+  now reads "Requeued after N node failures on spot: the cluster could not start a node",
+  and after 3 failures suggests cancelling and resubmitting on another partition.
+
+### Changed
+- **Smaller selection toolbar.** One Highlight button (amber) with the other colours behind
+  a small arrow, and plainer labels.
+
 ## [0.24.0] - 2026-09-28
 
 ### Added
