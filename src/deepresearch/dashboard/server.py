@@ -456,9 +456,28 @@ class Api:
         from deepresearch.cli.base import FollowUpRequest
         from deepresearch.core.agent import DeepResearchAgent
 
+        names = [str(n) for n in (body or {}).get("data_sources") or []]
+        full = prompt
+        if names:
+            from deepresearch.sources.usage import ask_prompt, resolve
+
+            try:
+                srcs = resolve(self.sources, names)
+                full = ask_prompt(prompt, srcs)
+            except Exception as e:
+                raise ApiError(400, str(e)) from e
         agent = DeepResearchAgent(config=self._config(), quiet=True)
         before = self._session(sid).get("result") or ""
-        agent.follow_up(FollowUpRequest(interaction_id=iid, prompt=prompt))
+        agent.follow_up(
+            FollowUpRequest(
+                interaction_id=iid,
+                prompt=full,
+                display_prompt=prompt,
+                sources=names or None,
+            )
+        )
+        for s in srcs if names else []:
+            self.sources.record_use(s, "session", int(sid))
         after = self._session(sid).get("result") or ""
         if after == before:
             raise ApiError(502, "Follow-up returned no text (see server log)")
@@ -546,6 +565,10 @@ class Api:
             if not Path(p).exists():
                 raise ApiError(400, f"Upload missing: {p}")
         stores = [str(s).strip() for s in body.get("stores") or [] if str(s).strip()]
+        ds = [str(n) for n in body.get("data_sources") or []]
+        for n in ds:
+            if self.sources.get(n) is None:
+                raise ApiError(400, f"data source '{n}' does not exist")
         fmt = (body.get("format") or "").strip()
         if not os.getenv("GEMINI_API_KEY"):
             raise ApiError(400, "GEMINI_API_KEY is not set for the dashboard process")
@@ -556,6 +579,8 @@ class Api:
             args += ["--upload", *uploads]
         if stores:
             args += ["--stores", *stores]
+        for n in ds:
+            args += ["--source", n]
         if fmt:
             args += ["--format", fmt]
         args += ["--depth", str(depth), "--breadth", str(breadth)]

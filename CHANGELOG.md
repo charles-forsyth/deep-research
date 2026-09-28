@@ -7,6 +7,22 @@ releases.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-09-28
+
+### Added
+- **Data sources in research runs.** `research`/`start --source NAME` (repeatable) and a
+  Data sources picker in the launcher. Readable files are fetched on this machine and
+  searched like `--upload` (up to 200 files and 200 MB per source).
+- **Data sources in follow-up questions.** `followup --source NAME` and an "Include data"
+  picker above the Ask box. The source text goes to the model with the question; the report
+  records only your question and which sources were used.
+
+### Changed
+- **`cleanup` keeps named stores.** It now deletes only temporary upload stores (named
+  `deep-research-temp-*`) and unnamed leftovers from older versions; data source indexes and
+  stores you named are kept and listed. `cleanup --all` deletes every store, as before.
+  Upload stores are now created with a `deep-research-temp-<time>` display name.
+
 ## [0.23.0] - 2026-09-28
 
 ### Added

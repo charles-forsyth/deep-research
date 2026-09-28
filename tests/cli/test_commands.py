@@ -107,6 +107,45 @@ def test_main_cleanup(mock_config, mock_client, mock_session_manager):
     client_instance.file_search_stores.delete.assert_called_with(name="stores/123")
 
 
+def _store(name, display=None):
+    m = MagicMock()
+    m.name = name
+    m.display_name = display
+    return m
+
+
+@patch("deepresearch.cli.commands._protected_stores", return_value={"stores/src-by-id"})
+@patch("deepresearch.cli.commands.genai.Client")
+@patch("deepresearch.cli.commands.DeepResearchConfig")
+def test_cleanup_keeps_named_and_source_stores(
+    mock_config, mock_client, _prot, mock_session_manager, monkeypatch
+):
+    monkeypatch.setattr("sys.argv", ["deepresearch", "cleanup", "--force"])
+    c = mock_client.return_value
+    c.file_search_stores.list.return_value = [
+        _store("stores/temp", "deep-research-temp-1"),
+        _store("stores/old"),
+        _store("stores/src", "deep-research-source-ceph"),
+        _store("stores/mine", "my team docs"),
+        _store("stores/src-by-id"),
+    ]
+    main()
+    deleted = {k.kwargs["name"] for k in c.file_search_stores.delete.call_args_list}
+    assert deleted == {"stores/temp", "stores/old"}
+
+    c.file_search_stores.delete.reset_mock()
+    monkeypatch.setattr("sys.argv", ["deepresearch", "cleanup", "--force", "--all"])
+    main()
+    deleted = {k.kwargs["name"] for k in c.file_search_stores.delete.call_args_list}
+    assert deleted == {
+        "stores/temp",
+        "stores/old",
+        "stores/src",
+        "stores/mine",
+        "stores/src-by-id",
+    }
+
+
 @patch("sys.argv", ["deepresearch", "tree", "1"])
 def test_main_tree_single(mock_session_manager):
     mgr_instance = mock_session_manager.return_value

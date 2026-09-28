@@ -88,3 +88,21 @@ def test_file_manager_cleanup_error(mock_client):
     mock_client.file_search_stores.documents.list.side_effect = Exception("List error")
     mock_client.file_search_stores.delete.side_effect = Exception("Delete error")
     fm.cleanup()  # Should swallow exceptions
+
+
+def test_temp_stores_get_a_disposable_display_name(mock_client):
+    from deepresearch.storage.files import TEMP_STORE_PREFIX, is_disposable_store
+
+    fm = FileManager(mock_client)
+    fm.create_store_from_paths([])
+    cfg = mock_client.file_search_stores.create.call_args.kwargs["config"]
+    assert cfg["display_name"].startswith(TEMP_STORE_PREFIX)
+
+    class S:
+        def __init__(self, name, display_name):
+            self.name, self.display_name = name, display_name
+
+    assert is_disposable_store(S("a", cfg["display_name"]))
+    assert is_disposable_store(S("b", None))
+    assert not is_disposable_store(S("c", "deep-research-source-x"))
+    assert not is_disposable_store(S("d", None), protected={"d"})

@@ -14,6 +14,7 @@ from google import genai
 from deepresearch.core.config import (
     DeepResearchConfig,
     user_config_path,
+    user_db_path,
     xdg_config_home,
 )
 from deepresearch.core.session import SessionManager
@@ -44,13 +45,47 @@ def detach_process(args_list: list[str], log_path: str) -> int:
         return proc.pid
 
 
+def _source_uploads(args) -> list[str] | None:
+    """Fetch --source data into local folders and add them to the uploads."""
+    names = getattr(args, "source", None) or []
+    if not names:
+        return args.upload
+    from deepresearch.sources import SourceRegistry
+    from deepresearch.sources.usage import research_uploads, resolve
+
+    srcs = resolve(SourceRegistry(user_db_path), names)
+    paths, notes = research_uploads(srcs)
+    for n in notes:
+        print(f"[INFO] data source {n}")
+    return (args.upload or []) + paths
+
+
+def _record_source_use(args, session_id) -> None:
+    names = getattr(args, "source", None) or []
+    if not names or not session_id:
+        return
+    from deepresearch.sources import SourceRegistry
+
+    reg = SourceRegistry(user_db_path)
+    for n in names:
+        s = reg.get(n)
+        if s:
+            reg.record_use(s, "session", int(session_id))
+
+
 def handle_research(args):
+    try:
+        uploads = _source_uploads(args)
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        sys.exit(2)
+    _record_source_use(args, args.adopt_session)
     request = ResearchRequest(
         prompt=args.prompt,
         stores=args.stores,
         stream=args.stream,
         output_format=args.format,
-        upload_paths=args.upload,
+        upload_paths=uploads,
         output_file=args.output,
         adopt_session_id=args.adopt_session,
         depth=args.depth,
@@ -179,6 +214,8 @@ def handle_start(args):
         child_args += ["--upload"] + args.upload
     if args.stores:
         child_args += ["--stores"] + args.stores
+    for n in getattr(args, "source", None) or []:
+        child_args += ["--source", n]
     if args.format:
         child_args += ["--format", args.format]
     if args.output:
@@ -212,7 +249,25 @@ def handle_followup(args):
             print(f"[ERROR] Session #{args.id} not found or invalid.")
             return
 
-    request = FollowUpRequest(interaction_id=interaction_id, prompt=args.prompt)
+    prompt = args.prompt
+    names = getattr(args, "source", None) or []
+    if names:
+        from deepresearch.sources import SourceRegistry
+        from deepresearch.sources.usage import ask_prompt, resolve
+
+        try:
+            prompt = ask_prompt(
+                args.prompt, resolve(SourceRegistry(user_db_path), names)
+            )
+        except Exception as e:
+            print(f"[ERROR] {e}")
+            return
+    request = FollowUpRequest(
+        interaction_id=interaction_id,
+        prompt=prompt,
+        display_prompt=args.prompt,
+        sources=names or None,
+    )
     agent = DeepResearchAgent()
     agent.follow_up(request)
 
@@ -341,21 +396,40 @@ def handle_cleanup(args):
         console.print(f"[bold red][ERROR][/] Failed to list stores: {e}")
         return
 
+    from deepresearch.storage.files import is_disposable_store
+
+    protected = _protected_stores()
+    keep = (
+        []
+        if getattr(args, "all", False)
+        else [s for s in stores if not is_disposable_store(s, protected)]
+    )
+    kept = {s.name for s in keep}
+    stores = [s for s in stores if s.name not in kept]
+    if keep:
+        console.print(
+            f"[bold cyan][INFO][/] Keeping {len(keep)} named store(s) "
+            "(data source indexes or stores you created); use --all to include them:"
+        )
+        for s in keep:
+            console.print(f"  {s.name}  {getattr(s, 'display_name', '') or ''}")
+
     if not stores:
-        console.print("[bold green]No active stores found. System is clean![/]")
+        console.print("[bold green]No temporary stores found. System is clean![/]")
         return
 
-    table = Table(title=f"Found {len(stores)} Active Cloud Stores")
+    table = Table(title=f"Found {len(stores)} store(s) to delete")
     table.add_column("Name (ID)", style="cyan")
+    table.add_column("Display name")
     table.add_column("Create Time", style="dim")
 
     for s in stores:
         created = getattr(s, "create_time", "Unknown")
-        table.add_row(s.name, str(created))
+        table.add_row(s.name, str(getattr(s, "display_name", "") or ""), str(created))
 
     console.print(table)
     console.print(
-        "[bold yellow]WARNING: This will delete ALL listed stores and their files.[/]"
+        "[bold yellow]WARNING: This will delete the listed stores and their files.[/]"
     )
 
     if not args.force:
@@ -394,6 +468,20 @@ def handle_cleanup(args):
                 console.print(f"[bold red]Failed to delete {s.name}:[/] {e}")
 
     console.print("[bold green]Cleanup Complete![/]")
+
+
+def _protected_stores() -> set[str]:
+    """Store names the data source registry points at (options.store)."""
+    try:
+        from deepresearch.sources import SourceRegistry
+
+        return {
+            str(s.options.get("store"))
+            for s in SourceRegistry(user_db_path).list(include_temporary=True)
+            if s.options.get("store")
+        }
+    except Exception:
+        return set()
 
 
 def handle_tree(args):

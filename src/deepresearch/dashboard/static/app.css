@@ -591,3 +591,8 @@ pre.lab-script { max-height: 300px; }
   .src-split { grid-template-columns: 1fr; }
   .src-table th:nth-child(n+5), .src-table td:nth-child(n+5) { display: none; }
 }
+
+/* data source picker in the Ask dock */
+.dock-ds { max-width: 860px; margin: 0 auto 6px; }
+.src-picker.compact { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+.src-picker.compact .src-pick { width: auto; min-width: 180px; padding: 3px 6px; font-size: 12px; }
