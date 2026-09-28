@@ -439,4 +439,8 @@ ADAPTERS: dict[str, type[SourceAdapter]] = {
 
 
 def adapter_for(source: DataSource) -> SourceAdapter:
+    if source.kind == "public_bucket":
+        from deepresearch.sources.public import PublicBucketAdapter
+
+        return PublicBucketAdapter(source)
     return ADAPTERS[source.kind](source)

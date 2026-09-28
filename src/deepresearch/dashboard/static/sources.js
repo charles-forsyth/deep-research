@@ -6,7 +6,7 @@ const SRC = {
   list: [],
   roots: [],
 
-  kindLabel: { web: "Web", gcs: "GCS", s3: "S3 / Ceph", local_folder: "Folder", local_file: "File", report: "Report", notebook: "Notebook" },
+  kindLabel: { web: "Web", gcs: "GCS", s3: "S3 / Ceph", public_bucket: "Public bucket", local_folder: "Folder", local_file: "File", report: "Report", notebook: "Notebook" },
 
   size(n) {
     if (!n) return "0 B";
@@ -56,8 +56,8 @@ const SRC = {
   discover(v) {
     const d = $("#src-disc", v); d.hidden = false;
     d.innerHTML = `<div class="src-card">
-      <div class="src-disc-bar"><input id="sd-q" placeholder="Search Data.gov, Zenodo and Hugging Face, e.g. ozone monitoring 2024" autocomplete="off"><button class="btn primary small" id="sd-go">Search</button><button class="btn small" id="sd-close">Close</button></div>
-      <div class="dim" style="font-size:11.5px">Nothing is downloaded while you search. Check each dataset's license before you use it.</div>
+      <div class="src-disc-bar"><input id="sd-q" placeholder="Search Data.gov, Zenodo, Hugging Face, AWS Open Data, Google Cloud, Earth Engine" autocomplete="off"><button class="btn primary small" id="sd-go">Search</button><button class="btn small" id="sd-close">Close</button></div>
+      <div class="dim" style="font-size:11.5px">Free sources only. Nothing is downloaded while you search. Check each dataset's license before you use it.</div>
       <div id="sd-res"></div></div>`;
     $("#sd-close", d).onclick = () => { d.hidden = true; };
     const run = async () => {
@@ -67,11 +67,31 @@ const SRC = {
       try { out = await api(`/api/sources/discover?q=${encodeURIComponent(q)}`); } catch (e) { box.innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
       const errs = Object.entries(out.errors || {}).map(([c, e]) => `<div class="dim" style="font-size:11px">${esc(c)} unavailable: ${esc(clip(e, 120))}</div>`).join("");
       box.innerHTML = errs + (out.results.length ? out.results.map((r, i) => `<div class="src-hit">
-        <div class="src-hit-h"><b>${esc(r.title)}</b> <span class="chip">${esc({ datagov: "Data.gov", zenodo: "Zenodo", huggingface: "Hugging Face" }[r.catalog] || r.catalog)}</span> <span class="dim src-hit-lic">${esc(r.license || "license not stated")}${r.publisher ? " \u00b7 " + esc(clip(r.publisher, 60)) : ""}</span></div>
+        <div class="src-hit-h"><b>${esc(r.title)}</b> <span class="chip">${esc({ datagov: "Data.gov", zenodo: "Zenodo", huggingface: "Hugging Face", aws: "AWS Open Data", gcp: "Google Cloud", earthengine: "Earth Engine" }[r.catalog] || r.catalog)}</span> <span class="dim src-hit-lic">${esc(r.license || "license not stated")}${r.publisher ? " \u00b7 " + esc(clip(r.publisher, 60)) : ""}</span></div>
         ${r.description ? `<div class="dim" style="font-size:12px">${esc(clip(r.description, 260))}</div>` : ""}
         <div style="font-size:11.5px">${r.page ? `<a class="src-hit-page" href="${esc(r.page)}" target="_blank" rel="noopener">dataset page \u2197</a>` : ""}</div>
-        ${r.files.length ? `<div class="src-hit-files">${r.files.slice(0, 5).map((f, j) => `<div><span class="mono dim">${esc(f.format || "?")}</span> <span class="mono src-uri" title="${esc(f.url)}">${esc(f.title || f.url)}</span> <button class="linkbtn" data-add="${i}:${j}">add as source</button></div>`).join("")}</div>` : '<div class="dim" style="font-size:11px">No direct download links; open the dataset page.</div>'}
+        ${(r.buckets || []).length ? `<div class="src-hit-files">${r.buckets.slice(0, 5).map((b, j) => `<div><span class="mono dim">bucket</span> <span class="mono src-uri" title="${esc(b.uri + (b.title ? " \u2014 " + b.title : ""))}">${esc(b.uri)}</span> <button class="linkbtn" data-addb="${i}:${j}" title="Read anonymously over HTTPS: free, no account">add as source</button></div>`).join("")}<div class="dim" style="font-size:10.5px">Public bucket: read anonymously, free. Big buckets: add a narrower prefix or file filter.</div></div>` : ""}
+        ${r.note ? `<div class="dim" style="font-size:11px">${esc(r.note)}</div>` : ""}
+        ${r.files.length ? `<div class="src-hit-files">${r.files.slice(0, 5).map((f, j) => `<div><span class="mono dim">${esc(f.format || "?")}</span> <span class="mono src-uri" title="${esc(f.url)}">${esc(f.title || f.url)}</span> <button class="linkbtn" data-add="${i}:${j}">add as source</button></div>`).join("")}</div>` : (r.buckets || []).length || r.note ? "" : '<div class="dim" style="font-size:11px">No direct download links; open the dataset page.</div>'}
       </div>`).join("") : '<div class="dim">No datasets found.</div>');
+      $$("[data-addb]", box).forEach((b) => (b.onclick = async () => {
+        const [i, j] = b.dataset.addb.split(":").map(Number);
+        const r = out.results[i], bk = r.buckets[j];
+        const tail = bk.uri.replace(/^(s3|gs):\/\//, "").split("/").filter(Boolean).pop() || "bucket";
+        const name = prompt("Name for this source", tail.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "") || "bucket"); if (!name) return;
+        const sub = prompt("Only a part of the bucket? Add a sub-folder (optional), e.g. csv/by_year", "");
+        if (sub === null) return;
+        const inc = prompt("Only files matching (optional, comma separated), e.g. *.csv", "");
+        if (inc === null) return;
+        const uri = sub.trim() ? bk.uri.replace(/\/+$/, "") + "/" + sub.trim().replace(/^\/+|\/+$/g, "") : bk.uri;
+        const include = inc.split(",").map((x) => x.trim()).filter(Boolean);
+        b.disabled = true; b.textContent = "listing\u2026";
+        try {
+          const s = await api("/api/sources", { method: "POST", body: { name, uri, kind: "public_bucket", title: clip(r.title, 120), description: `${r.page || ""} (license: ${clip(r.license || "not stated", 100)})`.trim(), tags: [r.catalog], options: { ...(include.length ? { include } : {}), ...(bk.region ? { region: bk.region } : {}) } } });
+          toast(s.status === "ok" ? `Added ${s.name} (${s.manifest?.file_count ?? 0}${s.manifest?.truncated ? "+" : ""} files)` : `Saved ${s.name}, but: ${s.last_error}`, s.status === "ok" ? "ok" : "err");
+          b.textContent = "added";
+        } catch (e) { toast(e.message, "err"); b.disabled = false; b.textContent = "add as source"; }
+      }));
       $$("[data-add]", box).forEach((b) => (b.onclick = async () => {
         const [i, j] = b.dataset.add.split(":").map(Number);
         const r = out.results[i], f = r.files[j];
@@ -97,7 +117,7 @@ const SRC = {
         <label>Name<input id="sf-name" placeholder="noaa-ghcn" autocomplete="off"></label>
         <label>Location<input id="sf-uri" placeholder="https://..., gs://bucket/prefix, s3://bucket/prefix, or ~/data/folder" autocomplete="off"></label>
         <label>Kind<select id="sf-kind"><option value="">auto</option>${Object.entries(this.kindLabel).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select></label>
-        <label>Credentials<input id="sf-auth" placeholder="S3/Ceph: rclone:ceph" autocomplete="off"></label>
+        <label>Credentials<input id="sf-auth" placeholder="blank = public bucket (free, anonymous); Ceph: rclone:ceph" autocomplete="off"></label>
         <label>Lab staging<select id="sf-staging"><option value="auto">auto</option><option value="relay">relay (this machine uploads)</option><option value="direct">direct (cluster downloads)</option></select></label>
         <label>Level<select id="sf-level"><option value="">default</option><option>P1</option><option>P2</option><option>P3</option><option>P4</option></select></label>
         <label class="wide">Title<input id="sf-title" autocomplete="off"></label>

@@ -7,8 +7,11 @@ Google Dataset Search has no API, so discovery queries catalogs that do:
 - Zenodo (research data with DOIs), public API, no key.
 - Hugging Face Hub datasets, public API, no key.
 
-Each hit carries direct download links where the catalog has them, so "add as a source"
-creates a `web` source for one file (the Lab downloads it on the node). Nothing is
+- AWS Open Data, Google Cloud public buckets and Earth Engine (cloud_catalogs.py); only
+  free, anonymous-read data is offered.
+
+Each hit carries direct download links (`files`, added as `web` sources) or public
+buckets (`buckets`, added as `public_bucket` sources, read anonymously). Nothing is
 downloaded during search.
 """
 
@@ -25,7 +28,7 @@ from typing import Any
 
 UA = "deep-research dataset discovery"
 TIMEOUT = 20
-CATALOGS = ("datagov", "zenodo", "huggingface")
+CATALOGS = ("datagov", "zenodo", "huggingface", "aws", "gcp", "earthengine")
 
 
 def _get(url: str, headers: dict[str, str] | None = None) -> Any:
@@ -36,6 +39,7 @@ def _get(url: str, headers: dict[str, str] | None = None) -> Any:
 
 def _clip(s: Any, n: int = 400) -> str:
     s = re.sub(r"<[^>]+>", " ", str(s or ""))
+    s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)  # markdown links -> their text
     s = re.sub(r"\s+", " ", html.unescape(s)).strip()
     return s[:n] + ("..." if len(s) > n else "")
 
@@ -164,10 +168,26 @@ def search_huggingface(q: str, limit: int = 8) -> list[dict[str, Any]]:
     return out
 
 
+def _cloud(name: str):
+    def run(q: str, limit: int = 8) -> list[dict[str, Any]]:
+        from deepresearch.sources import cloud_catalogs as cc
+
+        return {
+            "aws": cc.search_aws,
+            "gcp": cc.search_gcp,
+            "earthengine": cc.search_earthengine,
+        }[name](q, limit)
+
+    return run
+
+
 SEARCHERS = {
     "datagov": search_datagov,
     "zenodo": search_zenodo,
     "huggingface": search_huggingface,
+    "aws": _cloud("aws"),
+    "gcp": _cloud("gcp"),
+    "earthengine": _cloud("earthengine"),
 }
 
 

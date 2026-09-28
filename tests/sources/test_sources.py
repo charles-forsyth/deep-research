@@ -244,7 +244,9 @@ def test_missing_tool_is_a_clear_error(monkeypatch):
 def test_every_kind_has_an_adapter():
     from deepresearch.sources.model import KINDS
 
-    assert set(KINDS) == set(ad.ADAPTERS)
+    assert set(KINDS) == set(ad.ADAPTERS) | {
+        "public_bucket"
+    }  # public: sources/public.py
 
 
 def test_report_source_reads_history(tmp_path):
@@ -290,7 +292,10 @@ def test_cli_add_list_show_browse_preview_rm(home, reg, capsys):
     assert run("add", "bad", str(home / "missing")) == 2  # saved, marked unreachable
     assert reg.require("bad").status == "unreachable"
     assert run("rm", "mydata") == 0 and reg.get("mydata") is None
-    assert cli.guess_kind("gs://b/p") == "gcs" and cli.guess_kind("s3://b") == "s3"
+    assert (
+        cli.guess_kind("gs://b/p", "gcloud") == "gcs"
+        and cli.guess_kind("s3://b", "rclone:x") == "s3"
+    )
     assert (
         cli.guess_kind("https://x") == "web" and cli.guess_kind("report:3") == "report"
     )

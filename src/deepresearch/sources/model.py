@@ -9,7 +9,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-KINDS = ("web", "gcs", "s3", "local_folder", "local_file", "report", "notebook")
+KINDS = (
+    "web", "gcs", "s3", "public_bucket", "local_folder", "local_file", "report",
+    "notebook",
+)  # fmt: skip
 LEVELS = ("P1", "P2", "P3", "P4")  # shown, never enforced (Chuck, 2026-09-28)
 STAGING = ("auto", "relay", "direct")
 ENTRY_CAP = 5000  # manifest entries kept in the DB so browsing needs no re-listing
@@ -23,7 +26,7 @@ def default_staging(kind: str) -> str:
     cluster (needed for local files and for CephRDS, which the cluster cannot reach
     without the campus VPN). direct: the cluster node downloads it itself.
     """
-    return "direct" if kind in ("web", "gcs") else "relay"
+    return "direct" if kind in ("web", "gcs", "public_bucket") else "relay"
 
 
 class ManifestEntry(BaseModel):

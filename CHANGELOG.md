@@ -7,6 +7,23 @@ releases.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-09-28
+
+### Added
+- **Free public cloud data.** A new "public bucket" source reads AWS Open Data (`s3://`) and
+  Google Cloud public datasets (`gs://`) anonymously: no account, no credentials, nothing
+  billed. Requester-pays and private buckets are refused with a clear message. Lab jobs
+  download them on the node with plain `curl`.
+- **More catalogs in Find open datasets:** AWS Open Data (free buckets only), Google Cloud
+  public datasets, and Google Earth Engine (links to the catalog page; Earth Engine data is
+  used inside Earth Engine). Kaggle is not included.
+
+### Changed
+- An `s3://` or `gs://` source without credentials is now a public bucket. Add
+  `--auth rclone:<remote>` (S3/Ceph) or `--auth gcloud` (GCS) for buckets that need a login.
+- Discovery ranks title and tag matches above matches deep in a description, and shows
+  licence text without Markdown link syntax.
+
 ## [0.26.0] - 2026-09-28
 
 ### Added

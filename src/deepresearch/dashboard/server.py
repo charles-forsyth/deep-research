@@ -849,7 +849,7 @@ class Api:
         if not uri:
             raise ApiError(400, "uri is required")
         b["uri"] = uri
-        b["kind"] = b.get("kind") or guess_kind(uri)
+        b["kind"] = b.get("kind") or guess_kind(uri, str(b.get("auth_ref") or ""))
         if b["kind"].startswith("local_"):
             b["uri"] = os.path.abspath(os.path.expanduser(uri))
         b.setdefault("protection_level", "P1" if b["kind"] == "web" else "P2")

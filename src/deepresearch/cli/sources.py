@@ -71,11 +71,13 @@ def add_parser(subparsers) -> None:
         x.add_argument("name")
     dc = sp.add_parser(
         "discover",
-        help="Search open data catalogs (Data.gov, Zenodo, Hugging Face) for datasets",
+        help="Search free open data catalogs (Data.gov, Zenodo, Hugging Face, AWS Open "
+        "Data, Google Cloud public datasets, Earth Engine)",
     )
     dc.add_argument("query")
     dc.add_argument(
-        "--catalog", action="append", choices=["datagov", "zenodo", "huggingface"],
+        "--catalog", action="append",
+        choices=["datagov", "zenodo", "huggingface", "aws", "gcp", "earthengine"],
         help="limit to a catalog (repeatable; default all)",
     )  # fmt: skip
     dc.add_argument("--limit", type=int, default=6, help="results per catalog")
@@ -96,13 +98,22 @@ def add_parser(subparsers) -> None:
         x.add_argument("--json", action="store_true", help="machine-readable output")
 
 
-def guess_kind(uri: str) -> str:
+def guess_kind(uri: str, auth: str = "") -> str:
+    """Buckets without credentials are public (read anonymously, never billed)."""
+    import re
+
+    if re.match(
+        r"^https://([^./]+\.s3[.-]([a-z0-9-]+\.)?amazonaws\.com|storage\.googleapis\.com)"
+        r"/?[^?]*/$|^https://[^./]+\.s3[.-]([a-z0-9-]+\.)?amazonaws\.com/?$",
+        uri,
+    ):
+        return "public_bucket"
     if uri.startswith(("http://", "https://")):
         return "web"
     if uri.startswith("gs://"):
-        return "gcs"
+        return "gcs" if auth else "public_bucket"
     if uri.startswith("s3://"):
-        return "s3"
+        return "s3" if auth else "public_bucket"
     if uri.startswith("report:"):
         return "report"
     if uri.startswith("notebook:"):
@@ -117,7 +128,7 @@ def handle(args: argparse.Namespace, reg: SourceRegistry | None = None) -> int:
     cmd = getattr(args, "sources_cmd", None)
     as_json = getattr(args, "json", False)
     if cmd == "add":
-        kind = args.kind or guess_kind(args.uri)
+        kind = args.kind or guess_kind(args.uri, args.auth or "")
         uri = args.uri
         if kind.startswith("local_"):
             import os
@@ -164,10 +175,16 @@ def handle(args: argparse.Namespace, reg: SourceRegistry | None = None) -> int:
             console.print(f"  [cyan]{r.get('page') or ''}[/cyan]")
             for f in r["files"][:4]:
                 console.print(f"    {f.get('format') or '?':>7}  {f['url']}")
+            for b in r.get("buckets", [])[:4]:
+                console.print(
+                    f"   bucket  {b['uri']}  [dim]{b.get('title') or ''}[/dim]"
+                )
+            if r.get("note"):
+                console.print(f"  [dim]{r['note']}[/dim]")
         if out["results"]:
             console.print(
-                "\nAdd one: deep-research sources add NAME <file url>   "
-                "(check the license first)"
+                "\nAdd one: deep-research sources add NAME <file url or bucket>   "
+                "(public buckets are read anonymously; check the license first)"
             )
         return 0 if out["results"] or not out["errors"] else 2
     if cmd == "list":
