@@ -300,6 +300,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--port", type=int, default=None, help="Port (default: 7420)"
     )
 
+    from deepresearch.cli.sources import add_parser as add_sources_parser
+
+    add_sources_parser(subparsers)
+
     return parser
 
 
@@ -338,6 +342,7 @@ def main():
         "auth",
         "estimate",
         "dashboard",
+        "sources",
         "-h",
         "--help",
         "-v",
@@ -378,6 +383,12 @@ def main():
             handle_auth(args)
         elif args.command == "estimate":
             handle_estimate(args)
+        elif args.command == "sources":
+            from deepresearch.cli.sources import handle as handle_sources
+
+            code = handle_sources(args)
+            if code:
+                sys.exit(code)
         elif args.command == "dashboard":
             code = handle_dashboard(args)
             if code:
