@@ -439,7 +439,13 @@ class DeepResearchAgent:
                 self._log(response_text)
 
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-                append_text = f"\n\n---\n### Follow-up ({timestamp})\n\n**Q: {request.prompt}**\n\n{response_text}"
+                q = request.display_prompt or request.prompt
+                used = (
+                    f"\n\n*Data sources: {', '.join(request.sources)}*"
+                    if request.sources
+                    else ""
+                )
+                append_text = f"\n\n---\n### Follow-up ({timestamp})\n\n**Q: {q}**{used}\n\n{response_text}"
                 self.session_manager.append_to_result(
                     request.interaction_id, append_text
                 )

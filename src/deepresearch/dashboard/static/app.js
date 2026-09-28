@@ -363,6 +363,7 @@ async function renderSession(v, t) {
       ${s.result && !running ? '<section class="lab-panel" id="lab-panel"></section>' : ""}
     </div>
     <div class="dock">
+      <div class="dock-ds" id="ask-ds" ${running ? "hidden" : ""}></div>
       <div class="dock-inner">
         <textarea rows="1" placeholder="${running ? "Follow-ups unlock when the run finishes\u2026" : (window.innerWidth < 820 ? "Ask a follow-up about this research\u2026" : "Ask a follow-up about this research\u2026 (Enter to send, Shift+Enter for newline)")}" ${running ? "disabled" : ""}></textarea>
         <button class="btn primary" data-a="ask" ${running ? "disabled" : ""}>Ask</button>
@@ -449,6 +450,8 @@ async function renderSession(v, t) {
   // follow-up dock
   const ta = v.querySelector(".dock textarea");
   const askBtn = v.querySelector('[data-a="ask"]');
+  const askDsEl = v.querySelector("#ask-ds");
+  const askSources = askDsEl && typeof SRC !== "undefined" ? SRC.picker(askDsEl, [], { compact: true }) : () => [];
   const grow = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 160) + "px"; };
   ta.oninput = grow;
   ta.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); askBtn.click(); } };
@@ -456,7 +459,7 @@ async function renderSession(v, t) {
     const q = ta.value.trim(); if (!q) return;
     askBtn.disabled = true; askBtn.innerHTML = '<span class="spinner"></span>'; status(`follow-up on #${s.id}\u2026`);
     try {
-      await api(`/api/sessions/${s.id}/followup`, { method: "POST", body: { prompt: q } });
+      await api(`/api/sessions/${s.id}/followup`, { method: "POST", body: { prompt: q, data_sources: askSources() } });
       toast("Follow-up added to the report", "ok"); ta.value = "";
       delete S.cache[s.id]; await renderStage();
       setTimeout(() => { const r = $("#report"); r?.lastElementChild?.scrollIntoView({ behavior: "smooth", block: "end" }); }, 100);
@@ -720,6 +723,9 @@ function renderLaunch(v) {
       <div class="drop" id="l-drop">Drop files here or click to choose. They are uploaded to a temporary File Search Store for this run.</div>
       <input type="file" id="l-file" multiple hidden>
       <div class="filelist" id="l-files"></div></div>
+    <div class="field"><label>Data sources (optional)</label>
+      <div id="l-ds"></div>
+      <div class="dim" style="font-size:11.5px;margin-top:4px">Readable files (text, CSV, JSON, PDF, Office) are fetched on this machine and searched like uploads. Up to 200 files and 200 MB per source; use a Lab run for bigger data.</div></div>
     <div class="field"><label>Existing File Search Stores (optional, space separated)</label>
       <input id="l-stores" placeholder="fileSearchStores/abc123"></div>
     <div class="estimate" id="l-est"></div>
@@ -728,6 +734,7 @@ function renderLaunch(v) {
     </div>
   </div>`;
   const uploads = [];
+  const launchSources = typeof SRC !== "undefined" ? SRC.picker($("#l-ds"), (S.launchPrefill && S.launchPrefill.data_sources) || []) : () => [];
   const est = debounce(async () => {
     const d = +$("#l-depth").value, b = +$("#l-breadth").value;
     $("#o-depth").textContent = d; $("#o-breadth").textContent = b;
@@ -770,6 +777,7 @@ function renderLaunch(v) {
       const r = await api("/api/research", { method: "POST", body: {
         prompt, depth: d, breadth: +$("#l-breadth").value, format: $("#l-format").value,
         uploads: uploads.map((u) => u.path), stores: $("#l-stores").value.split(/\s+/).filter(Boolean),
+        data_sources: launchSources(),
       } });
       toast(`Research #${r.id} launched`, "ok");
       NOTIFY.ask();

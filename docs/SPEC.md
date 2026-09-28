@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.23.0 (package `deepresearch`) |
+| Applies to | deep-research v0.24.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1427,9 +1427,29 @@ first.
 - Dashboard: Sources page (library, add form, test, folder browser, preview) and a source
   picker in the New lab run dialog and in plan review.
 
-### 21.5 Known gaps
+### 21.5 Research runs and Ask
 
-- Sources are not yet offered to research runs or Ask-on-report (plan phase 3).
+- **Research** (`--source NAME`, repeatable; the launcher's Data sources picker;
+  `data_sources` on `POST /api/research`): each source is fetched on this machine, readable
+  files (text, CSV, JSON, code, PDF, Office) are flattened into one folder per source and
+  uploaded to the run's temporary File Search Store like `--upload`. Caps: 200 files and
+  200 MB per source; over the cap is an error, never a silent cut. The use is recorded.
+- **Ask / follow-up** (`followup --source NAME`; the picker above the Ask box;
+  `data_sources` on `POST /api/sessions/{sid}/followup`): the text of each source goes into
+  the prompt inside `<data_source name=... kind=... uri=...>` tags, capped at 60 KB per
+  source and 200 KB in total. The model is told to cite sources by name. The report
+  records only the typed question plus "Data sources: ..."; source text is never pasted
+  into the report.
+
+### 21.6 cleanup
+
+`deep-research cleanup` deletes only temporary stores by default: stores named
+`deep-research-temp-*` (every upload store is created with that display name) and unnamed
+stores left by older versions. Named stores (such as future `deep-research-source-*`
+indexes, or stores the user made) and stores a data source points at are kept and listed.
+`--all` deletes everything, as before.
+
+### 21.7 Known gaps
 - Read-only: nothing is written back to buckets.
 - The dashboard has no login; anyone who can reach it can browse sources under the
   allowed roots (see section 14).
@@ -1457,3 +1477,4 @@ first.
 | 2026-09-27 | v0.22.0 | Fix with AI on failed runs (new draft, REVIEW note for removed options), "Checking inputs" stage in plans, write-up count rule, JSON trailing-data parse; `POST /api/lab/{rid}/fix-failed` (20.4, 20.6). |
 | 2026-09-28 | v0.22.1 | pip on top of a Python module goes into a venv on the module's Python; pre-flight flags script-built venvs (20.2, 20.6). |
 | 2026-09-28 | v0.23.0 | Data sources (section 21): registry, adapters, CLI, API, Sources page, Lab staging (relay/direct), run folders never overwritten. |
+| 2026-09-28 | v0.24.0 | Data sources in research runs and Ask (21.5); `cleanup` keeps named stores, `--all` (21.6). |

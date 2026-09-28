@@ -91,6 +91,10 @@ UPLOAD_HELP = (
 STORES_HELP = (
     "Names of existing File Search Stores to search (e.g. fileSearchStores/abc123)"
 )
+SOURCE_HELP = (
+    "A registered data source to include (repeatable; see `deep-research sources "
+    "list`). Its files are fetched and searched like --upload"
+)
 FORMAT_HELP = 'Extra output instructions for the report, e.g. "Markdown table"'
 OUTPUT_HELP = (
     "Save the report to a file. .json is parsed and pretty-printed "
@@ -104,6 +108,12 @@ def _add_research_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("prompt", help="The research prompt or question")
     p.add_argument("--stores", nargs="+", help=STORES_HELP)
     p.add_argument("--upload", nargs="+", help=UPLOAD_HELP)
+    p.add_argument(
+        "--source",
+        action="append",
+        metavar="NAME",
+        help=SOURCE_HELP,
+    )
     p.add_argument("--format", help=FORMAT_HELP)
     p.add_argument("--output", help=OUTPUT_HELP)
     p.add_argument("--depth", type=int, default=1, help=DEPTH_HELP)
@@ -178,6 +188,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser_followup.add_argument("id", help=ID_HELP)
     parser_followup.add_argument("prompt", help="The follow-up question")
+    parser_followup.add_argument(
+        "--source",
+        action="append",
+        metavar="NAME",
+        help="A data source whose text is given with the question (repeatable)",
+    )
 
     parser_list = subparsers.add_parser("list", help="List recent research sessions")
     parser_list.add_argument(

@@ -499,6 +499,9 @@ def test_api_lab_endpoints(app, tmp_path):  # noqa: F811
     status, run = call("PUT", f"/api/lab/{run['id']}/plan", {"plan": plan})
     assert status == 200 and "PARAM_N=9" in run["script"]
 
+    api.lab.ensure_watcher = (
+        lambda: None
+    )  # the test drives poll() itself; no racing thread
     status, run = call("POST", f"/api/lab/{run['id']}/submit")
     assert status == 200 and run["status"] == "queued"
     api.lab._stop.set()  # keep the background watcher out of this test

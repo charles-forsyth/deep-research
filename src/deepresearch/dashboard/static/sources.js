@@ -143,10 +143,11 @@ const SRC = {
 
   // ------------------------------------------------------------------ picker
   // mount(el, selected[]) renders chips + a dropdown; returns a getter for the names.
-  picker(el, selected = []) {
+  picker(el, selected = [], opts = {}) {
     const chosen = new Set(selected);
     const draw = () => {
-      el.innerHTML = `<div class="src-picker">${[...chosen].map((n) => `<span class="filechip">${esc(n)}<button data-rm="${esc(n)}">\u00d7</button></span>`).join("")}
+      if (opts.compact && !this.list.length) { el.hidden = true; return; }
+      el.innerHTML = `<div class="src-picker${opts.compact ? " compact" : ""}">${opts.compact ? '<span class="dim">Include data:</span>' : ""}${[...chosen].map((n) => `<span class="filechip">${esc(n)}<button data-rm="${esc(n)}">\u00d7</button></span>`).join("")}
         <select class="src-pick"><option value="">+ add a data source</option>${this.list.filter((s) => !chosen.has(s.name)).map((s) => `<option value="${esc(s.name)}">${esc(s.name)} (${esc(this.kindLabel[s.kind] || s.kind)}${s.status !== "ok" ? ", " + esc(s.status) : ""})</option>`).join("")}</select></div>`;
       $$("[data-rm]", el).forEach((b) => (b.onclick = () => { chosen.delete(b.dataset.rm); draw(); }));
       $(".src-pick", el).onchange = (e) => { if (e.target.value) { chosen.add(e.target.value); draw(); } };

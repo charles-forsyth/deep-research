@@ -37,3 +37,7 @@ class ResearchRequest(BaseModel):
 class FollowUpRequest(BaseModel):
     interaction_id: str
     prompt: str
+    # What the report records as the question. The prompt may carry data source text
+    # that must not be pasted into the report.
+    display_prompt: str | None = None
+    sources: list[str] | None = None
