@@ -69,6 +69,22 @@ def add_parser(subparsers) -> None:
     ):
         x = sp.add_parser(cmd, help=hlp)
         x.add_argument("name")
+    dc = sp.add_parser(
+        "discover",
+        help="Search open data catalogs (Data.gov, Zenodo, Hugging Face) for datasets",
+    )
+    dc.add_argument("query")
+    dc.add_argument(
+        "--catalog", action="append", choices=["datagov", "zenodo", "huggingface"],
+        help="limit to a catalog (repeatable; default all)",
+    )  # fmt: skip
+    dc.add_argument("--limit", type=int, default=6, help="results per catalog")
+    ix = sp.add_parser(
+        "index",
+        help="Build (or rebuild) the saved Gemini search index research runs reuse",
+    )
+    ix.add_argument("name")
+    ix.add_argument("--drop", action="store_true", help="delete the index instead")
     b = sp.add_parser("browse", help="List files in a source")
     b.add_argument("name")
     b.add_argument("path", nargs="?", default="")
@@ -129,6 +145,31 @@ def handle(args: argparse.Namespace, reg: SourceRegistry | None = None) -> int:
             s = check(reg, s)
         _print_one(s, as_json)
         return 0 if s.status in ("ok", "unchecked") else 2
+    if cmd == "discover":
+        from deepresearch.sources.discover import discover
+
+        out = discover(args.query, args.catalog, args.limit)
+        if as_json:
+            print(json.dumps(out, indent=2, default=str))
+            return 0
+        for c, err in out["errors"].items():
+            console.print(f"[yellow]{c}: {err}[/yellow]")
+        for r in out["results"]:
+            console.print(
+                f"[bold]{r['title']}[/bold]  [dim]{r['catalog']} | "
+                f"{r.get('license') or 'license not stated'}[/dim]"
+            )
+            if r.get("description"):
+                console.print(f"  {r['description'][:220]}")
+            console.print(f"  [cyan]{r.get('page') or ''}[/cyan]")
+            for f in r["files"][:4]:
+                console.print(f"    {f.get('format') or '?':>7}  {f['url']}")
+        if out["results"]:
+            console.print(
+                "\nAdd one: deep-research sources add NAME <file url>   "
+                "(check the license first)"
+            )
+        return 0 if out["results"] or not out["errors"] else 2
     if cmd == "list":
         rows = reg.list()
         if as_json:
@@ -165,13 +206,35 @@ def handle(args: argparse.Namespace, reg: SourceRegistry | None = None) -> int:
                 f"(local roots: {', '.join(str(x) for x in local_roots())})"
             )
         return 0
-    if cmd in ("show", "test", "rm", "browse", "preview"):
+    if cmd in ("show", "test", "rm", "browse", "preview", "index"):
         try:
             s = reg.require(args.name)
         except KeyError as e:
             console.print(f"[red]{e.args[0]}[/red]")
             return 1
+        if cmd == "index":
+            from deepresearch.sources.index import build_index, drop_index
+
+            client = _genai_client()
+            try:
+                if args.drop:
+                    s = drop_index(reg, s, client)
+                    console.print(f"Index for '{s.name}' deleted")
+                else:
+                    s = build_index(reg, s, client, log=console.print)
+            except Exception as e:
+                console.print(f"[red]{e}[/red]")
+                return 2
+            _print_one(s, as_json)
+            return 0
         if cmd == "rm":
+            if s.options.get("store"):
+                from deepresearch.sources.index import drop_index
+
+                try:
+                    drop_index(reg, s, _genai_client())
+                except Exception as e:
+                    console.print(f"[yellow]Could not delete its index: {e}[/yellow]")
             reg.delete(s.name)
             console.print(
                 f"Deleted source '{s.name}' (the data itself was not touched)"
@@ -203,9 +266,18 @@ def handle(args: argparse.Namespace, reg: SourceRegistry | None = None) -> int:
             return 2
         return 0
     console.print(
-        "Usage: deep-research sources {add,list,show,test,browse,preview,rm} ..."
+        "Usage: deep-research sources "
+        "{add,list,show,test,index,discover,browse,preview,rm} ..."
     )
     return 1
+
+
+def _genai_client():
+    from google import genai
+
+    from deepresearch.core.config import DeepResearchConfig
+
+    return genai.Client(api_key=DeepResearchConfig().api_key)
 
 
 def _print_one(s: DataSource, as_json: bool, uses: list | None = None) -> None:

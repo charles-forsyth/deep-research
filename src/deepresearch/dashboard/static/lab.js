@@ -292,13 +292,25 @@ const LAB = {
   },
 
   // ------------------------------------------------------------------ review
+  fieldDiff(f) {
+    // objects: one line per changed key ("partition: spot -> standard"); else raw values
+    let a, b;
+    try { a = JSON.parse(f.before); b = JSON.parse(f.after); } catch { a = b = undefined; }
+    const show = (v) => (v === undefined ? "(none)" : typeof v === "string" ? v : JSON.stringify(v));
+    if (a && b && typeof a === "object" && typeof b === "object" && !Array.isArray(a) && !Array.isArray(b)) {
+      const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((k) => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
+      return keys.map((k) => `<div class="chg"><span class="dim">${esc(k)}:</span> <span class="del">${esc(show(a[k]))}</span> \u2192 <span class="add">${esc(show(b[k]))}</span></div>`).join("");
+    }
+    return `<div class="del">${esc(f.before)}</div><div class="add">${esc(f.after)}</div>`;
+  },
+
   diffHtml(d) {
     if (!d || (!d.script && !(d.fields || []).length)) return "";
     const lines = (d.script || "").split("\n").filter((l) => !/^(---|\+\+\+) (before|after)$/.test(l));
     const body = lines.map((l) => `<span class="${l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : l.startsWith("@@") ? "hunk" : ""}">${esc(l)}</span>`).join("\n");
     const n = lines.filter((l) => /^[+-]/.test(l)).length;
     return `<details class="lab-diff"><summary class="dim">What changed: ${n} script line${n === 1 ? "" : "s"}${(d.fields || []).length ? `, ${d.fields.length} other field${d.fields.length === 1 ? "" : "s"}` : ""}</summary>
-      ${(d.fields || []).map((f) => `<div class="lab-diff-field"><span class="mono">${esc(f.key)}</span><div class="del">${esc(f.before)}</div><div class="add">${esc(f.after)}</div></div>`).join("")}
+      ${(d.fields || []).map((f) => `<div class="lab-diff-field"><span class="mono">${esc(f.key)}</span>${this.fieldDiff(f)}</div>`).join("")}
       ${d.script ? `<pre class="lab-script diff">${body}</pre>` : ""}${d.truncated ? '<div class="dim" style="font-size:11px">diff shortened</div>' : ""}</details>`;
   },
 
@@ -312,11 +324,11 @@ const LAB = {
     $("#modal").innerHTML = `
       <div class="lab-review">
       <h3>${editable ? "Review lab run" : "Lab run"} #${r.id}: ${esc(p.title || "")}</h3>
+      <nav class="lab-toc">${["What and why", "Software and data", "Settings", "Result check", "Script"].map((t, i) => `<a href="#" data-sec="${i + 1}">${i + 1}. ${t}</a>`).join("")}</nav>
       <div class="lab-q"><span class="label">Question</span> ${esc(p.question || "")}</div>
       ${(p.warnings || []).length ? `<div class="lab-warn"><span class="label">Checked against the cluster: ${p.warnings.length} problem${p.warnings.length > 1 ? "s" : ""}</span><ul>${p.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul><div class="lab-fix-row">${editable ? `<button class="btn" data-x="fix" title="The AI fixes only what is flagged, then the plan is checked again. Nothing is submitted.">Fix with AI</button>` : ""}<span class="dim" style="font-size:11px">${editable ? "or edit the plan (modules, partition, GPUs) yourself, or submit anyway." : ""}</span></div></div>` : ""}
       ${!p.plan_before_fix && (p.fix_changes || []).length && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">AI fix of failed run #${esc(r.rerun_of || "")}</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "checks pass"}</span></div><ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(p.fix_notes)}</div>` : ""}${this.diffHtml(p.fix_diff)}</div>` : ""}
       ${p.plan_before_fix && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">Fixed by AI and re-checked</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "no warnings"}</span> <button class="btn" data-x="undofix">Undo fix</button></div>${(p.fix_changes || []).length ? `<ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(p.fix_notes)}</div>` : ""}${this.diffHtml(p.fix_diff)}</div>` : ""}
-      <nav class="lab-toc">${["What and why", "Software and data", "Settings", "Result check", "Script"].map((t, i) => `<a href="#" data-sec="${i + 1}">${i + 1}. ${t}</a>`).join("")}</nav>
       <h4 class="lab-h" id="lr-sec-1">1. What and why</h4>
       <div class="lab-sec"><span class="label">Approach</span><div>${esc(p.approach || "")}</div></div>
       <h4 class="lab-h" id="lr-sec-2">2. Software and data</h4>
