@@ -1392,3 +1392,53 @@ def test_fix_failed_retries_once_when_changes_missing(tmp_path):
     lab._ask = lambda p, search: (replies.pop(0), 0.01)  # type: ignore[method-assign]
     out = lab.fix_failed(rid)
     assert out["fix"]["changes"] == ["add --ok"] and replies == []
+
+
+def test_pip_on_python_module_uses_module_python_venv(lab):
+    """Issue #113: pip packages on top of python-sci must not get a separate Python.
+
+    Run #30 built a Pixi env with its own python=3.12 for ortools/tflite, which hid
+    python-sci's matplotlib and failed with ModuleNotFoundError.
+    """
+    plan = dict(PLAN)
+    plan["install"] = {
+        "modules": ["python-sci/2026.09"],
+        "pip": ["ortools", "flatbuffers", "tflite"],
+    }
+    s = build_sbatch(1, plan, lab.fake)
+    assert "module load python-sci/2026.09" in s
+    assert 'python3 -m venv --system-site-packages "$ENVDIR"' in s
+    assert (
+        '"$ENVDIR/bin/python" -m pip install --progress-bar off ortools flatbuffers '
+        "tflite" in s
+    )
+    assert "pixi" not in s  # no second Python stack
+    assert "flock 9" in s and "flock -u 9" in s
+    # the cache key includes the module, so python-ml gets its own venv
+    ml = dict(plan, install={"modules": ["python-ml/2026.09"], "pip": ["tflite"]})
+    sci = dict(plan, install={"modules": ["python-sci/2026.09"], "pip": ["tflite"]})
+    k = __import__("re").compile(r"envs/(\S+)")
+    assert k.search(build_sbatch(1, ml, lab.fake)).group(1) != k.search(
+        build_sbatch(1, sci, lab.fake)
+    ).group(1)
+
+
+def test_pip_with_conda_or_no_python_module_still_uses_pixi(lab):
+    plain = dict(PLAN, install={"pip": ["qiskit"]})
+    assert "pixi add python=3.12 pip" in build_sbatch(1, plain, lab.fake)
+    mixed = dict(
+        PLAN, install={"modules": ["python-sci"], "conda": ["rdkit"], "pip": ["x"]}
+    )
+    assert "pixi add rdkit" in build_sbatch(1, mixed, lab.fake)
+
+
+def test_validate_flags_script_venv_that_hides_packages():
+    tgt = _py_target()
+    plan = {
+        "install": {"modules": ["python-sci"], "pip": ["tflite"]},
+        "script": 'uv venv --system-site-packages "$TMPDIR/v"\n. "$TMPDIR/v/bin/activate"\n',
+    }
+    w = labm.validate_plan(tgt, plan)
+    assert any("builds its own Python venv" in x for x in w), w
+    plan["script"] = "python3 run.py\n"
+    assert not any("own Python venv" in x for x in labm.validate_plan(tgt, plan))

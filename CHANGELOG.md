@@ -7,6 +7,22 @@ releases.
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-09-28
+
+### Fixed
+- **pip packages on top of python-sci / python-ml no longer hide the module's packages**
+  (#113). The harness used to build a separate Pixi environment with its own Python for
+  any pip packages, so a plan that loaded `python-sci` and pip-installed one extra package
+  could not import the module's numpy/pandas/matplotlib (Lab run #30:
+  `ModuleNotFoundError: No module named 'matplotlib'`, after the AI fix correctly dropped
+  matplotlib as "provided by python-sci"). With exactly one Python environment module and
+  pip packages (no conda), the harness now builds a cached venv on the module's own Python
+  with `--system-site-packages` and pip-installs only the extras. Conda plans still use
+  Pixi.
+- Pre-flight warns when the run script builds its own venv (`uv venv`, `python -m venv`,
+  `virtualenv`), which hides packages the harness installed the same way. The fix prompt
+  says to list extras under `install.pip` instead.
+
 ## [0.22.0] - 2026-09-27
 
 ### Added

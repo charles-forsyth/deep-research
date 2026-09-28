@@ -632,6 +632,14 @@ PYTHON_ML_PACKAGES = set(
     """torch numpy scipy pandas scikit-learn sklearn transformers
 jupyterlab""".split()
 )
+# Site modules that are a whole Python stack. pip packages go into a venv on top of the
+# module (build_sbatch), so the module's packages stay importable.
+PYTHON_ENV_MODULES = ("python-sci", "python-ml")
+# A script that builds its own venv puts another Python first on PATH and hides the
+# packages the harness installed (issue #113).
+_SCRIPT_VENV = re.compile(
+    r"^\s*(?:uv\s+venv|python[0-9.]*\s+-m\s+venv|virtualenv)\b", re.M
+)
 
 
 def validate_plan(target: SlurmSSHTarget | None, plan: dict) -> list[str]:
@@ -758,6 +766,16 @@ def validate_plan(target: SlurmSSHTarget | None, plan: dict) -> list[str]:
             if str(i).startswith("/") and str(i) not in local:
                 warns.append(f"Container image '{i}' is not in /apps/containers")
     warns += check_script(str(plan.get("script") or ""))
+    inst = plan.get("install") or {}
+    builds_python = bool(inst.get("pip") or inst.get("conda")) or any(
+        str(m).split("/")[0] in PYTHON_ENV_MODULES for m in inst.get("modules") or []
+    )
+    if builds_python and _SCRIPT_VENV.search(str(plan.get("script") or "")):
+        warns.append(
+            "The script builds its own Python venv; that hides packages the harness "
+            "installs (and the Python module's). List extra packages under install.pip "
+            "and drop the venv lines from the script"
+        )
     return warns
 
 
@@ -943,6 +961,9 @@ Rules:
 - Python work: load exactly one of python-sci (CPU science: numpy scipy pandas matplotlib
   skyfield astropy xarray ...) or python-ml (PyTorch/GPU). Drop pip/conda installs of packages
   that module already provides, and drop script lines that build a separate venv for them.
+  Extra packages the module lacks go in install.pip; the harness installs them into a venv
+  on top of the module, so the module's packages stay importable. Never build a venv in the
+  script (uv venv, python -m venv): it hides those packages.
 - Syntax errors and garbled model tokens (<unk> and similar) in the script: repair only
   those lines so the code is what was evidently intended; change nothing else in the script.
 - If a problem cannot be fixed (the science needs something the cluster lacks), leave the
@@ -1172,7 +1193,35 @@ stage "Installing software"
     if mods:
         body += "module purge >/dev/null 2>&1 || true\n"
         body += "".join(f"module load {m}\n" for m in mods)
-    if conda or pips:
+    pymods = [m for m in mods if m.split("/")[0] in PYTHON_ENV_MODULES]
+    if pips and not conda and len(pymods) == 1:
+        # pip packages on top of a Python environment module (python-sci/python-ml):
+        # a venv on the module's own Python with --system-site-packages, so the module's
+        # numpy/pandas/matplotlib stay importable and pip adds only what is missing. A
+        # separate Pixi Python here hid the module's packages (issue #113, run #30).
+        pkg_names = sorted(x for x in pips if not x.startswith(("--", "https:")))
+        digest = hashlib.sha256(
+            json.dumps([pymods[0], pkg_names, pips]).encode()
+        ).hexdigest()[:12]
+        env_key = f"{_slug(pymods[0] + '-' + '-'.join(pkg_names), 40)}-{digest}"
+        body += f"""ENVDIR=$HOME/deep-research-lab/envs/{env_key}
+mkdir -p "$(dirname "$ENVDIR")"
+# Two jobs needing the same environment build it once: the second waits here.
+exec 9>"$ENVDIR.lock"
+flock 9
+if [ ! -f "$ENVDIR/.ready" ]; then
+  rm -rf "$ENVDIR"
+  python3 -m venv --system-site-packages "$ENVDIR"
+  "$ENVDIR/bin/python" -m pip install --progress-bar off {" ".join(shlex.quote(p) for p in pips)}
+  touch "$ENVDIR/.ready"
+else
+  echo "[INFO] reusing cached environment $ENVDIR"
+fi
+flock -u 9
+. "$ENVDIR/bin/activate"
+echo "[INFO] python $(command -v python) on top of {pymods[0]}"
+"""
+    elif conda or pips:
         # Readable prefix plus a hash of everything that shapes the environment: a
         # truncated name alone let two different package lists share one cache.
         pkg_names = sorted(
