@@ -77,11 +77,21 @@ class SourceAdapter(ABC):
     def test(self) -> Manifest:
         return self.manifest(limit=200)
 
+    def cached_manifest(self) -> Manifest:
+        """Manifest for browsing: the stored one when it is complete, else a fresh
+        listing. Buckets over the VPN take 30+ s to list, so every folder click must
+        not re-list the whole source."""
+        m = self.s.manifest
+        if m is not None and not m.truncated and len(m.entries) >= m.file_count:
+            return m
+        return self.manifest(limit=MANIFEST_LIMIT)
+
     def list(self, path: str = "", limit: int = 500) -> list[dict[str, Any]]:
         """Immediate children of path (dirs end with '/'), for the browse view."""
         prefix = path.strip("/")
         seen: dict[str, dict[str, Any]] = {}
-        for e in self.manifest(limit=MANIFEST_LIMIT).entries_all:  # type: ignore[attr-defined]
+        m = self.cached_manifest()
+        for e in getattr(m, "entries_all", None) or m.entries:
             if prefix and not e.path.startswith(prefix + "/"):
                 continue
             rest = e.path[len(prefix) + 1 :] if prefix else e.path
@@ -90,7 +100,7 @@ class SourceAdapter(ABC):
             if key not in seen:
                 seen[key] = {
                     "name": key,
-                    "size": 0 if sep else e.size,
+                    "size": e.size,
                     "dir": bool(sep),
                 }
             elif sep:

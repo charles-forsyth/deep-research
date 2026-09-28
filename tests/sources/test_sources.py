@@ -95,6 +95,8 @@ def test_local_folder_manifest_browse_preview_fetch(home, tmp_path):
     assert sorted(e.path for e in m.entries) == ["a.csv", "sub/b.txt"]  # no dotfiles
     assert m.total_bytes == 13 and m.formats["csv"] == 1
     assert {x["name"] for x in a.list()} == {"a.csv", "sub/"}
+    # a folder's size counts every file in it, including the first one listed
+    assert {x["name"]: x["size"] for x in a.list()}["sub/"] == 5
     assert a.list("sub")[0]["name"] == "b.txt"
     assert a.preview("a.csv").startswith(b"x,y")
     out = a.fetch(tmp_path / "out")
@@ -292,3 +294,21 @@ def test_cli_add_list_show_browse_preview_rm(home, reg, capsys):
     assert (
         cli.guess_kind("https://x") == "web" and cli.guess_kind("report:3") == "report"
     )
+
+
+def test_browse_uses_stored_manifest_instead_of_relisting(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        ad, "_run", lambda cmd, timeout=60: calls.append(cmd) or json.dumps([])
+    )
+    m = Manifest.build(
+        [ManifestEntry(path="d/a.txt", size=3), ManifestEntry(path="b.txt", size=4)]
+    )
+    s = DataSource(
+        name="c1", kind="s3", uri="s3://b", auth_ref="rclone:ceph", manifest=m
+    )
+    items = ad.adapter_for(s).list()
+    assert [i["name"] for i in items] == ["d/", "b.txt"] and calls == []
+    s.manifest = m.model_copy(update={"truncated": True})
+    ad.adapter_for(s).list()
+    assert calls, "a truncated manifest is re-listed"

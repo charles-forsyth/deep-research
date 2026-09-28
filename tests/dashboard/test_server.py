@@ -391,3 +391,44 @@ def test_cancel_also_cancels_running_child_tasks(app, monkeypatch):
     assert cancelled == ["iid-root", "iid-kid"]  # not the finished child
     assert api.sessions.get_session(str(kid))["status"] == "cancelled"
     assert api.sessions.get_session(str(done))["status"] == "completed"
+
+
+def test_api_sources_crud_browse_preview_and_traversal(app, tmp_path, monkeypatch):
+    call = app["call"]
+    root = tmp_path / "home"
+    (root / "d" / "sub").mkdir(parents=True)
+    (root / "d" / "a.csv").write_text("x,y\n1,2\n")
+    (root / "d" / "sub" / "b.txt").write_text("hi")
+    (tmp_path / "secret.txt").write_text("nope")
+    monkeypatch.setenv("DR_LOCAL_ROOTS", str(root))
+
+    st, lst = call("GET", "/api/sources")
+    assert st == 200 and lst["sources"] == [] and lst["local_roots"] == [str(root)]
+    st, s = call("POST", "/api/sources", {"name": "d1", "uri": str(root / "d")})
+    assert st == 200 and s["kind"] == "local_folder" and s["status"] == "ok"
+    assert s["manifest"]["file_count"] == 2 and s["env_var"] == "DS_D1"
+    assert call("GET", "/api/sources")[1]["sources"][0]["manifest"]["entries"] == []
+    sid = s["id"]
+    assert call("POST", "/api/sources", {"name": "d1", "uri": str(root)})[0] == 409
+    assert call("POST", "/api/sources", {"name": "Bad!", "uri": str(root)})[0] == 400
+    st, out = call("POST", "/api/sources", {"name": "out1", "uri": str(tmp_path)})
+    assert st == 200 and out["status"] == "unreachable"  # saved, flagged
+    st, b = call("GET", f"/api/sources/{sid}/browse")
+    assert [i["name"] for i in b["items"]] == ["sub/", "a.csv"]
+    st, p = call("GET", f"/api/sources/{sid}/preview?path=a.csv")
+    assert st == 200 and p["text"].startswith("x,y") and not p["binary"]
+    st, e = call("GET", f"/api/sources/{sid}/preview?path=../../secret.txt")
+    assert st == 502 and "escapes" in e["error"]
+    st, pt = call(
+        "PATCH",
+        f"/api/sources/{sid}",
+        {"title": "My data", "staging": "direct", "name": "hack"},
+    )
+    assert st == 200 and pt["title"] == "My data" and pt["name"] == "d1"
+    assert pt["effective_staging"] == "direct"
+    assert call("PATCH", f"/api/sources/{sid}", {"staging": "teleport"})[0] == 400
+    assert call("POST", f"/api/sources/{sid}/test")[1]["status"] == "ok"
+    st, g = call("GET", f"/api/sources/{sid}")
+    assert g["used_by"] == [] and len(g["manifest"]["entries"]) == 2
+    assert call("DELETE", f"/api/sources/{sid}")[1] == {"deleted": "d1"}
+    assert call("GET", f"/api/sources/{sid}")[0] == 404

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 KINDS = ("web", "gcs", "s3", "local_folder", "local_file", "report", "notebook")
 LEVELS = ("P1", "P2", "P3", "P4")  # shown, never enforced (Chuck, 2026-09-28)
 STAGING = ("auto", "relay", "direct")
+ENTRY_CAP = 5000  # manifest entries kept in the DB so browsing needs no re-listing
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,40}")
 
 
@@ -37,7 +38,9 @@ class Manifest(BaseModel):
     file_count: int = 0
     total_bytes: int = 0
     truncated: bool = False  # listing stopped at the limit; counts are lower bounds
-    entries: list[ManifestEntry] = Field(default_factory=list)  # sample, for display
+    entries: list[ManifestEntry] = Field(
+        default_factory=list
+    )  # up to ENTRY_CAP, for browsing
     formats: dict[str, int] = Field(default_factory=dict)  # extension -> count
     hash: str = ""
 
@@ -55,7 +58,7 @@ class Manifest(BaseModel):
             file_count=len(entries),
             total_bytes=sum(e.size for e in entries),
             truncated=truncated,
-            entries=entries[:200],
+            entries=entries[:ENTRY_CAP],
             formats=dict(sorted(fmts.items(), key=lambda kv: -kv[1])),
             hash=digest,
         )
