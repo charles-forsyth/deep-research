@@ -224,6 +224,7 @@ class Api:
         r("GET", r"/api/audio", self.audio_list)
         r("GET", r"/api/audio/jobs/(\d+)", self.audio_job)
         r("GET", r"/api/audio/(\d+)/file", self.audio_file)
+        r("GET", r"/api/lab/runs", self.lab_all_runs)
         r("GET", r"/api/lab/targets", self.lab_targets)
         r("GET", r"/api/lab/catalog", self.lab_catalog)
         r("POST", r"/api/lab/catalog/refresh", self.lab_catalog_refresh)
@@ -1106,6 +1107,16 @@ class Api:
         if st.get("error") and not st.get("available"):
             raise ApiError(502, st["error"])
         return st
+
+    def lab_all_runs(self, query, body):
+        self.lab.ensure_watcher()
+        out = []
+        for r in self.lab.all_runs():
+            v = self._lab_view(r)
+            v["session_title"] = (r.get("session_prompt") or "")[:160]
+            v.pop("script", None)  # the list does not need the batch file
+            out.append(v)
+        return {"runs": out}
 
     def lab_list(self, sid, query, body):
         self._session(sid)

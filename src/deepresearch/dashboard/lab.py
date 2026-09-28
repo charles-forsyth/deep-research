@@ -321,12 +321,15 @@ class SlurmSSHTarget:
         cmd = (
             f"sacct -j {job_id} -X -n -P -o State,Elapsed,NodeList,ExitCode,Start 2>/dev/null | head -1; "
             f"echo '::SQ::'; squeue -h -j {job_id} -o '%T|%r|%M|%N' 2>/dev/null; "
+            f"echo '::NF::'; sacct -j {job_id} -n -P --duplicates -o State,NodeList "
+            f"2>/dev/null | grep -c NODE_FAIL; "
             f"echo '::ST::'; tail -n 1 {d}/stage.txt 2>/dev/null; "
             f"echo '::SZ::'; stat -c %s {d}/job.log 2>/dev/null || echo 0"
         )
         out = self.sh(cmd, timeout=60)
         acct, rest = (out.split("::SQ::", 1) + [""])[:2]
         sq, rest = (rest.split("::ST::", 1) + [""])[:2]
+        sq, nf = (sq.split("::NF::", 1) + ["0"])[:2]
         stage, size = (rest.split("::SZ::", 1) + ["0"])[:2]
         a = (acct.strip().split("|") + [""] * 5)[:5]
         q = (sq.strip().split("|") + [""] * 4)[:4]
@@ -340,6 +343,11 @@ class SlurmSSHTarget:
             "started": a[4] if a[4] not in ("Unknown", "None") else "",
             "stage": stage.strip(),
             "log_size": int((size.strip() or "0").split()[0] or 0),
+            # earlier attempts that died on a failed node (spot capacity, boot
+            # failure); Slurm requeues them silently, so "queued" alone hides it
+            "node_fails": int((nf.strip() or "0").split()[0] or 0)
+            if (nf.strip() or "0").split()[0].isdigit()
+            else 0,
         }
 
     def log(
@@ -1310,6 +1318,9 @@ ls -la outputs
 # --------------------------------------------------------------------------- store + service
 
 
+NODE_FAIL_WARN = 3  # node failures before the queue label suggests another partition
+
+
 class Lab:
     def __init__(
         self,
@@ -1499,6 +1510,21 @@ class Lab:
                 "SELECT * FROM lab_runs WHERE session_id = ? ORDER BY id DESC",
                 (session_id,),
             ).fetchall()
+        return [self._row(r) for r in rows]
+
+    def all_runs(self, limit: int = 500) -> list[dict]:
+        """Every run, newest first, with the report title (for the All Lab runs page)."""
+        with self._conn() as conn:
+            has_sessions = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'"
+            ).fetchone()
+            q = (
+                "SELECT r.*, s.prompt AS session_prompt FROM lab_runs r "
+                "LEFT JOIN sessions s ON s.id = r.session_id"
+                if has_sessions
+                else "SELECT r.*, NULL AS session_prompt FROM lab_runs r"
+            )
+            rows = conn.execute(q + " ORDER BY r.id DESC LIMIT ?", (limit,)).fetchall()
         return [self._row(r) for r in rows]
 
     def active(self) -> list[dict]:
@@ -2260,6 +2286,19 @@ class Lab:
             }.get(state, "Queued")
             if reason and reason not in ("None", "Priority"):
                 label += f" ({reason})"
+            fails = int(st.get("node_fails") or 0)
+            if fails:
+                part = ((run.get("plan") or {}).get("resources") or {}).get("partition")
+                label = (
+                    f"Requeued after {fails} node failure{'s' if fails != 1 else ''}"
+                    + (f" on {part}" if part else "")
+                    + ": the cluster could not start a node"
+                    + (
+                        ". Consider cancelling and resubmitting on another partition"
+                        if fails >= NODE_FAIL_WARN
+                        else ""
+                    )
+                )
             upd.update(status="queued", stage=label)
         elif state in ("RUNNING", "COMPLETING"):
             upd.update(status="running", stage=stage or "Running")

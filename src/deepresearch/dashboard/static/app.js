@@ -222,6 +222,7 @@ function openSearch() { openTab({ key: "search", kind: "search", title: "Semanti
 function openTree(id) { openTab({ key: `t${id}`, kind: "tree", id: Number(id), title: `Tree #${id}` }); }
 function openMap() { openTab({ key: "map", kind: "map", title: "Research map" }); }
 function openSources() { openTab({ key: "sources", kind: "sources", title: "Data sources" }); }
+function openLabRuns() { openTab({ key: "labruns", kind: "labruns", title: "Lab runs" }); }
 function openCompare(a, b) { openTab({ key: `c${a}-${b}`, kind: "compare", a: Number(a), b: Number(b), title: `#${a} \u21C4 #${b}` }); }
 
 function renderStage() {
@@ -235,7 +236,7 @@ function renderStage() {
   const v = document.createElement("div");
   v.className = "view";
   stage.appendChild(v);
-  const renderers = { home: renderHome, session: renderSession, notebook: renderNotebook, launch: renderLaunch, search: renderSearch, tree: renderTree, map: renderMap, compare: renderCompare, sources: (v) => SRC.render(v), source: (v, t) => SRC.renderOne(v, t.id) };
+  const renderers = { home: renderHome, session: renderSession, notebook: renderNotebook, launch: renderLaunch, search: renderSearch, tree: renderTree, map: renderMap, compare: renderCompare, sources: (v) => SRC.render(v), labruns: (v) => LAB.renderAll(v), source: (v, t) => SRC.renderOne(v, t.id) };
   (renderers[t.kind] || renderHome)(v, t);
   renderRight();
 }
@@ -1045,6 +1046,7 @@ $("#btn-right").onclick = () => drawer("right");
 $("#scrim").onclick = closeDrawers;
 $("#btn-new").onclick = () => { closeDrawers(); openLaunch(); };
 $("#btn-sources").onclick = () => { closeDrawers(); openSources(); };
+$("#btn-labruns").onclick = () => { closeDrawers(); openLabRuns(); };
 $("#btn-palette").onclick = openPalette;
 $("#q").addEventListener("input", debounce((e) => { S.q = e.target.value.trim(); loadSessions(); }, 250));
 $("#roots-only").onchange = (e) => { S.rootsOnly = e.target.checked; renderSessionList(); };
