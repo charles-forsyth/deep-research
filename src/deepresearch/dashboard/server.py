@@ -1130,9 +1130,18 @@ class Api:
             if not text.strip():
                 raise ApiError(400, "This session has no report yet")
         request = (body.get("request") or "").strip()[:4000]
-        run = self.lab.create(
-            int(sid), scope, text[:120000], request, body.get("target")
-        )
+        ds = [str(x) for x in body.get("data_sources") or []]
+        try:
+            run = self.lab.create(
+                int(sid),
+                scope,
+                text[:120000],
+                request,
+                body.get("target"),
+                data_sources=ds or None,
+            )
+        except ValueError as e:
+            raise ApiError(400, str(e)) from e
         threading.Thread(
             target=self.lab.make_plan, args=(run["id"], s["prompt"]), daemon=True
         ).start()

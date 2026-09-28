@@ -1118,7 +1118,9 @@ def _slug(s: str, n: int = 40) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (s or "run").lower()).strip("-")[:n] or "run"
 
 
-def build_sbatch(run_id: int, plan: dict, target: SlurmSSHTarget) -> str:
+def build_sbatch(
+    run_id: int, plan: dict, target: SlurmSSHTarget, sources: list | None = None
+) -> str:
     r = plan.get("resources") or {}
     part = r.get("partition") or target.default_partition
     if part not in target.partitions and target.partitions:
@@ -1281,6 +1283,12 @@ fi
 export IMG_{_slug(img.rsplit("/", 1)[-1].split(":")[0], 30).upper().replace("-", "_")}=$HOME/deep-research-lab/images/{name}.sif
 echo "[INFO] container {img} -> $HOME/deep-research-lab/images/{name}.sif"
 """
+    if sources:
+        from deepresearch.sources.staging import staging_block
+
+        body += staging_block(
+            sources, getattr(target, "remote_root", "~/deep-research-lab")
+        )
     body += f"""
 stage "Running"
 cat > user_script.sh <<'DR_LAB_EOF'
@@ -1323,6 +1331,9 @@ class Lab:
         self._watch_lock = threading.Lock()
         self._watcher: threading.Thread | None = None
         self._stop = threading.Event()
+        from deepresearch.sources import SourceRegistry
+
+        self.sources = SourceRegistry(db_path)
         with self._conn() as conn:
             conn.executescript(
                 """
@@ -1362,6 +1373,10 @@ class Lab:
                 );
                 """
             )
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(lab_runs)")}
+            if "data_sources" not in cols:  # names picked at launch, for the planner
+                conn.execute("ALTER TABLE lab_runs ADD COLUMN data_sources TEXT")
+            conn.commit()
 
     # ---- plumbing --------------------------------------------------------
     def _conn(self) -> sqlite3.Connection:
@@ -1467,7 +1482,7 @@ class Lab:
     @staticmethod
     def _row(row) -> dict:
         d = dict(row)
-        for k in ("plan", "files"):
+        for k in ("plan", "files", "data_sources"):
             try:
                 d[k] = json.loads(d[k]) if d.get(k) else None
             except ValueError:
@@ -1615,13 +1630,18 @@ class Lab:
         target: str | None = None,
         rerun_of: int | None = None,
         plan: dict | None = None,
+        data_sources: list[str] | None = None,
     ) -> dict:
         tgt = self.target(target)
+        for n in data_sources or []:
+            if self.sources.get(n) is None:
+                raise ValueError(f"data source '{n}' does not exist")
         now = _now()
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO lab_runs (session_id, scope, selection, request, target, status, "
-                "stage, plan, rerun_of, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "stage, plan, rerun_of, created_at, updated_at, data_sources) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     session_id,
                     scope,
@@ -1634,19 +1654,85 @@ class Lab:
                     rerun_of,
                     now,
                     now,
+                    json.dumps(data_sources) if data_sources else None,
                 ),
             )
             conn.commit()
             run_id = cur.lastrowid or 0
         if plan and tgt:
-            plan = {**plan, "warnings": validate_plan(tgt, plan)}
+            plan = {**plan, "warnings": self._check(tgt, plan)}
             self._update(
                 run_id,
                 plan=plan,
-                script=build_sbatch(run_id, plan, tgt),
+                script=build_sbatch(run_id, plan, tgt, self._safe_sources(plan)),
                 estimate_usd=estimate_cost(tgt, plan),
             )
         return self.get(run_id) or {}
+
+    # ---- data sources ---------------------------------------------------
+    def _plan_sources(self, plan: dict) -> list:
+        """The registry records for plan["data_sources"]; unknown names are errors."""
+        names = [str(n) for n in (plan or {}).get("data_sources") or []]
+        out = []
+        for n in names:
+            s = self.sources.get(n)
+            if s is None:
+                raise ValueError(f"data source '{n}' does not exist")
+            out.append(s)
+        return out
+
+    def _check(self, tgt, plan: dict) -> list[str]:
+        return validate_plan(tgt, plan) + self.source_warnings(plan)
+
+    def _safe_sources(self, plan: dict) -> list:
+        """Like _plan_sources for previews: unknown names are skipped (they show up as
+        a pre-flight warning instead of breaking the plan view)."""
+        return [
+            s
+            for n in (plan or {}).get("data_sources") or []
+            if (s := self.sources.get(str(n))) is not None
+        ]
+
+    def source_warnings(self, plan: dict) -> list[str]:
+        """Pre-flight for data: unknown or unreachable sources, relay size, and a script
+        that ignores the staged copy."""
+        from deepresearch.sources.staging import RELAY_MAX_BYTES
+
+        warns: list[str] = []
+        script = str((plan or {}).get("script") or "")
+        for n in (plan or {}).get("data_sources") or []:
+            s = self.sources.get(str(n))
+            if s is None:
+                warns.append(f"Data source '{n}' does not exist")
+                continue
+            if s.status == "unreachable":
+                warns.append(
+                    f"Data source '{s.name}' failed its last test: {s.last_error}"
+                )
+            size = s.manifest.total_bytes if s.manifest else 0
+            cap = int(s.options.get("max_relay_bytes") or RELAY_MAX_BYTES)
+            if s.effective_staging == "relay" and size > cap:
+                warns.append(
+                    f"Data source '{s.name}' is {size / 1024**3:.1f} GB, over the relay "
+                    f"limit ({cap / 1024**3:.1f} GB); use direct staging or raise the limit"
+                )
+            if script and s.env_var not in script:
+                warns.append(
+                    f"The script never reads ${s.env_var}; data source '{s.name}' would "
+                    "be staged but unused"
+                )
+        return warns
+
+    def _data_note(self, run: dict, tgt) -> str:
+        from deepresearch.sources.staging import plan_data_note
+
+        try:
+            srcs = self._plan_sources({"data_sources": run.get("data_sources") or []})
+        except ValueError:
+            return ""
+        return "\n" + plan_data_note(
+            srcs, getattr(tgt, "remote_root", "~/deep-research-lab")
+        )
 
     def make_plan(self, run_id: int, title: str) -> None:
         """Runs in a background thread: AI decomposes the selection into a job plan."""
@@ -1673,7 +1759,8 @@ class Lab:
                     f"\nTHE USER'S INSTRUCTION: {run['request']}\n"
                     if run.get("request")
                     else ""
-                ),
+                )
+                + self._data_note(run, tgt),
             )
             no_search = ""
             try:
@@ -1712,7 +1799,9 @@ class Lab:
             for key in ("script", "resources", "install"):
                 if key not in plan:
                     raise ValueError(f"plan is missing '{key}'")
-            plan["warnings"] = validate_plan(tgt, plan)
+            if run.get("data_sources"):
+                plan["data_sources"] = list(run["data_sources"])
+            plan["warnings"] = self._check(tgt, plan)
             if tgt and getattr(tgt, "catalog", None):
                 plan["catalog_generated"] = tgt.catalog.get("generated")  # type: ignore[union-attr]
             self._update(
@@ -1722,7 +1811,9 @@ class Lab:
                 stage="Plan ready for review"
                 + (f" ({len(plan['warnings'])} warnings)" if plan["warnings"] else ""),
                 plan=plan,
-                script=build_sbatch(run_id, plan, tgt) if tgt else None,
+                script=build_sbatch(run_id, plan, tgt, self._safe_sources(plan))
+                if tgt
+                else None,
                 estimate_usd=estimate_cost(tgt, plan),
             )
         except Exception as e:
@@ -1741,13 +1832,15 @@ class Lab:
         if run["status"] not in ("draft", "plan_failed"):
             raise ValueError(f"run is {run['status']}; only drafts can be edited")
         tgt = self.target(run["target"])
-        plan = {**plan, "warnings": validate_plan(tgt, plan)}
+        plan = {**plan, "warnings": self._check(tgt, plan)}
         self._update(
             run_id,
             plan=plan,
             status="draft",
             error=None,
-            script=build_sbatch(run_id, plan, tgt) if tgt else None,
+            script=build_sbatch(run_id, plan, tgt, self._safe_sources(plan))
+            if tgt
+            else None,
             estimate_usd=estimate_cost(tgt, plan),
         )
         return self.get(run_id) or {}
@@ -1774,7 +1867,7 @@ class Lab:
         original = dict(run.get("plan") or {})
         plan = dict(original)
         plan.pop("plan_before_fix", None)
-        warns = validate_plan(tgt, plan)  # includes "planned against an older catalog"
+        warns = self._check(tgt, plan)  # includes "planned against an older catalog"
         if not warns:
             return {
                 **(self.get(run_id) or {}),
@@ -1815,7 +1908,7 @@ class Lab:
             plan = new
             if getattr(tgt, "catalog", None):
                 plan["catalog_generated"] = tgt.catalog.get("generated")  # type: ignore[union-attr]
-            warns = validate_plan(tgt, plan)
+            warns = self._check(tgt, plan)
         before = {
             k: v
             for k, v in original.items()
@@ -1823,7 +1916,7 @@ class Lab:
         }
         if getattr(tgt, "catalog", None):
             plan["catalog_generated"] = tgt.catalog.get("generated")  # type: ignore[union-attr]
-        warns = validate_plan(tgt, plan)
+        warns = self._check(tgt, plan)
         plan = {
             **plan,
             "warnings": warns,
@@ -1836,7 +1929,7 @@ class Lab:
             plan=plan,
             stage="Plan fixed by AI, re-checked"
             + (f" ({len(warns)} warnings left)" if warns else " (no warnings)"),
-            script=build_sbatch(run_id, plan, tgt),
+            script=build_sbatch(run_id, plan, tgt, self._safe_sources(plan)),
             estimate_usd=estimate_cost(tgt, plan),
         )
         return {
@@ -1988,7 +2081,8 @@ class Lab:
         if not tgt:
             raise ValueError("no compute target configured (lab_targets.json)")
         plan = run["plan"] or {}
-        script = build_sbatch(run_id, plan, tgt)
+        sources = self._plan_sources(plan)
+        script = build_sbatch(run_id, plan, tgt, sources)
         self._update(
             run_id,
             status="submitting",
@@ -1996,15 +2090,27 @@ class Lab:
             script=script,
         )
         try:
-            job = tgt.submit(
-                run_id,
-                {
-                    "run.sbatch": script,
-                    "plan.json": json.dumps(plan, indent=2),
-                    "README.txt": f"deep-research Lab run #{run_id} for session "
-                    f"#{run['session_id']}\n{plan.get('question', '')}\n",
-                },
-            )
+            from deepresearch.sources.staging import relay_upload, sources_json
+
+            for src in sources:
+                if src.effective_staging == "relay":
+                    self._update(
+                        run_id, stage=f"Uploading data source {src.name} to the cluster"
+                    )
+                    relay_upload(tgt, src, log=lambda m: None)
+            files = {
+                "run.sbatch": script,
+                "plan.json": json.dumps(plan, indent=2),
+                "README.txt": f"deep-research Lab run #{run_id} for session "
+                f"#{run['session_id']}\n{plan.get('question', '')}\n",
+            }
+            if sources:
+                files["sources.json"] = sources_json(
+                    sources, getattr(tgt, "remote_root", "~/deep-research-lab")
+                )
+            job = tgt.submit(run_id, files)
+            for src in sources:
+                self.sources.record_use(src, "lab_run", run_id)
         except Exception as e:
             self._update(
                 run_id, status="failed", stage="Submit failed", error=str(e)[:500]
