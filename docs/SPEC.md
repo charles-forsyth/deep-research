@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.26.0 (package `deepresearch`) |
+| Applies to | deep-research v0.27.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1468,6 +1468,28 @@ no key) and the Hugging Face Hub (public, ungated datasets). Hits show title, ca
 license, publisher, page and direct file links; "add as source" makes a `web` source for
 one file. Nothing is downloaded during search; a failing catalog is reported, not fatal.
 
+### 21.8a Free public cloud data
+
+Only free sources are offered (Chuck, 2026-09-28); Kaggle is not included.
+
+- **Public buckets** (kind `public_bucket`): `s3://bucket/prefix` (AWS Open Data) and
+  `gs://bucket/prefix` (Google Cloud public datasets) read anonymously over HTTPS with
+  unsigned requests: S3 ListObjectsV2 and the GCS JSON API for listing, plain GETs for
+  preview and fetch. No account, no credentials, nothing billed. A requester-pays or
+  non-public bucket is refused with a clear message. `guess_kind` treats `s3://` and
+  `gs://` without `auth_ref` as public. Lab staging is direct: the node curls each file
+  of the stored manifest (no rclone, gcloud or aws CLI needed on the cluster). Include
+  globs without `/` list only the top level of the prefix, so a filter does not scan a
+  bucket of millions of objects; listing stops after 50 pages. Fetch refuses more than
+  2,000 files (use a prefix or filter).
+- **Discovery** adds three catalogs: `aws` (registry.opendata.aws/index.ndjson; datasets
+  whose buckets are requester-pays, account-only or controlled-access are dropped),
+  `gcp` (a curated list of public Google buckets verified anonymous on 2026-09-28) and
+  `earthengine` (the public STAC catalog, about 1,160 datasets; information-only, linked
+  to the catalog page, not added as sources because Earth Engine data is used inside
+  Earth Engine). Catalog indexes are cached a day under `~/.cache/deepresearch`. Ranking
+  weights title and tags above descriptions.
+
 ### 21.9 Provenance
 
 Every report and Lab run carries an inputs fingerprint (first 16 hex digits of a SHA-256
@@ -1509,3 +1531,4 @@ fingerprint; a changed source changes it.
 | 2026-09-28 | v0.25.0 | Queue status counts NODE_FAIL requeues (`node_fails`); `GET /api/lab/runs` and the Lab runs page; compact selection toolbar (11). |
 | 2026-09-28 | v0.25.1 | `GET /api/lab/runs` returns a summary per run. |
 | 2026-09-28 | v0.26.0 | Saved per-source indexes (21.7), open dataset discovery (21.8), provenance fingerprints (21.9); plan review sections and AI fix diff (`plan.fix_diff`, 20.4). |
+| 2026-09-28 | v0.27.0 | Free public cloud data: `public_bucket` kind (anonymous AWS S3 and GCS), AWS Open Data, Google Cloud and Earth Engine discovery (21.8a). |

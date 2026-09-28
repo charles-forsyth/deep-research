@@ -122,7 +122,11 @@ def test_cli_and_api_discover(monkeypatch, capsys, tmp_path):
     from deepresearch.dashboard import server as srv
 
     monkeypatch.setattr(dc, "_get", fake_get)
-    monkeypatch.setattr("sys.argv", ["dr", "sources", "discover", "ozone", "--json"])
+    monkeypatch.setattr(
+        "sys.argv",
+        ["dr", "sources", "discover", "ozone", "--json",
+         "--catalog", "datagov", "--catalog", "zenodo", "--catalog", "huggingface"],
+    )  # fmt: skip
     try:
         main()
     except SystemExit as e:
@@ -147,3 +151,9 @@ def test_cli_and_api_discover(monkeypatch, capsys, tmp_path):
 def test_slug():
     assert dc.slug("AQS ambient: 2008 Ozone!") == "aqs-ambient-2008-ozone"
     assert dc.slug("***") == "dataset"
+
+
+def test_clip_strips_markdown_links():
+    assert (
+        dc._clip("[CC BY 4.0](https://x) and [HERE](https://y)") == "CC BY 4.0 and HERE"
+    )
