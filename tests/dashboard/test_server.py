@@ -482,7 +482,8 @@ def test_stalled_session_is_reported(app):
         c.execute("UPDATE sessions SET status='running' WHERE id=?", (sid,))
     log = srv.LOG_DIR / f"session_{sid}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
-    log.write_text("[17:34] thinking\n")
+    now = time.strftime("%H:%M:%S")
+    log.write_text(f"[{now}] [THOUGHT] thinking\n")
     _, s = call("GET", f"/api/sessions/{sid}")
     assert s["stall"] is None  # fresh log, live process
     old = time.time() - 60 * 60
@@ -492,3 +493,19 @@ def test_stalled_session_is_reported(app):
     _, lst = call("GET", "/api/sessions")
     rows = lst["sessions"]
     assert next(r for r in rows if r["id"] == sid)["stalled"] == "idle"
+
+
+def test_log_idle_ignores_replayed_thoughts(tmp_path):
+    """A log that keeps growing with the same replayed lines is not progress (#287)."""
+    import time
+
+    old = time.strftime("%H:%M:%S", time.localtime(time.time() - 3600))
+    new = time.strftime("%H:%M:%S")
+    log = tmp_path / "s.log"
+    log.write_text(
+        f"[{old}] [THOUGHT] sorting\n[{new}] [INFO] Connection lost. Resuming from x\n"
+        f"[{new}] [THOUGHT] sorting\n"
+    )
+    assert Api._log_idle_min(log) >= 59
+    log.write_text(log.read_text() + f"[{new}] [THOUGHT] writing the report\n")
+    assert Api._log_idle_min(log) < 2

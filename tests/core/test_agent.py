@@ -393,3 +393,27 @@ def test_stream_timeout_applies_while_connected(monkeypatch, tmp_path):
     a.start_research_stream(ResearchRequest(prompt="q"))
     a.client.interactions.cancel.assert_called_once_with("iid-long")
     assert a.session_manager.get_session("iid-long")["status"] == "failed"
+
+
+def test_stream_stuck_at_google_is_cancelled_not_resumed_forever(monkeypatch, tmp_path):
+    """#287: every resume replayed the same last event; the run sat 'running' for hours."""
+    a = _agent(monkeypatch, tmp_path, task_timeout_min=0)
+    from deepresearch.core import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod.time, "sleep", lambda s: None)
+    created = MagicMock(event_type="interaction.created", event_id="e1")
+    created.interaction.id = "iid-stuck"
+    a.client.interactions.create.return_value = iter([created])
+    a.client.interactions.get.side_effect = lambda **kw: (
+        iter([MagicMock(event_type="step.delta", event_id="e1", delta=MagicMock())])
+        if kw.get("stream")
+        else MagicMock(status="in_progress")
+    )
+    a.start_research_stream(ResearchRequest(prompt="q"))
+    a.client.interactions.cancel.assert_called_once_with("iid-stuck")
+    row = a.session_manager.get_session("iid-stuck")
+    assert row["status"] == "failed" and "Stalled" in row["result"]
+    resumes = [
+        c for c in a.client.interactions.get.call_args_list if c.kwargs.get("stream")
+    ]
+    assert len(resumes) == a.STALL_RECONNECTS

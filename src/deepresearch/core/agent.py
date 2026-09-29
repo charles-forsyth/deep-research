@@ -81,6 +81,25 @@ class DeepResearchAgent:
             "(raise DR_TASK_TIMEOUT_MIN, or set it to 0 for no limit).",
         )
 
+    STALL_RECONNECTS = 4  # resumes in a row with no new event (~40 min) = stuck
+
+    def _stalled(self, interaction_id: str, n: int) -> None:
+        """Stop a task Google stopped advancing, locally and at Google."""
+        self._log(
+            f"\n[ERROR] No new progress after {n} reconnects; the task looks stuck at "
+            "Google. Cancelling it; re-run the question to try again."
+        )
+        try:
+            self.client.interactions.cancel(interaction_id)
+        except Exception as e:
+            self._log(f"[WARN] Could not cancel interaction {interaction_id}: {e}")
+        self.session_manager.update_session(
+            interaction_id,
+            "failed",
+            result=f"Stalled: Google stopped sending progress (no new events after {n} "
+            "reconnects). Nothing was lost locally; re-run the question.",
+        )
+
     def _process_stream(
         self,
         event_stream,
@@ -200,9 +219,16 @@ class DeepResearchAgent:
             )
 
             failures = 0
+            # Google sometimes leaves a task "in_progress" forever: each reconnect
+            # replays the same last events and nothing new arrives (#287, 13 replays in
+            # 2 h). Stop after STALL_RECONNECTS resumes that brought no new event.
+            stalled, seen_event = 0, last_event_id[0]
             while not is_complete[0] and interaction_id[0]:
                 if self._expired(deadline):
                     self._time_out(interaction_id[0])
+                    return interaction_id[0]
+                if stalled >= self.STALL_RECONNECTS:
+                    self._stalled(interaction_id[0], stalled)
                     return interaction_id[0]
                 time.sleep(min(2 * (failures + 1), 30))
                 try:
@@ -229,6 +255,10 @@ class DeepResearchAgent:
                         deadline=deadline,
                     )
                     failures = 0
+                    if last_event_id[0] == seen_event:
+                        stalled += 1
+                    else:
+                        stalled, seen_event = 0, last_event_id[0]
                 except Exception as e:
                     failures += 1
                     self._log(f"[ERROR] Reconnection failed: {e}")

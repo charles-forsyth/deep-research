@@ -7,6 +7,13 @@ releases.
 
 ## [Unreleased]
 
+## [0.34.1] - 2026-09-29
+
+### Fixed
+
+- A research task Google stops advancing is cancelled and marked failed ("Stalled") after 4 reconnects in a row bring no new event (about 40 minutes), instead of reconnecting and replaying the same thoughts until the 3-hour limit (#287: 13 identical replays).
+- Stuck detection in the dashboard ignores replayed lines: progress is a log line not seen before, not a growing file.
+
 ## [0.34.0] - 2026-09-29
 
 Resilience release: every failure of the 15-run batch (runs #55-#74) traced to a cause and fixed at the source, so the same failure can't recur, instead of patching plans by hand.
