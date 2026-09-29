@@ -1194,6 +1194,178 @@ def _dropped_options(old: dict, new: dict) -> list[str]:
     return sorted(before - after)
 
 
+# ---------------------------------------------------------------- failure classes
+# What kind of failure a log shows decides who can fix it. The AI can fix the plan's
+# script; it can't fix a cluster, a registry or its own guess about a tool's internals.
+FAILURE_CLASSES = [
+    # (class, regex on the log, message shown to the person / given to the AI)
+    (
+        "install",
+        r"\[ERROR\] no install method produced a working environment",
+        "No install method produced a working environment (see the [LADDER] lines). "
+        "This is the software setup, not the script: change install (another package "
+        "source, a module, a container), not the analysis code.",
+    ),
+    (
+        "container",
+        r"FATAL:\s+While (?:making image|pulling)|unable to parse image name",
+        "A container image could not be pulled or found.",
+    ),
+    (
+        "tool-crash",
+        r"Assertion '.*' failed|Segmentation fault|core dumped|signal 11|"
+        r"\*\*\* Process received signal",
+        "An external program crashed inside itself (assertion or segfault). The usual "
+        "cause is an input file it did not expect (name or format): list the files it "
+        "wrote (templates, example_* files) and match them exactly.",
+    ),
+    (
+        "glibc",
+        r"version `GLIBC_2\.\d+' not found",
+        "A binary needs a newer glibc than the compute nodes have (Rocky 8, glibc 2.28). "
+        "Pin an older build of that package (conda-forge keeps old versions), or use the "
+        "module or a container.",
+    ),
+    (
+        "missing-feature",
+        r"lacks? (?:the )?\w+ (?:support|package)|Unrecognized (?:pair|fix|atom) style|"
+        r"Package \w+ is not installed|not compiled with",
+        "The installed build lacks a feature the plan needs; use a build that has it "
+        "(another module variant, conda-forge, or a container).",
+    ),
+    (
+        "numerical",
+        r"ZeroDivisionError|FloatingPointError|nan detected|diverg|"
+        r"RuntimeWarning: (?:overflow|invalid value)",
+        "The computation blew up numerically (division by zero, NaN, divergence). Check "
+        "stability limits (time step, relaxation time, CFL) and guard divisions; do not "
+        "hide it with try/except.",
+    ),
+    (
+        "timeout",
+        r"DUE TO TIME LIMIT|CANCELLED AT .* DUE to TIME|exit 124\b",
+        "The job ran out of time.",
+    ),
+    (
+        "oom",
+        r"oom-kill|Out Of Memory|MemoryError|Killed\s*$",
+        "The job ran out of memory.",
+    ),
+]
+
+
+def classify_failure(log: str) -> tuple[str, str]:
+    """(class, advice) for a failed run's log; ('script', '') when nothing specific."""
+    tail = log[-40000:]
+    for name, rx, msg in FAILURE_CLASSES:
+        if re.search(rx, tail, re.M):
+            return name, msg
+    return "script", ""
+
+
+# ------------------------------------------------------------- AI-fix review gate
+_REF_FALLBACK = re.compile(
+    r"return\s+\(?\s*(-?\d+\.\d+)\s*,\s*0(?:\.0)?\s*\)?|"  # return 1.27, 0.0 on failure
+    r"(?:except[^\n]*:\s*\n\s*)\w+\s*=\s*(-?\d+\.\d+)\s*$",
+    re.M,
+)
+
+
+def _ref_numbers(script: str) -> set[str]:
+    """Numbers the script treats as reference values (expected/REF names, verdict)."""
+    out = set()
+    for m in re.finditer(
+        r"(?:REF|ref|expected|EXPECTED|reference|benchmark)\w*\s*[=:]\s*(-?\d+\.\d+)",
+        script,
+    ):
+        out.add(m.group(1))
+    for m in re.finditer(r"['\"]expected['\"]\s*:\s*(-?\d+\.\d+)", script):
+        out.add(m.group(1))
+    return out
+
+
+def _imports(script: str) -> set[str]:
+    return set(re.findall(r"^\s*(?:import|from)\s+([A-Za-z_]\w*)", script, re.M))
+
+
+def fix_concerns(old: dict, new: dict) -> list[str]:
+    """Things an AI fix did that a person should look at before it runs.
+
+    Deterministic checks on the diff (runs #56, #59, #64): a fallback that returns a
+    reference value (a failed fit would then look like agreement), a verdict tolerance or
+    expected value that changed, a library removed, a large rewrite, new fixed-text
+    findings.
+    """
+    a = str((old or {}).get("script") or "")
+    b = str((new or {}).get("script") or "")
+    out: list[str] = []
+    refs = _ref_numbers(a) | _ref_numbers(b)
+    added = [ln for ln in b.splitlines() if ln not in set(a.splitlines())]
+    add_txt = "\n".join(added)
+    for m in _REF_FALLBACK.finditer(add_txt):
+        val = m.group(1) or m.group(2)
+        if val in refs:
+            out.append(
+                f"a new fallback returns the reference value {val}, so a failed "
+                "computation would look like agreement"
+            )
+    for key in ("tolerance", "expected"):
+        rx = rf"['\"]{key}['\"]\s*:\s*([^,}}\n]+)"
+        ra = {x.strip() for x in re.findall(rx, a)}
+        rb = {x.strip() for x in re.findall(rx, b)}
+        if ra and rb and ra != rb:
+            out.append(
+                f"the verdict's {key} values changed "
+                f"(removed {', '.join(sorted(ra - rb)[:3]) or '-'}; "
+                f"added {', '.join(sorted(rb - ra)[:3]) or '-'})"
+            )
+    gone = _imports(a) - _imports(b)
+    gone -= {"os", "sys", "re", "json", "time", "math"}
+    if gone:
+        out.append(f"removes library import(s): {', '.join(sorted(gone))}")
+    la, lb = a.splitlines(), b.splitlines()
+    if len(la) >= 10:
+        import difflib
+
+        ratio = difflib.SequenceMatcher(None, la, lb, autojunk=False).ratio()
+        if ratio < 0.7:
+            out.append(
+                f"rewrites much of the script ({int((1 - ratio) * 100)}% changed)"
+            )
+    # a changed line that only swaps identifiers inside a formula (k3_v -> k3_u in an
+    # RK4 update, run #59): usually a typo the AI introduced, and it changes the maths
+    import difflib as _dl
+
+    for op, i1, i2, j1, j2 in _dl.SequenceMatcher(
+        None, la, lb, autojunk=False
+    ).get_opcodes():
+        if op != "replace" or (i2 - i1) != (j2 - j1):
+            continue
+        for x, y in zip(la[i1:i2], lb[j1:j2]):
+            # arithmetic assignment lines only (not strings, titles, shell)
+            if not re.match(
+                r"\s*[A-Za-z_][\w.\[\]]*\s*[-+*/]?=\s*[^=]", x
+            ) or re.search(r"['\"]", x):
+                continue
+            tx = re.findall(r"[A-Za-z_]\w*|\S", x)
+            ty = re.findall(r"[A-Za-z_]\w*|\S", y)
+            if len(tx) != len(ty) or not re.search(r"[-+*/]", x.split("=", 1)[-1]):
+                continue
+            diffs = [(p, q) for p, q in zip(tx, ty) if p != q]
+            if 0 < len(diffs) <= 2 and all(
+                re.fullmatch(r"[A-Za-z_]\w*", p) and re.fullmatch(r"[A-Za-z_]\w*", q)
+                for p, q in diffs
+            ):
+                sw = ", ".join(f"{p} -> {q}" for p, q in diffs)
+                out.append(
+                    f"changes a variable inside a formula ({sw}): {y.strip()[:90]}"
+                )
+    new_hard = set(labguard.hardcoded_findings(b)) - set(labguard.hardcoded_findings(a))
+    if new_hard:
+        out.append("adds fixed-text results: " + "; ".join(sorted(new_hard)[:2]))
+    return out[:6]
+
+
 def _log_for_fix(log: str, limit: int = 9000) -> str:
     """The part of a job log that explains a failure: its end, plus the first traceback
     or ERROR block when that sits earlier (tools often print pages after the real error)."""
@@ -1588,10 +1760,23 @@ if ! command -v apptainer >/dev/null 2>&1; then
 fi
 """
     for img in imgs:
+        var = "IMG_" + _slug(
+            img.rsplit("/", 1)[-1].split(":")[0].removesuffix(".sif"), 30
+        ).upper().replace("-", "_")
+        if img.startswith("/") or img.endswith(".sif"):
+            # an image already on the cluster (e.g. /apps/containers/*.sif): use it in
+            # place; `apptainer pull` would treat the path as a registry name (run #61)
+            body += f"""if [ ! -r {shlex.quote(img)} ]; then
+  echo "[ERROR] container image {img} is not on this node"; exit 3
+fi
+export {var}={shlex.quote(img)}
+echo "[INFO] container {img} (on the cluster, used in place)"
+"""
+            continue
         name = _slug(img, 60)
         body += f"""mkdir -p $HOME/deep-research-lab/images
 [ -f $HOME/deep-research-lab/images/{name}.sif ] || apptainer pull $HOME/deep-research-lab/images/{name}.sif {shlex.quote(img)}
-export IMG_{_slug(img.rsplit("/", 1)[-1].split(":")[0], 30).upper().replace("-", "_")}=$HOME/deep-research-lab/images/{name}.sif
+export {var}=$HOME/deep-research-lab/images/{name}.sif
 echo "[INFO] container {img} -> $HOME/deep-research-lab/images/{name}.sif"
 """
     if sources:
@@ -1749,10 +1934,14 @@ Check kinds (use exactly these):
 - {{"kind": "pyversion", "package": "ortools"}}  -> versions available on PyPI and the one in python-sci
 - {{"kind": "pyhelp", "target": "ortools.sat.python.cp_model.CpModel.NewFixedSizeIntervalVar", "pip": ["ortools"]}}  -> signature and docstring
 - {{"kind": "url", "url": "https://..."}}  -> HTTP status and size
+- {{"kind": "features", "cmd": "lmp", "load": ["openmpi", "lammps"]}}  -> the program's full `-h` output
+  (compiled-in packages, styles, solvers): use it when the plan relies on an optional package
+  (LAMMPS GRANULAR, a GROMACS GPU build, an SU2 option)
+- {{"kind": "conda", "package": "lammps"}}  -> versions on conda-forge/bioconda
 
 Return JSON only, in a ```json block: {{"checks": [ ... ]}}"""
 
-PROBE_KINDS = ("module", "help", "pyversion", "pyhelp", "url")
+PROBE_KINDS = ("module", "help", "pyversion", "pyhelp", "url", "features", "conda")
 _SAFE_TOKEN = re.compile(r"[\w.+/:=@-]+")
 
 
@@ -1797,6 +1986,26 @@ def _probe_cmd(chk: dict) -> str | None:
             + "timeout 30 "
             + " ".join(shlex.quote(p) for p in parts)
             + " 2>&1 < /dev/null | head -150"
+        )
+    if kind == "features":
+        prog = str(chk.get("cmd") or "").split()
+        if len(prog) != 1 or not re.fullmatch(r"[\w.+-]+", prog[0]):
+            return None
+        q = shlex.quote(prog[0])
+        # the whole help text, with package/feature sections first
+        return (
+            pre
+            + f"H=$(timeout 30 {q} -h 2>&1 < /dev/null || timeout 30 {q} --help 2>&1 < /dev/null); "
+            + 'echo "$H" | grep -i -A12 -E "installed packages|compiled|features|build" | head -60; '
+            + 'echo "--- full help (head)"; echo "$H" | head -120'
+        )
+    if kind == "conda":
+        pkg = str(chk.get("package") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", pkg):
+            return None
+        return (
+            "export PATH=/apps/pixi/bin:$PATH; "
+            f"timeout 90 pixi search -c conda-forge -c bioconda {shlex.quote(pkg)} 2>&1 | head -25"
         )
     if kind == "pyversion":
         pkg = str(chk.get("package") or "")
@@ -2323,7 +2532,7 @@ def _pixi_fallback_only(chans: list[str]) -> str:
 
 PLAN_DIFF_SKIP = {
     "warnings", "plan_before_fix", "fix_changes", "fix_notes", "fix_diff",
-    "catalog_generated", "caveats",
+    "catalog_generated", "caveats", "fix_concerns", "url_checks",
 }  # fmt: skip
 
 
@@ -3056,11 +3265,15 @@ class Lab:
         if getattr(tgt, "catalog", None):
             plan["catalog_generated"] = tgt.catalog.get("generated")  # type: ignore[union-attr]
         warns = self._check(tgt, plan)
+        concerns = fix_concerns(before, plan)
+        if concerns:
+            notes.insert(0, "".join(f"REVIEW: {c}. " for c in concerns).strip())
         plan = {
             **plan,
             "warnings": warns,
             "plan_before_fix": before,
             "fix_changes": changes,
+            "fix_concerns": concerns,
             "fix_notes": " ".join(notes),
             "fix_diff": plan_diff(before, plan),
         }
@@ -3131,12 +3344,14 @@ class Lab:
             except Exception:  # cluster unreachable: fix from state alone
                 log = ""
         self._fresh_catalog(tgt)
+        fclass, fadvice = classify_failure(log)
         prompt = RUNFIX_PROMPT.format(
             target=_describe(tgt, full=True),
             lessons=labguard.prompt_block(
                 json.dumps(plan) + " " + _log_for_fix(log, 3000), self.state_dir
             ),
-            state=run.get("slurm_state") or run.get("stage") or "FAILED",
+            state=(run.get("slurm_state") or run.get("stage") or "FAILED")
+            + (f". DIAGNOSIS ({fclass}): {fadvice}" if fadvice else ""),
             exit_code=run.get("exit_code"),
             elapsed=run.get("elapsed"),
             log=_log_for_fix(log),
@@ -3191,7 +3406,11 @@ class Lab:
                 "the AI found nothing to fix from the log"
                 + (f": {notes[:300]}" if notes else "")
             )
+        concerns = fix_concerns(plan, new)
+        if concerns:
+            notes = (notes + " " + "".join(f"REVIEW: {c}. " for c in concerns)).strip()
         new["fix_changes"] = changes
+        new["fix_concerns"] = concerns
         new["fix_notes"] = notes
         new["fix_diff"] = plan_diff(
             {k: v for k, v in plan.items() if k not in PLAN_DIFF_SKIP}, new
@@ -3775,12 +3994,14 @@ class Lab:
         )
         clean_timeout = rc == 124 and not self._SMOKE_ERR.search(log[-20000:])
         passed = (rc == 0 and not missing) or clean_timeout
+        fclass, fadvice = ("", "") if passed else classify_failure(log)
         sm["rounds"] = list(sm.get("rounds") or []) + [
             {
                 "round": n,
                 "rc": rc,
                 "missing": missing,
                 "passed": passed,
+                "class": fclass,
                 "note": "timed out without errors (the script may ignore LAB_SMOKE)"
                 if clean_timeout
                 else "",
@@ -3831,7 +4052,17 @@ class Lab:
                 )
             return
         if n >= self.SMOKE_MAX_ROUNDS:
-            self._fail_smoke(run, sm, log, f"Smoke test failed {n} times")
+            self._fail_smoke(run, sm, log, f"Smoke test failed {n} times", fadvice)
+            return
+        # the same failure class twice in a row means the AI is not getting anywhere
+        prev = [r.get("class") for r in sm["rounds"][:-1]]
+        if fclass in ("container", "timeout", "oom") or (
+            prev and prev[-1] == fclass and fclass in ("install", "missing-feature")
+        ):
+            self._fail_smoke(
+                run, sm, log,
+                f"Smoke test failed ({fclass}); not handed to the AI again", fadvice,
+            )  # fmt: skip
             return
         sm["fixing"] = True
         if not self._update(
@@ -3844,10 +4075,14 @@ class Lab:
         ):
             return
         threading.Thread(
-            target=self._smoke_fix, args=(run_id, log, rc, missing), daemon=True
+            target=self._smoke_fix,
+            args=(run_id, log, rc, missing, fadvice),
+            daemon=True,
         ).start()
 
-    def _fail_smoke(self, run: dict, sm: dict, log: str, why: str) -> None:
+    def _fail_smoke(
+        self, run: dict, sm: dict, log: str, why: str, advice: str = ""
+    ) -> None:
         dest = self.results_dir / f"run_{run['id']}"
         dest.mkdir(parents=True, exist_ok=True)
         (dest / "job.log").write_text(log)  # so Fix with AI and the Log view have it
@@ -3863,14 +4098,16 @@ class Lab:
                 if last.get("missing")
                 else ""
             )
-            + ". The full run was not started.",
+            + ". The full run was not started."
+            + (f" {advice}" if advice else ""),
             smoke={**sm, "fixing": False},
             finished_at=_now(),
         )
 
     def _smoke_fix(
-        self, run_id: int, log: str, rc: int | None, missing: list[str]
-    ) -> None:
+        self, run_id: int, log: str, rc: int | None, missing: list[str],
+        advice: str = "",
+    ) -> None:  # fmt: skip
         """Background: ask the AI to fix a failed smoke test, then run the next round."""
         run = self.get(run_id)
         if not run or run["status"] != "smoke":
@@ -3897,6 +4134,7 @@ class Lab:
                 state="SMOKE TEST FAILED: the plan ran with LAB_SMOKE=1 (a cut-down run) on the "
                 "warm Lab node. "
                 + extra
+                + (f"DIAGNOSIS: {advice} " if advice else "")
                 + "Fix the cause. If the script ignores LAB_SMOKE, "
                 "also make it honour it (smallest sizes, every step, every output)",
                 exit_code=rc,
@@ -3927,14 +4165,19 @@ class Lab:
                     )
                 )
             dropped = _dropped_options(plan, new)
+            concerns = fix_concerns(plan, new)
             original = sm.get("original") or {}
             new["fix_changes"] = list(
                 (run.get("plan") or {}).get("fix_changes") or []
             ) + [f"smoke round {sm.get('round', 1)}: {c}" for c in changes]
             new["fix_notes"] = (
                 (f"REVIEW: removes option(s) {', '.join(dropped)}. " if dropped else "")
+                + "".join(f"REVIEW: {c} " for c in concerns)
                 + str(out.get("notes") or "")
             ).strip()
+            new["fix_concerns"] = (
+                list((run.get("plan") or {}).get("fix_concerns") or []) + concerns
+            )
             new["fix_diff"] = plan_diff(original, new)
             if run.get("data_sources"):
                 new["data_sources"] = list(run["data_sources"])

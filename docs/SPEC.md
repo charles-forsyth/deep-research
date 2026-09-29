@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.33.3 (package `deepresearch`) |
+| Applies to | deep-research v0.34.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1511,6 +1511,31 @@ Added in v0.33.0 (Lab plan v3 releases 2-5).
   shows its partition stocked out, `_switch_partition()` cancels it and resubmits the same plan
   on the suggested partition once (`plan.partition_switched`).
 
+### 20.12 Failure classes, AI-fix review gate, stuck sessions
+
+Added in v0.34.0.
+
+- **`classify_failure(log)`** matches `FAILURE_CLASSES` (install, container, tool-crash,
+  glibc, missing-feature, numerical, timeout, oom; else script) on the last 40 KB of a log.
+  The smoke loop stores the class per round (`smoke.rounds[].class`), passes its advice to
+  the fix prompt as `DIAGNOSIS:`, and stops without another AI round for container, timeout
+  and oom, or when install/missing-feature repeats; the advice is appended to `error`.
+  `fix_failed` adds the diagnosis to the prompt's state line.
+- **`fix_concerns(old, new)`**, deterministic, on every AI fix (smoke loop, `fix_plan`,
+  `fix_failed`): a new fallback returning a number the script uses as a reference; changed
+  verdict `expected`/`tolerance` values; an arithmetic assignment whose only change is one or
+  two identifiers; removed imports; >30% of a 10+ line script changed; new fixed-text
+  findings. Stored in `plan.fix_concerns`, appended to `fix_notes` as `REVIEW:`, shown as
+  "Check before running".
+- **Stuck sessions.** `Api._stall(s)` for running sessions: process gone, or log unchanged
+  for `STALL_MIN` (45) minutes. `GET /api/sessions/{id}` returns `stall`
+  {reason, minutes, message}; `GET /api/sessions` adds `stalled` to such rows. The session
+  page offers Stop and re-run (cancel + `POST /api/research` with `rerun_of`) or Just stop.
+- **Probes** `features` (`<prog> -h`, package sections first) and `conda`
+  (`pixi search -c conda-forge -c bioconda`).
+- **Containers**: an `install.apptainer` entry that is a path or ends in `.sif` must exist
+  and is exported as `IMG_<NAME>` in place; only registry references are pulled.
+
 ## 21. Data sources
 
 A data source is a named reference to data that lives somewhere else: an open dataset
@@ -1711,6 +1736,7 @@ drops the other's result.
 | 2026-09-29 | v0.28.1 | Lab submit: expired gcloud sign-in named plainly; a submit that never reached the cluster keeps the run as a draft (20.6). |
 | 2026-09-29 | v0.28.2 | Lab: OR-Tools plans on a Python module get an isolated venv (CP-SAT segfaulted on top of python-sci). |
 | 2026-09-29 | v0.29.0 | Lab: lessons (curated + learned) in plan/fix prompts, science guards, known-answer verdicts (20.10). |
+| 2026-09-29 | v0.34.0 | Lab failure classes, AI-fix review gate, stuck-session detection, features/conda probes, local containers in place (20.12). |
 | 2026-09-29 | v0.33.3 | Lab ladder: module rung first for module-only Python plans; verify imports installed in fallbacks; verify in env key. |
 | 2026-09-29 | v0.33.2 | Lab: warm workers scale out with the queue (max_workers, default 3). |
 | 2026-09-29 | v0.33.1 | Lab: catalog usage cards in the planner's cluster description. |

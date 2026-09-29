@@ -238,6 +238,7 @@ function renderSessionList() {
         <div class="p">${esc(clip(oneLine(s.prompt), 160))}</div>
         <div class="m">
           <span>${ago(s.created_at)}</span>
+          ${s.stalled ? `<span class="bad" title="No progress; open it to stop or re-run">\u26A0 stuck</span>` : ""}
           ${s.result_chars >= 1000 ? `<span>${fmtN(Math.round(s.result_chars / 1000))}k chars</span>` : ""}
           ${s.children ? `<span>\u2937 ${s.children}</span>` : ""}
           ${s.annotations ? `<span>\u270E ${s.annotations}</span>` : ""}
@@ -515,6 +516,10 @@ async function renderSession(v, t) {
           ${s.files.length ? `<span>FILES <b>${s.files.length}</b></span>` : ""}
         </div>
       </div>
+      ${s.stall ? `<div class="stall-note" role="alert" style="margin:8px 0;padding:10px 12px;border:1px solid var(--amber,#b80);border-radius:6px">
+        <b>This research looks stuck.</b> ${esc(s.stall.message)}
+        <div style="margin-top:8px"><button class="btn small primary" data-a="stall-restart">Stop and re-run</button>
+        <button class="btn small" data-a="stall-stop">Just stop it</button></div></div>` : ""}
       <div class="listenbar" hidden></div>
       <div class="findbar" hidden role="search">
         <input class="inline-input" placeholder="Find in report\u2026" style="max-width:320px" aria-label="Find in report">
@@ -598,6 +603,21 @@ async function renderSession(v, t) {
     const out = await api(`/api/sessions/${s.id}/export?format=${fmt}${rec}`);
     download(out.filename, fmt === "json" ? JSON.stringify(out.content, null, 2) : out.content, fmt === "json" ? "application/json" : "text/markdown");
   });
+  const stallGo = (restart) => async (ev) => busy(ev.currentTarget, async () => {
+    const d = s.run?.depth || s.depth || 1, b = s.run?.breadth || 3;
+    const ok = await confirmBox(restart ? `Stop #${s.id} and run it again?` : `Stop #${s.id}?`,
+      restart ? `Cancels the stuck run at Google and starts the same question as a new session (depth ${d}).` : "Cancels the stuck run at Google and marks it cancelled.",
+      restart ? "Stop and re-run" : "Stop");
+    if (!ok) return;
+    try { await api(`/api/sessions/${s.id}/cancel`, { method: "POST" }); } catch (err) { toast(err.message, "err"); }
+    delete S.cache[s.id];
+    if (restart) {
+      const r = await api("/api/research", { method: "POST", body: { prompt: s.prompt, depth: d, breadth: b, rerun_of: s.id } });
+      toast(`Re-run #${r.id} launched`, "ok"); S.rtab = "log"; await loadSessions(); openSession(r.id);
+    } else { loadSessions(); renderStage(); }
+  });
+  v.querySelector('[data-a="stall-restart"]')?.addEventListener("click", stallGo(true));
+  v.querySelector('[data-a="stall-stop"]')?.addEventListener("click", stallGo(false));
   v.querySelector('[data-a="cancel"]')?.addEventListener("click", async () => {
     if (!(await confirmBox("Stop this research?", "Stops the background process and asks Gemini to cancel the interaction.", "Stop research", "Keep running"))) return;
     try { const r = await api(`/api/sessions/${s.id}/cancel`, { method: "POST" }); toast(r.notes.join("; ") || "Cancelled"); }

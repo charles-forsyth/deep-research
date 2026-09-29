@@ -66,8 +66,57 @@ CURATED: list[dict[str, Any]] = [
         "compressible solver. With OUTPUT_FILES= (RESTART, CSV) the volume data is "
         "restart_flow.csv (columns PointID,x,y,Pressure,Velocity_x,...); there is no flow.csv. "
         "Mesh files need NELEM before NPOIN. Give mpirun </dev/null inside loops that read "
-        "stdin.",
-        "source": "draft #51, job 225",
+        "stdin. SPECIFIED_INLET_PROFILE: an unsteady run (TIME_DOMAIN= YES) reads "
+        "<INLET_FILENAME stem>_00000.dat, not the name given; write both. Format: NMARK=, "
+        "MARKER_TAG=, NROW=, NCOL=6, then x y T |U| nx ny per inlet node (run SU2_CFD once "
+        "without the file and read the example_* template it writes). There is no "
+        "VISC_NUM_METHOD_FLOW option in 8.2.",
+        "source": "draft #51, job 225, run #62/#74",
+    },
+    {
+        "id": "lammps-granular",
+        "match": [
+            "lammps",
+            "lmp",
+            "granular",
+            "dem",
+            "pair_style gran",
+            "granular flow",
+        ],
+        "text": "The site LAMMPS modules (lammps/20250722.4 and -cuda) are built with KSPACE "
+        "MANYBODY MISC MOLECULE REPLICA RIGID only: no GRANULAR (pair gran/*, fix pour, "
+        "fix wall/gran), no DEM. For granular work install conda-forge lammps PINNED to "
+        '2023.08.02 (install.conda: ["lammps=2023.08.02"]): it has GRANULAR and runs on '
+        "the cluster's glibc 2.28; the 2024/2025 conda-forge builds need glibc 2.29+ and "
+        "fail to start. Verify with `lmp -h | grep -q GRANULAR`.",
+        "source": "run #57, checked on a compute node 2026-09-29",
+    },
+    {
+        "id": "glibc-too-new",
+        "match": ["glibc", "conda", "conda-forge", "pixi", "version `glibc"],
+        "text": "Compute nodes run Rocky 8 (glibc 2.28). Recent conda-forge binaries may need "
+        'glibc 2.29-2.38 and fail with "version `GLIBC_2.xx\' not found". Pin an older '
+        "build of that package, or use the module or a container.",
+        "source": "run #57 probe, 2026-09-29",
+    },
+    {
+        "id": "local-containers",
+        "match": ["apptainer", "singularity", ".sif", "container", "nvcc", "cuda"],
+        "text": "Images already on the cluster (/apps/containers/*.sif) are listed by path "
+        "under install.apptainer and used in place ($IMG_<NAME>); only docker:// or "
+        "library:// references are pulled. The CUDA toolkit (nvcc) is in "
+        "/apps/containers/cuda-12.4-devel.sif, not a module: `apptainer exec --nv "
+        "$IMG_CUDA_12_4_DEVEL nvcc ...`.",
+        "source": "run #61",
+    },
+    {
+        "id": "lbm-stability",
+        "match": ["lattice boltzmann", "lbm", "d2q9", "d3q19", "bgk", "mrt"],
+        "text": "BGK lattice Boltzmann goes unstable as tau -> 0.5 (tau = 3 nu_lat + 0.5): "
+        "keep tau >= 0.51 by refining the grid rather than lowering nu, cap u_lat <= 0.1, "
+        "and guard density divisions (rho can hit 0 when it diverges); report "
+        "divergence as a failure, never catch it.",
+        "source": "run #70",
     },
     {
         "id": "freertos-host",
@@ -136,6 +185,12 @@ GENERAL_RULES = [
     "Support a smoke mode: when LAB_SMOKE=1, run a cut-down version (smallest grid, fewest "
     "cases or iterations, seconds not minutes) that still exercises every step and writes "
     "every expected output file.",
+    "When a computation fails (a fit with too few points, NaN, no convergence), record the "
+    "failure (NaN or null, pass false) and say so. Never return a reference or expected "
+    "value as a fallback: a failed calculation would then look like agreement.",
+    "Before relying on an optional feature of an installed program (a LAMMPS package, a "
+    "solver option, a compiled-in library), check it exists in the verify step (e.g. "
+    "`lmp -h | grep -q GRANULAR`) so a missing feature fails in seconds.",
 ]
 
 _LOCK = threading.Lock()
