@@ -7,6 +7,22 @@ releases.
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-09-29
+
+Resilience release: every failure of the 15-run batch (runs #55-#74) traced to a cause and fixed at the source, so the same failure can't recur, instead of patching plans by hand.
+
+### Added
+
+- **Failure classes.** A failed smoke test or run is classified from its log: software setup, container image, program crash (assertion/segfault), binary too new for the nodes (glibc), missing feature in the installed build, numerical blow-up, time limit, out of memory, or script error. The class and a concrete diagnosis go into the AI fix prompt and the error shown to you. Setup, container, time and memory failures are not handed to the AI again after the same class repeats (the AI "found nothing to fix" 3 times in the batch because the cause was outside the script). The Lab view names the class for each smoke round.
+- **Review gate on AI fixes.** Every AI fix (smoke loop, Fix with AI, fix of a failed run) is checked for: a fallback that returns the reference value (a failed fit would look like agreement, run #56), changed verdict tolerances or expected values, a variable swapped inside a formula (k3_v -> k3_u in an RK4 step, run #59), a removed library (run #64), a large rewrite, and new fixed-text results. Findings show as "Check before running" on the draft.
+- **Stuck research.** A running session whose log hasn't grown for 45 minutes, or whose process is gone, shows "This research looks stuck" with Stop and re-run / Just stop, and a stuck marker in the session list (#287 sat "in progress" at Google for hours with no output).
+- **Planner checks:** `features` (a program's full `-h` output: compiled-in packages and styles) and `conda` (versions on conda-forge/bioconda).
+- **Lessons** (known problems + usage cards): SU2 unsteady inlet profiles read `<stem>_00000.dat`; site LAMMPS has no GRANULAR (use conda-forge lammps=2023.08.02); newer conda-forge binaries need glibc 2.29+ (nodes run 2.28); local container images and where nvcc lives; lattice-Boltzmann stability. Two new planning rules: never return a reference value as a fallback, and verify optional features of a program in the verify step.
+
+### Fixed
+
+- Container images already on the cluster (`/apps/containers/*.sif`) are used in place; they were passed to `apptainer pull`, which read the path as a registry name (run #61).
+
 ## [0.33.3] - 2026-09-29
 
 ### Fixed

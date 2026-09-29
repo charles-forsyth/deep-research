@@ -469,3 +469,26 @@ def test_local_only_handler_refuses_other_machines(tmp_path):
     assert b"200" in request("127.0.0.1")
     assert b"200" in request("::1") and b"200" in request("::ffff:127.0.0.1")
     assert srv._loopback_peer("10.0.0.1") is False
+
+
+def test_stalled_session_is_reported(app):
+    import os
+    import sqlite3
+    import time
+
+    call, api = app["call"], app["api"]
+    sid = api.sessions.create_session("int-1", "stuck question", pid=os.getpid())
+    with sqlite3.connect(api.db_path) as c:
+        c.execute("UPDATE sessions SET status='running' WHERE id=?", (sid,))
+    log = srv.LOG_DIR / f"session_{sid}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("[17:34] thinking\n")
+    _, s = call("GET", f"/api/sessions/{sid}")
+    assert s["stall"] is None  # fresh log, live process
+    old = time.time() - 60 * 60
+    os.utime(log, (old, old))
+    _, s = call("GET", f"/api/sessions/{sid}")
+    assert s["stall"]["reason"] == "idle" and s["stall"]["minutes"] >= 59
+    _, lst = call("GET", "/api/sessions")
+    rows = lst["sessions"]
+    assert next(r for r in rows if r["id"] == sid)["stalled"] == "idle"

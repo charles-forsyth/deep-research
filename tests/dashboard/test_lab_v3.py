@@ -521,3 +521,127 @@ def test_ladder_module_first_and_verify_imports_installed_in_fallbacks():
         r"LADDER_KEY=(\w+)", build_sbatch(1, other, t)
     ).group(1)
     assert subprocess.run(["bash", "-n"], input=s, text=True).returncode == 0
+
+
+# ---------------------------------------------------------------- v0.34 resilience
+
+
+@pytest.mark.parametrize(
+    "log,cls",
+    [
+        (
+            "[ERROR] no install method produced a working environment (tried: a b)",
+            "install",
+        ),
+        (
+            "FATAL:   While making image from oci registry: unable to parse image name /x.sif",
+            "container",
+        ),
+        ("stl_vector.h:1128: ... Assertion '__n < this->size()' failed.", "tool-crash"),
+        ("lmp: /lib64/libc.so.6: version `GLIBC_2.34' not found", "glibc"),
+        ("ERROR: lmp binary lacks granular support", "missing-feature"),
+        ("ZeroDivisionError: division by zero", "numerical"),
+        ("Traceback\nKeyError: 'x'", "script"),
+    ],
+)
+def test_classify_failure(log, cls):
+    assert labm.classify_failure(log)[0] == cls
+
+
+def test_fix_concerns_catch_real_ai_fix_mistakes():
+    # run #56: a failed fit returns the reference exponent
+    a = {
+        "script": "tau_ref = 1.27\ndef fit(x):\n    if len(x) < 2:\n        return float('nan'), 0.0\n"
+    }
+    b = {
+        "script": "tau_ref = 1.27\ndef fit(x):\n    if len(x) < 2:\n        return 1.27, 0.0\n"
+    }
+    assert any("reference value 1.27" in c for c in labm.fix_concerns(a, b))
+    # run #59: k3_v -> k3_u inside the RK4 update
+    rk = "v_next = v + (dt / 6.0) * (k1_v + 2.0 * k2_v + 2.0 * {} + k4_v)\n"
+    c = labm.fix_concerns({"script": rk.format("k3_v")}, {"script": rk.format("k3_u")})
+    assert any("k3_v -> k3_u" in x for x in c)
+    # run #64: library swapped out, verdict loosened
+    a = {"script": "import EoN\nchecks = [{'expected': 0.85, 'tolerance': 0.25}]\n"}
+    b = {"script": "import heapq\nchecks = [{'expected': 0.80, 'tolerance': 0.20}]\n"}
+    c = labm.fix_concerns(a, b)
+    assert any("EoN" in x for x in c) and any("tolerance" in x for x in c)
+    # strings and titles are not formulas
+    t1 = {"script": 'ax.set_title("Barabási-Albert: size vs f")\n'}
+    t2 = {"script": 'ax.set_title("Barabasi-Albert: size vs f")\n'}
+    assert labm.fix_concerns(t1, t2) == []
+
+
+def test_smoke_install_failure_is_not_retried_forever(wlab):
+    run = _draft(wlab)
+    wlab.submit(run["id"])
+    t1 = wlab.get(run["id"])["smoke"]["task"]
+    log = "[ERROR] no install method produced a working environment (tried: pixi)\n"
+    # round 1 fails on install: goes to the AI with a diagnosis
+    seen = {}
+
+    def ask(prompt, search):
+        seen["prompt"] = prompt
+        fixed = {
+            **PLAN,
+            "script": "echo ok > outputs/result.txt",
+            "expected_outputs": ["outputs/result.txt"],
+        }
+        return "```json\n" + json.dumps(
+            {"plan": fixed, "changes": ["x"], "notes": ""}
+        ) + "\n```", 0.0
+
+    wlab._ask = ask
+    orig_thread = labm.threading.Thread
+
+    class Inline:
+        def __init__(self, target, args, daemon):
+            self.t, self.a = target, args
+
+        def start(self):
+            self.t(*self.a)
+
+    labm.threading.Thread = Inline  # type: ignore[misc,assignment]
+    try:
+        wlab.fake.finish(t1, 4, log, run=run["id"])
+        wlab.poll(wlab.get(run["id"]))
+        assert "DIAGNOSIS: No install method" in seen["prompt"]
+        t2 = wlab.get(run["id"])["smoke"]["task"]
+        wlab.fake.finish(t2, 4, log, run=run["id"])
+        wlab.poll(wlab.get(run["id"]))
+    finally:
+        labm.threading.Thread = orig_thread  # type: ignore[misc]
+    f = wlab.get(run["id"])
+    assert (
+        f["status"] == "failed"
+        and "(install); not handed to the AI again" in f["stage"]
+    )
+    assert "software setup" in f["error"]
+    assert f["smoke"]["rounds"][-1]["class"] == "install"
+
+
+def test_local_container_is_used_in_place_not_pulled():
+    t = FakeTarget()
+    plan = dict(
+        PLAN,
+        install={
+            "apptainer": ["/apps/containers/cuda-12.4-devel.sif", "docker://a/b:1"]
+        },
+    )
+    s = build_sbatch(1, plan, t)
+    assert "apptainer pull" in s and "docker://a/b:1" in s
+    assert "pull $HOME/deep-research-lab/images/apps" not in s
+    assert "export IMG_CUDA_12_4_DEVEL=/apps/containers/cuda-12.4-devel.sif" in s
+    assert subprocess.run(["bash", "-n"], input=s, text=True).returncode == 0
+
+
+def test_new_probe_kinds_are_read_only():
+    f = labm._probe_cmd(
+        {"kind": "features", "cmd": "lmp", "load": ["openmpi", "lammps"]}
+    )
+    assert f and "timeout 30 lmp -h" in f and "module load lammps" in f
+    assert labm._probe_cmd({"kind": "features", "cmd": "lmp -in x"}) is None
+    assert labm._probe_cmd({"kind": "features", "cmd": "rm;x"}) is None
+    c = labm._probe_cmd({"kind": "conda", "package": "lammps"})
+    assert c and "pixi search" in c
+    assert labm._probe_cmd({"kind": "conda", "package": "x; rm -rf ~"}) is None

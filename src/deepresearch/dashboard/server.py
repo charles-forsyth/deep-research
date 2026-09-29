@@ -15,6 +15,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 import traceback
 from datetime import datetime
 from http import HTTPStatus
@@ -386,7 +387,13 @@ class Api:
         self._refresh_liveness()
         q = (query.get("q") or [""])[0].strip() or None
         limit = int((query.get("limit") or ["500"])[0])
-        return {"sessions": self.store.session_rows(q=q, limit=min(limit, 5000))}
+        rows = self.store.session_rows(q=q, limit=min(limit, 5000))
+        for r in rows:
+            if r.get("status") == "running":
+                st = self._stall(r)
+                if st:
+                    r["stalled"] = st["reason"]
+        return {"sessions": rows}
 
     def get_session(self, sid, query, body):
         s = self._session(sid)
@@ -399,6 +406,7 @@ class Api:
         ]
         s["annotations"] = self.store.list_annotations(int(sid))
         s["log_available"] = (LOG_DIR / f"session_{sid}.log").exists()
+        s["stall"] = self._stall(s)
         s["run"] = self._run_meta(int(sid))
         from deepresearch.sources.provenance import session_provenance
 
@@ -412,6 +420,41 @@ class Api:
                 )
             ]
         return s
+
+    STALL_MIN = 45  # a running report whose log has not grown for this long
+
+    def _stall(self, s: dict) -> dict | None:
+        """Is a 'running' session stuck? Its log stopped growing, or its process died.
+
+        Deep Research at Google can sit "in_progress" with no output for hours (#287);
+        the dashboard then shows "running" forever. This reports it so the page can offer
+        Stop / Re-run instead of a spinner.
+        """
+        if s.get("status") != "running":
+            return None
+        log = LOG_DIR / f"session_{s['id']}.log"
+        pid = s.get("pid")
+        alive = True
+        if pid:
+            try:
+                os.kill(int(pid), 0)
+            except ProcessLookupError:
+                alive = False
+            except (PermissionError, ValueError, TypeError):
+                pass
+        try:
+            idle = (time.time() - log.stat().st_mtime) / 60 if log.exists() else None
+        except OSError:
+            idle = None
+        if not alive:
+            return {"reason": "process", "minutes": round(idle or 0),
+                    "message": "The research process is gone but the session was never "
+                               "finished. Stop it and re-run."}  # fmt: skip
+        if idle is not None and idle >= self.STALL_MIN:
+            return {"reason": "idle", "minutes": round(idle),
+                    "message": f"No progress for {round(idle)} minutes. Deep Research "
+                               "sometimes stalls at Google; stop it and re-run it."}  # fmt: skip
+        return None
 
     def _run_meta(self, sid: int) -> dict | None:
         with sqlite3.connect(self.db_path, timeout=10) as conn:

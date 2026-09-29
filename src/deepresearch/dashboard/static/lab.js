@@ -170,14 +170,22 @@ const LAB = {
   },
 
   // Write-ups are asked for plain Unicode; turn stray inline TeX ($\theta$, $\le$) into symbols.
+  concernsHtml(p) {
+    // what an AI fix did that needs a person's eyes (fallback to a reference value, changed
+    // verdict tolerances, a swapped formula variable, a removed library, a big rewrite)
+    const cs = p.fix_concerns || [];
+    if (!cs.length) return "";
+    return `<div class="lab-warn" role="alert" style="margin:6px 0"><b>Check before running:</b><ul>${cs.map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>`;
+  },
   smokeHtml(r) {
     // smoke test rounds on the warm node, and the plan changes the AI made to pass them
     const sm = r.smoke;
     const p = r.plan || {};
     const bits = [];
     if (sm && Array.isArray(sm.rounds) && sm.rounds.length) {
-      bits.push(`<span class="label">Smoke test</span> ` + sm.rounds.map((x) => `round ${x.round}: ${x.passed ? "passed" : "<b>failed</b>"}${x.rc != null ? ` (exit ${x.rc}${x.seconds != null ? `, ${x.seconds}s` : ""})` : ""}${(x.missing || []).length ? `, missing ${esc(x.missing.join(", "))}` : ""}${x.note ? ` <span class="dim">${esc(x.note)}</span>` : ""}`).join("; "));
+      bits.push(`<span class="label">Smoke test</span> ` + sm.rounds.map((x) => `round ${x.round}: ${x.passed ? "passed" : `<b>failed</b>${x.class && x.class !== "script" ? ` (${esc(({install: "software setup", container: "container image", "tool-crash": "program crashed", "missing-feature": "missing feature", glibc: "binary too new for the nodes", numerical: "numerical blow-up", timeout: "time limit", oom: "out of memory"})[x.class] || x.class)})` : ""}`}${x.rc != null ? ` (exit ${x.rc}${x.seconds != null ? `, ${x.seconds}s` : ""})` : ""}${(x.missing || []).length ? `, missing ${esc(x.missing.join(", "))}` : ""}${x.note ? ` <span class="dim">${esc(x.note)}</span>` : ""}`).join("; "));
     }
+    if ((p.fix_concerns || []).length && r.status === "draft") bits.push(`<span class="label">Check before running</span> ${p.fix_concerns.map(esc).join("; ")}`);
     if (p.partition_switched) bits.push(`<span class="label">Partition</span> ${esc(p.partition_switched)}`);
     if (String(r.job_id || "").startsWith("warm:")) bits.push(`<span class="label">Ran on</span> the warm Lab node (no node boot)`);
     if (!bits.length) return "";
@@ -350,8 +358,8 @@ const LAB = {
       <nav class="lab-toc">${["What and why", "Software and data", "Settings", "Result check", "Script"].map((t, i) => `<a href="#" data-sec="${i + 1}">${i + 1}. ${t}</a>`).join("")}</nav>
       <div class="lab-q"><span class="label">Question</span> ${esc(p.question || "")}</div>
       ${(p.warnings || []).length ? `<div class="lab-warn"><span class="label">Checked against the cluster: ${p.warnings.length} problem${p.warnings.length > 1 ? "s" : ""}</span><ul>${p.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul><div class="lab-fix-row">${editable ? `<button class="btn" data-x="fix" title="The AI fixes only what is flagged, then the plan is checked again. Nothing is submitted.">Fix with AI</button>` : ""}<span class="dim" style="font-size:11px">${editable ? "or edit the plan (modules, partition, GPUs) yourself, or submit anyway." : ""}</span></div></div>` : ""}
-      ${!p.plan_before_fix && (p.fix_changes || []).length && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">AI fix of failed run #${esc(r.rerun_of || "")}</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "checks pass"}</span></div><ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(p.fix_notes)}</div>` : ""}${this.diffHtml(p.fix_diff)}</div>` : ""}
-      ${p.plan_before_fix && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">Fixed by AI and re-checked</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "no warnings"}</span> <button class="btn" data-x="undofix">Undo fix</button></div>${(p.fix_changes || []).length ? `<ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(p.fix_notes)}</div>` : ""}${this.diffHtml(p.fix_diff)}</div>` : ""}
+      ${!p.plan_before_fix && (p.fix_changes || []).length && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">AI fix of failed run #${esc(r.rerun_of || "")}</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "checks pass"}</span></div><ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>${this.concernsHtml(p)}${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(p.fix_notes.replace(/REVIEW: [^.]*\. ?/g, ""))}</div>` : ""}${this.diffHtml(p.fix_diff)}</div>` : ""}
+      ${p.plan_before_fix && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">Fixed by AI and re-checked</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "no warnings"}</span> <button class="btn" data-x="undofix">Undo fix</button></div>${(p.fix_changes || []).length ? `<ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}${this.concernsHtml(p)}${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(p.fix_notes.replace(/REVIEW: [^.]*\. ?/g, ""))}</div>` : ""}${this.diffHtml(p.fix_diff)}</div>` : ""}
       <h4 class="lab-h" id="lr-sec-1">1. What and why</h4>
       <div class="lab-sec"><span class="label">Approach</span><div>${esc(p.approach || "")}</div></div>
       <h4 class="lab-h" id="lr-sec-2">2. Software and data</h4>
