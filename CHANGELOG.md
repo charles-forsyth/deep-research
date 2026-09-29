@@ -7,6 +7,13 @@ releases.
 
 ## [Unreleased]
 
+## [0.35.1] - 2026-09-29
+
+### Fixed
+
+- Install verification ran all `install.verify` lines as one `eval`, so only the last line counted: `lmp -h | grep -q GRANULAR` failed and was ignored (run #75). Each line now runs on its own with pipefail, and the first failure fails the rung.
+- A conda plan with a pinned compiled program (conda-forge `lammps=2023.08.02`, the build that runs on glibc 2.28) no longer gets `python=3.12` forced next to it (no solution existed; checked on a compute node), the relaxed rung keeps pins on compiled programs, and there is no pip rung when the checks call a binary pip can't provide (it "verified" Python imports, then `lmp: command not found`).
+
 ## [0.35.0] - 2026-09-29
 
 Found by the first plans made with 0.34 (#75-#77): the planner used the new lessons (pinned conda-forge LAMMPS with a GRANULAR check, `inlet_00000.dat`, the local CUDA container), and the checks around it needed to catch up.

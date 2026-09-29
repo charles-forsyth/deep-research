@@ -645,3 +645,25 @@ def test_new_probe_kinds_are_read_only():
     c = labm._probe_cmd({"kind": "conda", "package": "lammps"})
     assert c and "pixi search" in c
     assert labm._probe_cmd({"kind": "conda", "package": "x; rm -rf ~"}) is None
+
+
+def test_ladder_pinned_binary_conda_plan():
+    """Run #75: lammps=2023.08.02 (glibc 2.28) must not get python=3.12 forced next to it,
+    the relaxed rung keeps the pin verify depends on, and no pip rung pretends to provide
+    the lmp binary; every verify line must pass, not just the last."""
+    t = FakeTarget()
+    plan = dict(
+        PLAN,
+        install={
+            "conda": ["lammps=2023.08.02", "numpy"],
+            "channels": ["conda-forge"],
+            "verify": ["lmp -h | grep -q GRANULAR", "python -c 'import numpy'"],
+        },
+    )
+    s = build_sbatch(1, plan, t)
+    first = s[s.index("ladder_try pixi ") :].split("\n", 1)[0]
+    assert "python=3.12" not in first and "lammps=2023.08.02" in first
+    loose = s[s.index("ladder_try pixi-loose") :].split("\n", 1)[0]
+    assert "lammps=2023.08.02" in loose
+    assert "ladder_try pip-venv" not in s
+    assert "while IFS= read -r line" in s and "set -o pipefail" in s
