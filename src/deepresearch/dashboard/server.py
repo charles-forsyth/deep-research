@@ -257,6 +257,9 @@ class Api:
         r("GET", r"/api/lab/targets", self.lab_targets)
         r("GET", r"/api/lab/catalog", self.lab_catalog)
         r("POST", r"/api/lab/catalog/refresh", self.lab_catalog_refresh)
+        r("GET", r"/api/lab/pitfalls", self.lab_pitfalls)
+        r("POST", r"/api/lab/pitfalls", self.lab_pitfall_add)
+        r("DELETE", r"/api/lab/pitfalls/([\w.-]+)", self.lab_pitfall_rm)
         r("GET", r"/api/sessions/(\d+)/lab", self.lab_list)
         r("POST", r"/api/sessions/(\d+)/lab/suggestions", self.lab_suggestions)
         r("POST", r"/api/sessions/(\d+)/lab", self.lab_create)
@@ -1220,6 +1223,40 @@ class Api:
         if st.get("error") and not st.get("available"):
             raise ApiError(502, st["error"])
         return st
+
+    def lab_pitfalls(self, query, body):
+        from deepresearch.dashboard import labguard
+
+        return {
+            "pitfalls": labguard.all_pitfalls(self.lab.state_dir),
+            "rules": labguard.GENERAL_RULES,
+        }
+
+    def lab_pitfall_add(self, query, body):
+        from deepresearch.dashboard import labguard
+
+        body = body or {}
+        match = body.get("match") or []
+        if isinstance(match, str):
+            match = [m.strip() for m in match.split(",")]
+        try:
+            return labguard.add_learned(
+                self.lab.state_dir,
+                str(body.get("text") or ""),
+                [str(m) for m in match],
+                str(body.get("source") or "added by hand"),
+            )
+        except ValueError as e:
+            raise ApiError(400, str(e)) from e
+
+    def lab_pitfall_rm(self, pid, query, body):
+        from deepresearch.dashboard import labguard
+
+        if not labguard.remove_learned(self.lab.state_dir, pid):
+            raise ApiError(
+                404, "No learned pitfall with that id (curated ones are in code)"
+            )
+        return {"ok": True}
 
     def lab_all_runs(self, query, body):
         self.lab.ensure_watcher()

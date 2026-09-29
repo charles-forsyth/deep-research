@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.28.2 (package `deepresearch`) |
+| Applies to | deep-research v0.29.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1439,6 +1439,32 @@ relying on hand-written notes that go stale (before this, the config still said 
   first; conda/pip packages that are already modules; a local container path not in
   `/apps/containers`. Warnings never block submit; the review dialog lists them.
 
+### 20.10 Lessons and science guards
+
+Added in v0.29.0 (Lab plan v3, nexus `2026-09-29_Deep_Research_Lab_Plan_v3.md`). Module
+`dashboard/labguard.py`, deterministic, no model calls.
+
+- **Pitfalls in every prompt.** The plan, Fix-with-AI and fix-failed prompts get a
+  "Rules learned from earlier runs" block: five general rules (compute every reported
+  number, download reference data instead of typing it, read tool output folders instead
+  of guessing file names, write `outputs/verdict.json` for known-answer checks, support
+  `LAB_SMOKE=1`) plus the software-specific lessons whose keywords appear in the request,
+  report excerpt or plan. Curated lessons live in code; learned ones in
+  `<state_dir>/lab_pitfalls.json`.
+- **Learning.** When a run created by Fix with AI from a failed run completes, its
+  `fix_changes` become a learned lesson keyed by the plan's software. `GET/POST
+  /api/lab/pitfalls`, `DELETE /api/lab/pitfalls/{id}` list, add and remove learned ones.
+- **Science guards (pre-flight warnings).** Results written as fixed text (a plain string
+  literal with a measured-looking number, or a result claim such as "as shown in the
+  simulation, WCRT scales", written to a file) and reference tables typed into the script
+  (8+ precise numbers under a name like `ghia`, `ref`, `benchmark`, or 12+ under any name).
+  Found in the AI drafts of runs #49, #50 and #51; none of the 44 earlier runs is flagged
+  except those three.
+- **Verdict.** A job may write `outputs/verdict.json` (`checks[]` with name, expected, got,
+  tolerance, pass; overall `pass`). The watcher stores it in `lab_runs.verdict`; a failed
+  verdict sets the stage to "Completed, known-answer check FAILED", the write-up must lead
+  with it, and the run view shows the checks.
+
 ## 21. Data sources
 
 A data source is a named reference to data that lives somewhere else: an open dataset
@@ -1638,3 +1664,4 @@ drops the other's result.
 | 2026-09-28 | v0.28.0 (docs) | Whole document brought up to date with v0.28.0: module map (5.1), tables (8.2), CLI (9.4), client (11), settings and files (12), controls (14.2), errors (15), test suite (16.1), K13, operations (18.3), Lab reliability (20.6), data sources (21). |
 | 2026-09-29 | v0.28.1 | Lab submit: expired gcloud sign-in named plainly; a submit that never reached the cluster keeps the run as a draft (20.6). |
 | 2026-09-29 | v0.28.2 | Lab: OR-Tools plans on a Python module get an isolated venv (CP-SAT segfaulted on top of python-sci). |
+| 2026-09-29 | v0.29.0 | Lab: lessons (curated + learned) in plan/fix prompts, science guards, known-answer verdicts (20.10). |

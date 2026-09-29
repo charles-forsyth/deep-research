@@ -124,6 +124,7 @@ const LAB = {
       ${p.question ? `<div class="lab-q"><span class="label">Question</span> ${esc(p.question)}</div>` : ""}
       ${r.scope === "selection" && r.selection ? `<details class="lab-sel"><summary class="dim">Selected passage</summary><blockquote>${esc(clip(r.selection, 1200))}</blockquote></details>` : ""}
       ${r.status === "plan_failed" && p.why_not ? `<div class="lab-q dim">${esc(p.why_not)}</div>` : ""}
+      ${this.verdictHtml(r.verdict)}
       ${r.result_md ? `<div class="lab-result md">${renderMd(this.plainMath(r.result_md))}</div>` : ""}
       ${images.length ? `<div class="lab-imgs">${images.map((f) => `<a href="${this.fileUrl(r.id, f.path)}" target="_blank" rel="noopener"><img src="${this.fileUrl(r.id, f.path)}" alt="${esc(f.path)}" loading="lazy"></a>`).join("")}</div>` : ""}
       ${others.length ? `<div class="lab-files">${others.map((f) => f.skipped
@@ -168,6 +169,13 @@ const LAB = {
   },
 
   // Write-ups are asked for plain Unicode; turn stray inline TeX ($\theta$, $\le$) into symbols.
+  verdictHtml(v) {
+    // outputs/verdict.json: the job's own known-answer checks
+    if (!v || !Array.isArray(v.checks)) return "";
+    const ok = v.pass === true, bad = v.pass === false;
+    const rows = v.checks.slice(0, 12).map((c) => `<li>${c.pass === true ? "pass" : c.pass === false ? "<b>FAIL</b>" : "?"}: ${esc(c.name || "")}${c.expected !== undefined ? ` (expected ${esc(JSON.stringify(c.expected))}, got ${esc(JSON.stringify(c.got))})` : ""}</li>`).join("");
+    return `<div class="${bad ? "lab-err" : "lab-fixed"}"><span class="label">Known-answer checks: ${ok ? "all passed" : bad ? "FAILED, treat the numbers below with care" : "no overall verdict"}</span><ul>${rows}</ul></div>`;
+  },
   plainMath(md) {
     const map = { theta: "\u03b8", alpha: "\u03b1", beta: "\u03b2", gamma: "\u03b3", delta: "\u03b4", Delta: "\u0394", lambda: "\u03bb", mu: "\u03bc", pi: "\u03c0", sigma: "\u03c3", phi: "\u03c6", psi: "\u03c8", omega: "\u03c9", le: "\u2264", leq: "\u2264", ge: "\u2265", geq: "\u2265", approx: "\u2248", times: "\u00d7", pm: "\u00b1", neq: "\u2260", infty: "\u221e", sqrt: "\u221a", cdot: "\u00b7", rightarrow: "\u2192", to: "\u2192" };
     return String(md || "").replace(/\$([^$\n]*\\[A-Za-z][^$\n]*)\$/g, (m, inner) => inner.replace(/\\([A-Za-z]+)/g, (t, w) => map[w] ?? t).replace(/[{}]/g, "").replace(/\^(\w)/g, "^$1"));

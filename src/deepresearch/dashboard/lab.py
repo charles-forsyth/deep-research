@@ -29,6 +29,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from deepresearch.dashboard import labguard
+
 PLAN_MODEL = "gemini-3.8-flash"  # default; GEMINI_FOLLOWUP_MODEL overrides it
 # gemini-3.8-flash list prices, USD per 1M tokens (thinking billed as output).
 FLASH_IN_1M = 0.75
@@ -823,6 +825,7 @@ def validate_plan(target: SlurmSSHTarget | None, plan: dict) -> list[str]:
             if str(i).startswith("/") and str(i) not in local:
                 warns.append(f"Container image '{i}' is not in /apps/containers")
     warns += check_script(str(plan.get("script") or ""))
+    warns += labguard.science_warnings(plan)
     inst = plan.get("install") or {}
     builds_python = bool(inst.get("pip") or inst.get("conda")) or any(
         str(m).split("/")[0] in PYTHON_ENV_MODULES for m in inst.get("modules") or []
@@ -1021,6 +1024,8 @@ method, the parameters, the inputs and the outputs exactly as they are.
 
 {target}
 
+{lessons}
+
 PROBLEMS:
 {problems}
 
@@ -1060,6 +1065,8 @@ error; fix its cause.
 
 {target}
 
+{lessons}
+
 SLURM STATE: {state} (exit {exit_code}, elapsed {elapsed})
 
 END OF THE JOB LOG:
@@ -1090,6 +1097,8 @@ on the HPC cluster below. Use a few web searches (at most 5) to choose the best-
 open-source software for the task and to check exact package names and command-line usage.
 
 {target}
+
+{lessons}
 
 SOURCE REPORT: {title}
 SELECTED MATERIAL ({scope}):
@@ -1163,6 +1172,7 @@ APPROACH: {approach}
 PARAMETERS: {params}
 SUCCESS CRITERIA: {criteria}
 JOB STATE: {state} (Slurm exit {exit_code}, elapsed {elapsed})
+KNOWN-ANSWER CHECKS (outputs/verdict.json): {verdict}
 
 OUTPUT FILES:
 {files}
@@ -1173,7 +1183,9 @@ TEXT OUTPUTS (truncated):
 LOG TAIL:
 {log}
 
-Rules: report only what the outputs and log show. Quote the key numbers exactly. Take
+Rules: report only what the outputs and log show. Quote the key numbers exactly. If a
+known-answer check failed, say so in the first sentence of **Result** and do not present the
+other numbers as findings. Take
 counts of inputs (samples, sequences, structures, cases) from the input or log lines that
 state them, not from derived structures (a tree also has internal nodes, a mesh has cells). No LaTeX
 (the reader does not render it): write symbols in plain Unicode, e.g. θ, ≤, √2, ×10⁻³. If the job
@@ -1503,6 +1515,8 @@ class Lab:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(lab_runs)")}
             if "data_sources" not in cols:  # names picked at launch, for the planner
                 conn.execute("ALTER TABLE lab_runs ADD COLUMN data_sources TEXT")
+            if "verdict" not in cols:  # outputs/verdict.json: known-answer checks
+                conn.execute("ALTER TABLE lab_runs ADD COLUMN verdict TEXT")
             conn.commit()
 
     # ---- plumbing --------------------------------------------------------
@@ -1609,7 +1623,7 @@ class Lab:
     @staticmethod
     def _row(row) -> dict:
         d = dict(row)
-        for k in ("plan", "files", "data_sources"):
+        for k in ("plan", "files", "data_sources", "verdict"):
             try:
                 d[k] = json.loads(d[k]) if d.get(k) else None
             except ValueError:
@@ -1657,7 +1671,7 @@ class Lab:
         """
         if not fields:
             return False
-        for k in ("plan", "files"):
+        for k in ("plan", "files", "verdict"):
             if k in fields and not isinstance(fields[k], (str, type(None))):
                 fields[k] = json.dumps(fields[k])
         fields["updated_at"] = _now()
@@ -1892,6 +1906,16 @@ class Lab:
             self._fresh_catalog(tgt)
             prompt = PLAN_PROMPT.format(
                 target=_describe(tgt, full=True),
+                lessons=labguard.prompt_block(
+                    " ".join(
+                        [
+                            title,
+                            run.get("request") or "",
+                            (run["selection"] or "")[:20000],
+                        ]
+                    ),
+                    self.state_dir,
+                ),
                 title=title,
                 scope="a highlighted passage"
                 if run["scope"] == "selection"
@@ -2035,6 +2059,7 @@ class Lab:
             }
             prompt = FIX_PROMPT.format(
                 target=_describe(tgt, full=True),
+                lessons=labguard.prompt_block(json.dumps(body), self.state_dir),
                 problems="\n".join(f"- {w}" for w in warns),
                 plan=json.dumps(body, indent=1)[:60000],
             )
@@ -2139,6 +2164,9 @@ class Lab:
         self._fresh_catalog(tgt)
         prompt = RUNFIX_PROMPT.format(
             target=_describe(tgt, full=True),
+            lessons=labguard.prompt_block(
+                json.dumps(plan) + " " + _log_for_fix(log, 3000), self.state_dir
+            ),
             state=run.get("slurm_state") or run.get("stage") or "FAILED",
             exit_code=run.get("exit_code"),
             elapsed=run.get("elapsed"),
@@ -2566,18 +2594,45 @@ class Lab:
             run = self.get(run["id"]) or run
         if run.get("status") != "analyzing":
             return
+        verdict = labguard.read_verdict(dest)
+        if verdict is not None:
+            self._update(run["id"], verdict=verdict)
+            run = self.get(run["id"]) or run
         note, cost = self._analyze(run, dest, final)
         self._add_cost(run["id"], cost)
-        self._update(
+        stage = "Completed" if final == "completed" else f"Ended: {state or 'unknown'}"
+        if final == "completed" and verdict and verdict.get("pass") is False:
+            stage = "Completed, known-answer check FAILED"
+        changed = self._update(
             run["id"],
             only_if=("analyzing",),
             status=final,
-            stage="Completed"
-            if final == "completed"
-            else f"Ended: {state or 'unknown'}",
+            stage=stage,
             result_md=note,
             finished_at=_now(),
         )
+        if changed and final == "completed":
+            self._learn_from_fix(run)
+
+    def _learn_from_fix(self, run: dict) -> None:
+        """A completed AI fix of a failed run becomes a lesson for future plans."""
+        plan = run.get("plan") or {}
+        if not run.get("rerun_of") or not plan.get("fix_changes"):
+            return
+        failed = self.get(int(run["rerun_of"]))
+        if not failed or failed.get("status") != "failed":
+            return
+        lesson = labguard.lesson_from_fix(failed, plan)
+        if lesson:
+            try:
+                labguard.add_learned(
+                    self.state_dir,
+                    lesson["text"],
+                    lesson["match"],
+                    f"{lesson['source']} fixed by run #{run['id']}",
+                )
+            except (OSError, ValueError):
+                pass  # a lesson is a bonus; never fail a finished run over it
 
     def _analyze(self, run: dict, dest: Path, final: str) -> tuple[str, float | None]:
         plan = run.get("plan") or {}
@@ -2622,6 +2677,9 @@ class Lab:
             or "(none)",
             texts="\n\n".join(texts) or "(none)",
             log=log_tail,
+            verdict=json.dumps(run.get("verdict"))[:3000]
+            if run.get("verdict")
+            else "none written",
         )
         try:
             return self._ask(prompt, search=False)
