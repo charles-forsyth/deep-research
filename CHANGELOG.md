@@ -7,6 +7,16 @@ releases.
 
 ## [Unreleased]
 
+## [0.35.4] - 2026-09-29
+
+### Fixed
+
+- Python gmsh installs: pip gmsh wheels need libGLU (missing on compute nodes) and conda-forge `gmsh` has no Python module, so the conda rung now installs `python-gmsh` (run #86; checked on a compute node).
+
+### Added
+
+- Known problems: SU2 8.2 has no SPATIAL_ORDER_FLOW (use MUSCL_FLOW/SLOPE_LIMITER_FLOW); LAMMPS 2D fix pour needs gravity along -y and `lattice` takes no `units box`; Python gmsh needs python-gmsh.
+
 ## [0.35.3] - 2026-09-29
 
 ### Added

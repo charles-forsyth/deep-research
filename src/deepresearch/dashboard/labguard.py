@@ -70,7 +70,9 @@ CURATED: list[dict[str, Any]] = [
         "<INLET_FILENAME stem>_00000.dat, not the name given; write both. Format: NMARK=, "
         "MARKER_TAG=, NROW=, NCOL=6, then x y T |U| nx ny per inlet node (run SU2_CFD once "
         "without the file and read the example_* template it writes). There is no "
-        "VISC_NUM_METHOD_FLOW option in 8.2.",
+        "VISC_NUM_METHOD_FLOW or SPATIAL_ORDER_FLOW option in 8.2 (use MUSCL_FLOW= YES and "
+        "SLOPE_LIMITER_FLOW=). SU2 stops on the first unknown option and prints 'Did you mean "
+        "X?': take its suggestion.",
         "source": "draft #51, job 225, run #62/#74",
     },
     {
@@ -88,8 +90,19 @@ CURATED: list[dict[str, Any]] = [
         "fix wall/gran), no DEM. For granular work install conda-forge lammps PINNED to "
         '2023.08.02 (install.conda: ["lammps=2023.08.02"]): it has GRANULAR and runs on '
         "the cluster's glibc 2.28; the 2024/2025 conda-forge builds need glibc 2.29+ and "
-        "fail to start. Verify with `lmp -h | grep -q GRANULAR`.",
+        "fail to start. Verify with `lmp -h | grep -q GRANULAR`. In 2D (dimension 2) fix "
+        "pour needs gravity along -y (fix grav gravity 1.0 vector 0 -1 0); `lattice ... "
+        "units box` is not valid syntax (lattice takes a scale; `region`/`create_atoms` take "
+        "units box).",
         "source": "run #57, checked on a compute node 2026-09-29",
+    },
+    {
+        "id": "gmsh-python",
+        "match": ["gmsh", "import gmsh"],
+        "text": "Python gmsh: pip wheels need libGLU.so.1, which compute nodes lack (OSError at "
+        "import). On conda-forge `gmsh` is only the C++ library and program; the Python module "
+        'is `python-gmsh`. Use install.conda: ["python-gmsh"] (the Lab maps gmsh to it).',
+        "source": "runs #77/#86, checked on a compute node 2026-09-29",
     },
     {
         "id": "glibc-too-new",
