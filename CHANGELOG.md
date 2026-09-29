@@ -7,6 +7,18 @@ releases.
 
 ## [Unreleased]
 
+## [0.35.2] - 2026-09-29
+
+### Added
+
+- Pre-flight warns when the script imports a Python package nothing installs (no module that has it, not in pip or conda), before the job runs.
+
+### Fixed
+
+- Layering pip packages on python-ml hid all of its packages (pandas: run #76 computed every benchmark, then failed in post-processing): python-ml is itself a venv, so `--system-site-packages` pointed at the bare base Python. The layered venv now gets a .pth file pointing at the module's site-packages (checked on a compute node).
+- conda activation scripts that read unset variables (hwloc, run #77) no longer abort the job under `set -u`.
+- A smoke test whose AI fix was interrupted by a dashboard restart is failed with a clear message instead of staying "fixing" forever; a task caught mid-rename between warm-node folders is no longer reported lost.
+
 ## [0.35.1] - 2026-09-29
 
 ### Fixed
