@@ -7,6 +7,18 @@ releases.
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-09-29
+
+Found by the first plans made with 0.34 (#75-#77): the planner used the new lessons (pinned conda-forge LAMMPS with a GRANULAR check, `inlet_00000.dat`, the local CUDA container), and the checks around it needed to catch up.
+
+### Added
+
+- **Weak reference checks** are a pre-flight warning: downloading a paper, abstract page or README and testing that it contains a word or short number (`grep -q "1.53" paper.html`, `'3.2' in content`). Every plan in the batch did this; it passes on unrelated pages (#77 fetched an LBM README to "verify" Schafer-Turek values) and fails when a page moves. The planning rule now says: parse tables from a data file; type a few scalar references with a citation.
+
+### Fixed
+
+- "Already installed as modules" no longer fires for a pinned conda package the plan checks a feature of (conda-forge `lammps=2023.08.02` for GRANULAR, which the module lacks), or for the gmsh Python API (the module has only the binary).
+
 ## [0.34.1] - 2026-09-29
 
 ### Fixed

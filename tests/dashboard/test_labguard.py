@@ -137,3 +137,24 @@ def test_failed_verdict_marks_stage_and_fix_teaches(lab, tmp_path):  # noqa: F81
     learned = g.load_learned(lab.state_dir)
     assert learned and "comment='#'" in learned[0]["text"]
     assert "treetime" in learned[0]["match"]
+
+
+def test_weak_reference_checks():
+    from deepresearch.dashboard import labguard
+
+    bad = [
+        'curl -s https://x/paper.html -o inputs/p.html\nif ! grep -q "1.53" inputs/p.html; then exit 3; fi',
+        "curl -o r.md https://x/README.md\ncontent = open('r.md').read()\nassert '3.2' in content",
+        'curl -o "$REF_FILE" https://x/b.html\ngrep -qi "benchmark" "${REF_FILE}"',
+    ]
+    for s in bad:
+        assert labguard.weak_reference_checks(s), s
+    ok = [
+        "if 'cd' in col_lower: pass",
+        "plt.style.use('x' if 'x' in plt.style.available else 'default')",
+        "grep -q GRANULAR <(lmp -h)",
+    ]
+    for s in ok:
+        assert not labguard.weak_reference_checks(s), s
+    w = labguard.science_warnings({"script": bad[0]})
+    assert any("reference check only tests" in x for x in w)

@@ -173,9 +173,12 @@ GENERAL_RULES = [
     "Every number in a summary, report or plot title must be computed by the job from its "
     "outputs. Never write conclusions, findings or expected numbers into the script as "
     "fixed text; build report text from variables.",
-    "Reference or benchmark data (published tables, experimental values) must be downloaded "
-    "inside the job from a citable URL listed in inputs, and spot-checked against two or "
-    "three values printed in the paper. Never type such tables from memory.",
+    "Reference data: for a TABLE of values (a profile, a curve), download a machine-readable "
+    "data file (CSV/DAT/JSON) from a citable URL listed in inputs and parse the numbers. For "
+    "a FEW scalar reference values (a drag coefficient, an exponent, an analytic threshold), "
+    "type them with the citation in a comment; do not download a paper, abstract page or "
+    "README just to grep a word or a number out of it (that check passes on unrelated pages "
+    "and fails on 404s). Never type long tables from memory.",
     "Do not guess the output file names of external tools: after running a tool, list its "
     "output folder and read what exists; fail with a clear message if the expected file is "
     "missing.",
@@ -520,9 +523,38 @@ def _looks_ref(name: str, vals: list[float]) -> bool:
     return bool(_REF_NAME.search(name)) or len(vals) >= 12
 
 
+# A reference "check" that only proves some page was downloaded, not the numbers used:
+# `'3.2' in content`, `grep -q "benchmark"`. Runs #55-#63 all did this; one fetched an
+# unrelated README (#77) and would have "verified" the Schafer-Turek values against it.
+_WEAK_REF = re.compile(
+    r"""(?:['"]\d(?:\.\d{1,2})?['"]\s+in\s+\w+)|"""  # '3.2' in content
+    r"""(?:grep\s+-q\w*(?:\s+-\w+)*\s+['"]?(?:benchmark|reference|[A-Za-z][a-z]+|\d+\.\d+)['"]?\s+\S*(?:inputs/|\.html|\.xml|\.md|REF))""",
+)
+
+
+def weak_reference_checks(script: str) -> list[str]:
+    hits = []
+    for n, ln in enumerate(script.splitlines(), 1):
+        if _WEAK_REF.search(ln) and re.search(
+            r"curl|wget|content|\.html|\.md|inputs/", script
+        ):
+            hits.append(f"line {n}: {ln.strip()[:80]}")
+    return hits[:3]
+
+
 def science_warnings(plan: dict) -> list[str]:
     script = str((plan or {}).get("script") or "")
     warns = []
+    weak = weak_reference_checks(script)
+    if weak:
+        warns.append(
+            "The reference check only tests that a downloaded page contains a word or a short "
+            "number ("
+            + "; ".join(weak)
+            + "); it would pass on an unrelated page. Either "
+            "parse the exact values from a data file, or type them with a citation in a "
+            "comment and drop the download."
+        )
     hard = hardcoded_findings(script)
     if hard:
         warns.append(
