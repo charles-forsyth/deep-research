@@ -7,6 +7,15 @@ releases.
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-09-29
+
+### Added
+
+- Lab plans now learn from earlier runs. Every plan and AI-fix prompt carries rules drawn from real failures (compute every reported number, download reference data, read tool output folders, write known-answer checks, support a smoke mode) plus software-specific lessons that match the plan: OR-Tools, TreeTime, vLLM, SU2, FreeRTOS on a host, SimPy scheduling models, hand-written CFD, pythermalcomfort, MLPerf Tiny URLs.
+- When an AI fix of a failed run completes, the fix is saved as a lesson for future plans that use the same software (`<state_dir>/lab_pitfalls.json`; list, add and remove at `/api/lab/pitfalls`).
+- Pre-flight flags results written into the script as fixed text and reference tables typed from memory. Both came up in the AI drafts of runs #49-#51, which would otherwise have completed with confident wrong answers.
+- Known-answer checks: a job can write `outputs/verdict.json`. A failed check marks the run "Completed, known-answer check FAILED", the write-up leads with it, and the run view lists every check.
+
 ## [0.28.2] - 2026-09-29
 
 ### Fixed
