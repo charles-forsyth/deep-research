@@ -1460,14 +1460,13 @@ def test_pip_on_python_module_uses_module_python_venv(lab):
     plan = dict(PLAN)
     plan["install"] = {
         "modules": ["python-sci/2026.09"],
-        "pip": ["ortools", "flatbuffers", "tflite"],
+        "pip": ["flatbuffers", "tflite"],
     }
     s = build_sbatch(1, plan, lab.fake)
     assert "module load python-sci/2026.09" in s
     assert 'python3 -m venv --system-site-packages "$ENVDIR"' in s
     assert (
-        '"$ENVDIR/bin/python" -m pip install --progress-bar off ortools flatbuffers '
-        "tflite" in s
+        '"$ENVDIR/bin/python" -m pip install --progress-bar off flatbuffers tflite' in s
     )
     assert "pixi" not in s  # no second Python stack
     assert "flock 9" in s and "flock -u 9" in s
@@ -1578,3 +1577,32 @@ def test_plan_diff_script_and_fields():
     assert plan_diff(a, a) == {"script": "", "fields": [], "truncated": False}
     big = plan_diff({"script": "x\n" * 900}, {"script": "y\n" * 900}, max_lines=50)
     assert big["truncated"] and len(big["script"].splitlines()) == 50
+
+
+def test_ortools_on_python_module_gets_an_isolated_venv(lab):
+    """Run #38 (2026-09-29): CP-SAT Solve() segfaults (exit 139) when OR-Tools sits on
+    top of python-sci's site-packages (clashing abseil/protobuf); it solves in a plain
+    venv. So OR-Tools plans get a venv without --system-site-packages, plus the usual
+    scientific stack the module would have provided."""
+    plan = dict(PLAN)
+    plan["install"] = {
+        "modules": ["python-sci/2026.09"],
+        "pip": ["ortools", "flatbuffers", "tflite"],
+    }
+    s = build_sbatch(1, plan, lab.fake)
+    assert "module load python-sci/2026.09" in s
+    assert 'python3 -m venv "$ENVDIR"' in s
+    assert "--system-site-packages" not in s
+    assert (
+        '"$ENVDIR/bin/python" -m pip install --progress-bar off numpy pandas '
+        "matplotlib scipy ortools flatbuffers tflite" in s
+    )
+    assert "isolated from python-sci/2026.09" in s
+    # a pinned spec is recognised too, and the cache key differs from a layered env
+    pinned = dict(
+        plan, install={"modules": ["python-sci/2026.09"], "pip": ["ortools==9.15.6755"]}
+    )
+    assert "--system-site-packages" not in build_sbatch(1, pinned, lab.fake)
+    k = __import__("re").compile(r"envs/(\S+)")
+    layered = dict(plan, install={"modules": ["python-sci/2026.09"], "pip": ["tflite"]})
+    assert k.search(s).group(1) != k.search(build_sbatch(1, layered, lab.fake)).group(1)
