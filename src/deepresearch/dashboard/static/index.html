@@ -27,11 +27,12 @@
     <div class="telemetry" id="telemetry"></div>
     <div class="top-actions">
       <button class="btn ghost" id="btn-labruns" title="Every Lab run, newest first">Lab runs</button>
-      <button class="btn ghost" id="btn-sources" title="Data sources">Sources</button>
+      <button class="btn ghost" id="btn-notes" title="Every highlight and note across your reports">Notes</button>
+      <button class="btn ghost" id="btn-sources" title="Your data sources (folders, buckets, datasets)">Data sources</button>
       <button class="btn ghost" id="btn-palette" title="Command palette (Ctrl+K)">
         <span class="kbd">Ctrl K</span> Commands
       </button>
-      <button class="btn ghost mnav r" id="btn-right" title="Inspector" aria-label="Show inspector">Intel</button>
+      <button class="btn ghost mnav r" id="btn-right" title="Details" aria-label="Show details">Details</button>
       <button class="btn primary" id="btn-new">+<span class="lbl"> New research</span></button>
     </div>
   </header>
@@ -45,12 +46,12 @@
         <div class="seg" id="filter-seg">
           <button data-f="all" class="on">All</button>
           <button data-f="running">Live</button>
-          <button data-f="starred">&#9733;</button>
-          <button data-f="failed">Fail</button>
+          <button data-f="starred" aria-label="Starred" title="Starred">&#9733;</button>
+          <button data-f="failed" title="Failed, crashed or cancelled">Failed</button>
         </div>
       </div>
       <div class="search-box">
-        <input id="q" type="search" placeholder="Filter prompts and reports..." autocomplete="off">
+        <input id="q" type="search" placeholder="Filter prompts and reports..." autocomplete="off" aria-label="Filter prompts and reports">
       </div>
       <div class="toggle-row">
         <label><input type="checkbox" id="roots-only" checked> Top-level only</label>
@@ -60,6 +61,7 @@
       <div class="left-nav">
         <button class="btn ghost small" id="nav-labruns">Lab runs</button>
         <button class="btn ghost small" id="nav-sources">Data sources</button>
+        <button class="btn ghost small" id="nav-notes">Notes</button>
       </div>
     </aside>
 
@@ -72,7 +74,7 @@
     <!-- RIGHT: inspector -->
     <aside class="panel right" id="right">
       <nav class="rtabs" id="rtabs">
-        <button data-r="info" class="on">Intel</button>
+        <button data-r="info" class="on">Details</button>
         <button data-r="notes">Notes</button>
         <button data-r="outline">Outline</button>
         <button data-r="log">Live log</button>
@@ -108,7 +110,7 @@
 </div>
 
 <div class="modal-back" id="modal-back" hidden>
-  <div class="modal" id="modal"></div>
+  <div class="modal" id="modal" tabindex="-1"></div>
 </div>
 
 <div class="palette-back" id="palette-back" hidden>

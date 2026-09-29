@@ -7,6 +7,60 @@ releases.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-09-28
+
+A full code and usability review (backend bug hunt with reproducing tests, frontend code
+review, hands-on browser testing on a copy of real data). Every backend fix has a test
+that failed before it.
+
+### Security
+- **The dashboard listens on 127.0.0.1 only by default.** A non-loopback `--host` needs
+  `--allow-remote`; while loopback-only, requests from other machines get 403. A dashboard
+  started on `0.0.0.0` by an older version restarts on `127.0.0.1`.
+- Source previews never show hidden files (`.env`, `.ssh`) or follow links.
+- Public bucket keys like `data//etc/x` or `../x` can no longer write outside the download
+  folder.
+- SVG and other active files from Lab jobs download (sandboxed) instead of rendering in
+  the dashboard; a plan's partition value can no longer add lines to `run.sbatch`.
+
+### Fixed
+- Lab: a double-click or second tab no longer submits two Slurm jobs; a run stuck in
+  "submitting" (dashboard stopped mid-submit) can be cancelled and is failed by the
+  watcher; editing or AI-fixing a plan no longer overwrites a run submitted meanwhile; a
+  running job that Slurm stops reporting is finished from its stage markers; cancelling
+  during submit cancels the job it gets back; non-numeric resources no longer crash.
+- Sources: S3/GCS include and exclude filters apply when fetching; relay staging re-lists
+  the source and checks the real size before uploading, so a changed folder is uploaded
+  again under its new content hash; folder fetches never stop silently at 5,000 files;
+  report and notebook sources keep the same content hash across processes (their index is
+  no longer rebuilt every run); `sources rm 12` finds the source named "12"; deleting a
+  source keeps the provenance of reports that used it; a test running next to an index
+  build no longer drops the index; binary previews and non-listing bucket replies no
+  longer cause errors; the Add source form refuses `ftp:`, `mailto:` and folders outside
+  the allowed roots; `cleanup` keeps temporary stores a running research may still use;
+  catalog caches are written atomically; temp copies for research uploads are removed.
+- Dashboard: Enter in a confirm dialog only confirms when the confirm button has focus
+  (destructive dialogs start on Cancel), and a replaced dialog can never fire later;
+  notebook saves in flight no longer drop newer edits; archive search no longer hides live
+  runs from the counters; a report refreshes itself when its run finishes; highlights that
+  span a citation marker survive a reload; many silent failures now show an error.
+
+### Changed
+- All dialogs close on Escape, keep keyboard focus inside and return it; closing the Lab
+  plan review with unsaved edits asks first; Submit to the cluster takes a second click
+  that shows the worst-case cost.
+- Switching tabs keeps the New research form (files and data sources too), search answers,
+  Ask drafts and the reading position.
+- Failed and crashed reports show the error with Re-run instead of reading tools.
+- Find in report: next/previous, "3 of 471", Escape closes. LaTeX in reports reads as plain
+  Unicode (`X_r/h ≈ 6.26`, `y⁺`). A failed Lab run marks the step it failed at.
+- New **Notes** page (every highlight and note across reports); sources can be edited
+  (title, tags, filters, credentials, staging, level); File Search Store picker in the
+  launcher; discovery shows plain format names and filters by catalog.
+- Keyboard and screen reader support (focusable rows and tabs, labels, focus ring),
+  higher contrast for small text, and phone layout fixes. "Intel" is now "Details";
+  report links are "Citations"; the Failed filter and counter agree.
+
 ## [0.27.0] - 2026-09-28
 
 ### Added

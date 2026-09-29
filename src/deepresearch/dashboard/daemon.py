@@ -15,7 +15,8 @@ from deepresearch.core.config import service_env
 STATE_DIR = Path(xdg_config_home) / "deepresearch"
 PID_FILE = STATE_DIR / "dashboard.pid"
 LOG_FILE = STATE_DIR / "logs" / "dashboard.log"
-DEFAULT_HOST = "0.0.0.0"
+DEFAULT_HOST = "127.0.0.1"  # this machine only (Chuck, 2026-09-28)
+REMOTE_HOSTS = ("0.0.0.0", "::", "")
 DEFAULT_PORT = 7420
 
 
@@ -76,7 +77,28 @@ def _urls(host: str, port: int) -> list[str]:
     return urls
 
 
-def start(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> int:
+def is_loopback(host: str) -> bool:
+    import ipaddress
+
+    if host in ("localhost", "ip6-localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def start(
+    host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, allow_remote: bool = False
+) -> int:
+    if not is_loopback(host) and not allow_remote:
+        print(
+            f"[ERROR] Refusing to listen on {host}: the dashboard has no login, and "
+            "anyone who can reach it could read your files and spend your API "
+            "credits. It listens on 127.0.0.1 (this machine) by default. To share it "
+            "on a network you trust, add --allow-remote."
+        )
+        return 2
     state = read_state()
     if state:
         print(
@@ -101,7 +123,7 @@ def start(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> int:
         host,
         "--port",
         str(port),
-    ]
+    ] + (["--allow-remote"] if allow_remote else [])
     with open(LOG_FILE, "a") as log:
         proc = subprocess.Popen(
             cmd,
@@ -115,7 +137,11 @@ def start(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> int:
             cwd=str(STATE_DIR),
             env=service_env(),
         )
-    PID_FILE.write_text(json.dumps({"pid": proc.pid, "host": host, "port": port}))
+    PID_FILE.write_text(
+        json.dumps(
+            {"pid": proc.pid, "host": host, "port": port, "allow_remote": allow_remote}
+        )
+    )
 
     for _ in range(40):
         if proc.poll() is not None:
@@ -162,13 +188,23 @@ def stop() -> int:
     return 0
 
 
-def restart(host: str | None = None, port: int | None = None) -> int:
+def restart(
+    host: str | None = None, port: int | None = None, allow_remote: bool = False
+) -> int:
     state = read_state() or {}
     host = host or state.get("host") or DEFAULT_HOST
+    allow_remote = allow_remote or bool(host and state.get("allow_remote"))
+    if host in REMOTE_HOSTS and not allow_remote:
+        # A dashboard started by an older version on 0.0.0.0 comes back local.
+        print(
+            f"[INFO] Was listening on {host}; restarting on {DEFAULT_HOST} "
+            "(use --host 0.0.0.0 --allow-remote to share it on the network)."
+        )
+        host = DEFAULT_HOST
     port = port or state.get("port") or DEFAULT_PORT
     stop()
     time.sleep(0.3)
-    return start(host, int(port))
+    return start(host, int(port), allow_remote)
 
 
 def status() -> int:

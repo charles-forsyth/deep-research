@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from deepresearch.sources.adapters import SourceError, adapter_for
-from deepresearch.sources.model import DataSource
+from deepresearch.sources.model import DataSource, Manifest
 
 RELAY_MAX_BYTES = (
     2 * 1024**3
@@ -95,27 +95,49 @@ flock -u 8"""
     return "\n".join(out) + "\n"
 
 
-def relay_upload(target: Any, s: DataSource, log=print) -> str:
+def relay_upload(target: Any, s: DataSource, log=print, refresh: bool = True) -> str:
     """Fetch a relay source on this machine and upload it to the cluster cache.
 
     Skips the upload when the cluster already holds this exact content (same manifest
     hash). Returns the remote directory.
     """
     remote_root = getattr(target, "remote_root", "~/deep-research-lab")
+    cap = int(s.options.get("max_relay_bytes") or RELAY_MAX_BYTES)
+    if refresh:
+        # List the source again now: the cache key and the size cap must describe
+        # what is there today, not what was there when it was last tested.
+        fresh = adapter_for(s).manifest()
+        s.manifest = Manifest(
+            **{
+                k: v
+                for k, v in fresh.model_dump().items()
+                if k in Manifest.model_fields
+            }
+        )
+    m = s.manifest
+    if m is None or m.truncated:
+        raise SourceError(
+            f"{s.name} could not be fully listed, so its size is unknown; narrow it "
+            "(sub-folder or --include) before sending it to the cluster"
+        )
+    if m.total_bytes > cap:
+        raise SourceError(
+            f"{s.name} is {m.total_bytes / 1024**3:.1f} GB, over the relay limit of "
+            f"{cap / 1024**3:.1f} GB (raise options.max_relay_bytes to allow it)"
+        )
     d = remote_dir(remote_root, s)
     have = target.run(f"test -f {d}/.ready && echo yes || echo no", timeout=60)
     if have.stdout.decode().strip() == "yes":
         log(f"[INFO] {s.name}: already on the cluster ({d})")
         return d
-    cap = int(s.options.get("max_relay_bytes") or RELAY_MAX_BYTES)
-    size = s.manifest.total_bytes if s.manifest else 0
-    if size > cap:
-        raise SourceError(
-            f"{s.name} is {size / 1024**3:.1f} GB, over the relay limit of "
-            f"{cap / 1024**3:.1f} GB (raise options.max_relay_bytes to allow it)"
-        )
     with tempfile.TemporaryDirectory(prefix="dr-relay-") as tmp:
         local = adapter_for(s).fetch(Path(tmp) / "data")
+        real = sum(p.stat().st_size for p in local.rglob("*") if p.is_file())
+        if real > cap:
+            raise SourceError(
+                f"{s.name} turned out to be {real / 1024**3:.1f} GB when fetched, over "
+                f"the relay limit of {cap / 1024**3:.1f} GB"
+            )
         tar_path = Path(tmp) / "data.tar.gz"
         with tarfile.open(tar_path, "w:gz") as tar:
             for p in sorted(local.rglob("*")):

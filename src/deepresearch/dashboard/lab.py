@@ -65,6 +65,9 @@ SLURM_DONE = {
     "BOOT_FAIL": "failed",
     "DEADLINE": "failed",
 }
+# Lab runs whose submit is running in this process right now (see poll()).
+_IN_FLIGHT: set[int] = set()
+GONE_POLLS = 8  # empty squeue+sacct polls (~2 min) before a running job is fetched
 MAX_FETCH_BYTES = 200 * 1024 * 1024  # whole outputs folder
 MAX_FILE_BYTES = 50 * 1024 * 1024  # any single file
 
@@ -885,6 +888,18 @@ def _describe(tgt, full: bool) -> str:
     return tgt.describe()
 
 
+def _int(v: Any, default: int) -> int:
+    """A resource count from a plan ('2', 2, 2.0) or the default ('auto', '1.5x')."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return int(f) if f == int(f) else default
+
+
+TIME_RE = re.compile(r"(\d+-)?\d{1,3}(:\d{2}){0,2}")
+
+
 def estimate_cost(target: SlurmSSHTarget | None, plan: dict) -> float | None:
     if not target:
         return None
@@ -893,9 +908,11 @@ def estimate_cost(target: SlurmSSHTarget | None, plan: dict) -> float | None:
     rate = part.get("usd_per_hour")
     if rate is None:
         return None
-    nodes = max(int(r.get("nodes") or 1), 1)
-    hours = _hours(r.get("time_limit") or "01:00:00")
-    return round(nodes * hours * float(rate), 2)
+    nodes = max(_int(r.get("nodes"), 1), 1)
+    tl = str(r.get("time_limit") or "01:00:00")
+    if not TIME_RE.fullmatch(tl):
+        tl = "01:00:00"  # build_sbatch falls back the same way
+    return round(nodes * _hours(tl) * float(rate), 2)
 
 
 def _hours(limit: str) -> float:
@@ -1135,13 +1152,16 @@ def build_sbatch(
     run_id: int, plan: dict, target: SlurmSSHTarget, sources: list | None = None
 ) -> str:
     r = plan.get("resources") or {}
-    part = r.get("partition") or target.default_partition
+    part = str(r.get("partition") or target.default_partition)
     if part not in target.partitions and target.partitions:
         part = target.default_partition
-    nodes = max(int(r.get("nodes") or 1), 1)
-    gpus = int(r.get("gpus") or 0)
+    if not re.fullmatch(r"[\w.-]+", part or ""):
+        # never let a plan value put extra lines into run.sbatch
+        part = target.default_partition
+    nodes = max(_int(r.get("nodes"), 1), 1)
+    gpus = max(_int(r.get("gpus"), 0), 0)
     tl = str(r.get("time_limit") or "01:00:00")
-    if not re.fullmatch(r"(\d+-)?\d{1,3}(:\d{2}){0,2}", tl):
+    if not TIME_RE.fullmatch(tl):
         tl = "01:00:00"
     inst = plan.get("install") or {}
     mods = [m for m in inst.get("modules") or [] if re.fullmatch(r"[\w./+-]+", str(m))]
@@ -1380,6 +1400,7 @@ class Lab:
         self._genai = None
         self._client_lock = threading.Lock()
         self._fetch_tries: dict[int, int] = {}
+        self._gone_polls: dict[int, int] = {}
         self._watch_lock = threading.Lock()
         self._watcher: threading.Thread | None = None
         self._stop = threading.Event()
@@ -1900,8 +1921,9 @@ class Lab:
             raise ValueError(f"run is {run['status']}; only drafts can be edited")
         tgt = self.target(run["target"])
         plan = {**plan, "warnings": self._check(tgt, plan)}
-        self._update(
+        if not self._update(
             run_id,
+            only_if=("draft", "plan_failed"),
             plan=plan,
             status="draft",
             error=None,
@@ -1909,7 +1931,9 @@ class Lab:
             if tgt
             else None,
             estimate_usd=estimate_cost(tgt, plan),
-        )
+        ):
+            now = self.get(run_id) or run
+            raise ValueError(f"run is {now['status']}; only drafts can be edited")
         return self.get(run_id) or {}
 
     FIX_MAX_ROUNDS = 2
@@ -1992,14 +2016,19 @@ class Lab:
             "fix_notes": " ".join(notes),
             "fix_diff": plan_diff(before, plan),
         }
-        self._update(
+        if not self._update(
             run_id,
+            only_if=("draft",),
             plan=plan,
             stage="Plan fixed by AI, re-checked"
             + (f" ({len(warns)} warnings left)" if warns else " (no warnings)"),
             script=build_sbatch(run_id, plan, tgt, self._safe_sources(plan)),
             estimate_usd=estimate_cost(tgt, plan),
-        )
+        ):
+            now = self.get(run_id) or run
+            raise ValueError(
+                f"run is {now['status']} now; the AI fix was not applied to it"
+            )
         return {
             **(self.get(run_id) or {}),
             "fix": {
@@ -2151,16 +2180,21 @@ class Lab:
         tgt = self.target(run["target"])
         if not tgt:
             raise ValueError("no compute target configured (lab_targets.json)")
-        plan = run["plan"] or {}
-        sources = self._plan_sources(plan)
-        script = build_sbatch(run_id, plan, tgt, sources)
-        self._update(
+        # Claim the draft atomically: a double-click or a second tab must not send
+        # a second Slurm job (the first would be orphaned and keep billing).
+        if not self._update(
             run_id,
+            only_if=("draft",),
             status="submitting",
             stage="Submitting to " + tgt.label,
-            script=script,
-        )
+            submitted_at=_now(),
+        ):
+            now = self.get(run_id) or run
+            raise ValueError(f"run is {now['status']}; it was already submitted")
+        _IN_FLIGHT.add(run_id)
         try:
+            plan = run["plan"] or {}
+            sources = self._plan_sources(plan)
             from deepresearch.sources.staging import relay_upload, sources_json
 
             for src in sources:
@@ -2168,7 +2202,13 @@ class Lab:
                     self._update(
                         run_id, stage=f"Uploading data source {src.name} to the cluster"
                     )
+                    # Re-lists the source first: the cluster copy, its folder name and
+                    # the provenance all follow today's contents.
                     relay_upload(tgt, src, log=lambda m: None)
+                    self.sources.save_check(src)
+            # Built after staging so $DS_<NAME> points at the folder just uploaded.
+            script = build_sbatch(run_id, plan, tgt, sources)
+            self._update(run_id, script=script)
             files = {
                 "run.sbatch": script,
                 "plan.json": json.dumps(plan, indent=2),
@@ -2183,17 +2223,32 @@ class Lab:
             for src in sources:
                 self.sources.record_use(src, "lab_run", run_id)
         except Exception as e:
+            _IN_FLIGHT.discard(run_id)
             self._update(
-                run_id, status="failed", stage="Submit failed", error=str(e)[:500]
+                run_id,
+                only_if=("submitting",),
+                status="failed",
+                stage="Submit failed",
+                error=str(e)[:500],
+                finished_at=_now(),
             )
             raise
-        self._update(
+        _IN_FLIGHT.discard(run_id)
+        if not self._update(
             run_id,
+            only_if=("submitting",),
             status="queued",
             stage="Queued, waiting for a node",
             job_id=job,
             submitted_at=_now(),
-        )
+        ):
+            # Cancelled while the upload/sbatch was in flight: the job exists now,
+            # so stop it rather than leave it billing untracked.
+            self._update(run_id, job_id=job)
+            try:
+                tgt.cancel(job)
+            except Exception:
+                pass
         self.ensure_watcher()
         return self.get(run_id) or {}
 
@@ -2210,6 +2265,19 @@ class Lab:
                 run_id,
                 status="cancelled",
                 stage="Cancelled after the job ended",
+                finished_at=_now(),
+            )
+        elif run["status"] == "submitting" and not run.get("job_id"):
+            # No job id yet: either the upload/sbatch is still in flight (submit sees
+            # the cancel and scancels the job it gets back) or the dashboard died
+            # mid-submit and nothing will ever finish it.
+            self._update(
+                run_id,
+                only_if=("submitting",),
+                status="cancelled",
+                stage="Cancelled during submit",
+                error="If a job id appears on the cluster later, cancel it there "
+                "(squeue --me).",
                 finished_at=_now(),
             )
         elif run["status"] in ACTIVE and run.get("job_id"):
@@ -2303,6 +2371,23 @@ class Lab:
 
     def poll(self, run: dict) -> None:
         """Advance one active run by one step. Safe to call repeatedly."""
+        if (
+            run["status"] == "submitting"
+            and not run.get("job_id")
+            and run["id"] not in _IN_FLIGHT
+        ):
+            # Left over from a dashboard that stopped mid-submit: nothing will ever
+            # finish it, and it would block cancel/delete and keep the watcher busy.
+            self._update(
+                run["id"],
+                only_if=("submitting",),
+                status="failed",
+                stage="Submit interrupted",
+                error="The dashboard stopped while submitting this run. Check the "
+                "cluster (squeue --me) for a stray job, then Re-run.",
+                finished_at=_now(),
+            )
+            return
         tgt = self.target(run["target"])
         if not tgt or not run.get("job_id"):
             return
@@ -2343,6 +2428,24 @@ class Lab:
             upd.update(status="queued", stage=label)
         elif state in ("RUNNING", "COMPLETING"):
             upd.update(status="running", stage=stage or "Running")
+        elif not state and run["status"] == "running":
+            # squeue and sacct both know nothing (accounting off, or the record aged
+            # out while the laptop slept). The job's own stage markers decide; after
+            # a few empty polls with no marker, fetch whatever is there.
+            last = (st.get("stage") or "").strip()
+            gone = self._gone_polls.get(run["id"], 0) + 1
+            self._gone_polls[run["id"]] = gone
+            if last == "Done" or last.startswith("Failed") or gone >= GONE_POLLS:
+                self._gone_polls.pop(run["id"], None)
+                inferred = "COMPLETED" if last == "Done" else "FAILED"
+                upd.update(
+                    status="fetching",
+                    stage="Fetching results (Slurm no longer lists the job)",
+                    slurm_state=inferred,
+                )
+                if not self._update(run["id"], only_if=ACTIVE, **upd):
+                    return
+                return self._finish(self.get(run["id"]) or run, tgt)
         elif state in SLURM_DONE or state.startswith("CANCELLED"):
             upd.update(
                 status="fetching",

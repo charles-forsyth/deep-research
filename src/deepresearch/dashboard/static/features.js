@@ -200,19 +200,17 @@ const AUDIO = {
     try { est = await api("/api/audio/estimate", { method: "POST", body: { kind, id, mode } }); }
     catch (e) { return toast(e.message, "err"); }
     const mins = Math.max(1, Math.round(est.seconds / 60));
-    $("#modal").innerHTML = `
+    MODAL.open(`
       <h3>${mode === "summary" ? "AI voice summary" : "Read aloud: full text"}</h3>
       <div class="dim">${mode === "summary"
         ? "Gemini writes a 2 to 3 minute spoken briefing of this report, then reads it in the voice you pick."
         : `Gemini reads the whole ${kind === "notebook" ? "notebook" : "report"} word for word (citations and links left out). About ${fmtN(est.words)} words, roughly ${mins} min of audio.`}</div>
-      <div class="field" style="margin-top:12px"><label>Voice</label>
+      <div class="field" style="margin-top:12px"><label for="a-voice">Voice</label>
         <select id="a-voice">${est.voices.map((v) => `<option ${v === (localStorage.getItem("dr.aivoice") || "Charon") ? "selected" : ""}>${v}</option>`).join("")}</select></div>
       <div class="estimate"><span>EST. LENGTH <b>${mode === "summary" ? "2-3" : mins} min</b></span><span>EST. COST <b>$${est.cost_usd.toFixed(2)}</b></span><span class="dim">Gemini 3.8 Flash TTS</span></div>
-      <div class="acts"><button class="btn" data-x="0">Cancel</button><button class="btn primary" data-x="1">Create audio</button></div>`;
-    $("#modal-back").hidden = false;
-    const close = () => ($("#modal-back").hidden = true);
+      <div class="acts"><button class="btn" data-x="0">Cancel</button><button class="btn primary" data-x="1">Create audio</button></div>`);
+    const close = () => MODAL.close();
     $('#modal [data-x="0"]').onclick = close;
-    $("#modal-back").onclick = (e) => { if (e.target.id === "modal-back") close(); };
     $('#modal [data-x="1"]').onclick = async () => {
       const voice = $("#a-voice").value; localStorage.setItem("dr.aivoice", voice);
       close();
@@ -250,10 +248,9 @@ const AUDIO = {
     p.hidden = false;
     p.querySelector('[data-ap="x"]').onclick = () => { p.querySelector("audio").pause(); p.hidden = true; };
     p.querySelector('[data-ap="script"]')?.addEventListener("click", () => {
-      $("#modal").innerHTML = `<h3>Audio script</h3><div class="md" style="max-height:60vh;overflow:auto;font-size:14px">${esc(a.script).replace(/\n/g, "<br>")}</div>
-        <div class="acts"><button class="btn" data-x="c">Copy</button><button class="btn primary" data-x="0">Close</button></div>`;
-      $("#modal-back").hidden = false;
-      $('#modal [data-x="0"]').onclick = () => ($("#modal-back").hidden = true);
+      MODAL.open(`<h3>Audio script</h3><div class="md" style="max-height:60vh;overflow:auto;font-size:14px">${esc(a.script).replace(/\n/g, "<br>")}</div>
+        <div class="acts"><button class="btn" data-x="c">Copy</button><button class="btn primary" data-x="0">Close</button></div>`);
+      $('#modal [data-x="0"]').onclick = () => MODAL.close();
       $('#modal [data-x="c"]').onclick = () => copyText(a.script);
     });
   },
@@ -274,7 +271,7 @@ const AUDIO = {
 // ---------------------------------------------------------------- brief builder
 const BRIEF = {
   dialog(kind, id, title) {
-    $("#modal").innerHTML = `
+    MODAL.open(`
       <h3>Build a brief</h3>
       <div class="dim">Gemini turns this ${kind === "notebook" ? "notebook" : "report"} into a finished piece, keeping citations attached to each claim. Usually under a cent.</div>
       <div class="templates" style="margin-top:12px">
@@ -282,14 +279,13 @@ const BRIEF = {
         <button data-style="slides">Slide outline</button>
         <button data-style="email">Email</button>
       </div>
-      <div class="acts"><button class="btn" data-x="0">Cancel</button><button class="btn primary" data-x="1">Build</button></div>`;
-    $("#modal-back").hidden = false;
+      <div class="acts"><button class="btn" data-x="0">Cancel</button><button class="btn primary" data-x="1">Build</button></div>`);
     let style = "brief";
     $$("#modal [data-style]").forEach((b) => (b.onclick = () => { style = b.dataset.style; $$("#modal [data-style]").forEach((x) => x.classList.toggle("on", x === b)); }));
-    const close = () => ($("#modal-back").hidden = true);
+    const close = () => MODAL.close();
     $('#modal [data-x="0"]').onclick = close;
     $('#modal [data-x="1"]').onclick = async () => {
-      const btn = $('#modal [data-x="1"]'); btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Building';
+      const btn = $('#modal [data-x="1"]'); if (btn.disabled) return; btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Building';
       try {
         const r = await api("/api/brief", { method: "POST", body: { kind, id, style } });
         close();
@@ -501,8 +497,8 @@ async function renderCompare(v, t) {
   let A, B;
   try { [A, B] = await Promise.all([loadSession(t.a, true), loadSession(t.b, true)]); }
   catch (e) { v.innerHTML = `<div class="pad"><div class="empty-result">${esc(e.message)}</div></div>`; return; }
-  let diff;
-  try { diff = await api("/api/compare", { method: "POST", body: { a: t.a, b: t.b } }); } catch (e) { diff = null; }
+  let diff, diffErr = "";
+  try { diff = await api("/api/compare", { method: "POST", body: { a: t.a, b: t.b } }); } catch (e) { diff = null; diffErr = e.message; }
   const srcList = (arr, cls) => {
     if (!arr.length) return '<span class="dim">none</span>';
     const pill = (x) => `<span class="tagpill ${cls}">${esc(x)}</span>`;
@@ -513,10 +509,11 @@ async function renderCompare(v, t) {
     <div class="vbar"><span class="title">Compare #${t.a} (older) \u21C4 #${t.b} (newer)</span><span class="grow"></span>
       <button class="btn small primary" id="cmp-sum">What changed? (AI)</button></div>
     <div class="pad" style="padding-bottom:10px">
-      <div class="card cmp-src" style="margin-bottom:12px"><h3>Sources</h3>
-        <div class="kv"><span class="k">only in #${t.a}</span><span class="v">${srcList(diff?.sources_only_a || [], "gone")}</span>
-        <span class="k">new in #${t.b}</span><span class="v">${srcList(diff?.sources_only_b || [], "new")}</span>
-        <span class="k">in both</span><span class="v">${srcList(diff?.sources_shared || [], "")}</span></div></div>
+      <div class="card cmp-src" style="margin-bottom:12px"><h3>Citations</h3>
+        ${diff ? `<div class="kv"><span class="k">only in #${t.a}</span><span class="v">${srcList(diff.sources_only_a || [], "gone")}</span>
+        <span class="k">new in #${t.b}</span><span class="v">${srcList(diff.sources_only_b || [], "new")}</span>
+        <span class="k">in both</span><span class="v">${srcList(diff.sources_shared || [], "")}</span></div>`
+          : `<div class="err-banner">Could not compare the citations: ${esc(diffErr || "unknown error")} <button class="btn small" id="cmp-retry">Retry</button></div>`}</div>
       <div class="card" id="cmp-out" hidden><h3>What changed</h3><div class="md" id="cmp-md"></div></div>
     </div>
     <div class="cmp">
@@ -529,6 +526,7 @@ async function renderCompare(v, t) {
   const aSet = new Set([...cols[0].querySelectorAll("p, li")].map((p) => norm(p.textContent)));
   cols[1].querySelectorAll("p, li").forEach((p) => { if (p.textContent.split(/\s+/).length > 8 && !aSet.has(norm(p.textContent))) p.classList.add("is-new"); });
   cols.forEach((c) => c.querySelectorAll("a[href^='http']").forEach((a) => { a.target = "_blank"; a.rel = "noopener noreferrer"; }));
+  v.querySelector("#cmp-retry")?.addEventListener("click", () => renderCompare(v, t));
   $("#cmp-sum").onclick = async () => {
     const b = $("#cmp-sum"); b.disabled = true; b.innerHTML = '<span class="spinner"></span> Comparing';
     try {

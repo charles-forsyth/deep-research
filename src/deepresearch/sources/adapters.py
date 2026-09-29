@@ -8,6 +8,7 @@ in this program: credentials stay in gcloud ADC and the rclone config.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 import shlex
@@ -21,6 +22,7 @@ from typing import Any
 from deepresearch.sources.model import DataSource, Manifest, ManifestEntry
 
 MANIFEST_LIMIT = 5000  # files listed before a manifest is marked truncated
+LOCAL_FETCH_MAX = 50_000  # a fetch copies every file or fails; never a silent subset
 PREVIEW_BYTES = 64_000
 TIMEOUT = 60
 
@@ -36,20 +38,77 @@ def local_roots() -> list[Path]:
     return [r.resolve() for r in (roots or [Path.home()])]
 
 
-def _run(cmd: list[str], timeout: int = TIMEOUT) -> str:
+def _run_bytes(
+    cmd: list[str], timeout: int = TIMEOUT, stdin: bytes | None = None
+) -> bytes:
+    """Run a CLI and return raw stdout (file contents may be binary)."""
     exe = shutil.which(cmd[0])
     if not exe:
         raise SourceError(f"'{cmd[0]}' is not installed on this machine")
     try:
         r = subprocess.run(
-            [exe, *cmd[1:]], capture_output=True, text=True, timeout=timeout
+            [exe, *cmd[1:]], capture_output=True, timeout=timeout, input=stdin
         )
     except subprocess.TimeoutExpired as e:
         raise SourceError(f"{cmd[0]} timed out after {timeout}s") from e
     if r.returncode != 0:
-        msg = (r.stderr or r.stdout or "").strip().splitlines()
+        err = (r.stderr or r.stdout or b"").decode("utf-8", "replace")
+        msg = err.strip().splitlines()
         raise SourceError((msg[-1] if msg else f"{cmd[0]} failed")[:300])
     return r.stdout
+
+
+def _run(cmd: list[str], timeout: int = TIMEOUT) -> str:
+    return _run_bytes(cmd, timeout).decode("utf-8", "replace")
+
+
+def _rclone_filters(s: DataSource) -> list[str]:
+    """--include/--exclude for rclone from the source's globs (same meaning as the
+    manifest filter: a path must match an include, and no exclude)."""
+    # Ordered --filter rules (rclone warns that mixing --include and --exclude is
+    # applied in an undefined order): excludes first, then includes, then drop
+    # everything else when there were includes.
+    args: list[str] = []
+    for p in s.options.get("exclude") or []:
+        args += ["--filter", f"- {p}"]
+    inc = s.options.get("include") or []
+    for p in inc:
+        args += ["--filter", f"+ {p}"]
+    if inc:
+        args += ["--filter", "- **"]
+    return args
+
+
+def safe_rel(path: str) -> str | None:
+    """A listing path that is safe to join onto a download folder, or None.
+
+    Bucket keys are chosen by whoever owns the bucket: "a//b", "/etc/x" or "../x"
+    must never turn into a file outside the destination.
+    """
+    parts = [p for p in str(path).replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or ".." in parts or ":" in parts[0]:
+        return None
+    return "/".join(parts)
+
+
+def safe_join(dest: Path, rel: str) -> Path:
+    """dest/rel, refusing anything that would land outside dest."""
+    clean = safe_rel(rel)
+    if clean is None or str(rel).startswith(("/", "\\")):
+        raise SourceError(f"refusing unsafe file name from the source: {rel!r}")
+    out = (dest / clean).resolve()
+    base = dest.resolve()
+    if out != base and base not in out.parents:
+        raise SourceError(f"refusing file name that escapes the folder: {rel!r}")
+    return out
+
+
+def _hidden(rel: str) -> bool:
+    return any(
+        part.startswith(".") and part not in (".", "..")
+        for part in rel.split("/")
+        if part
+    )
 
 
 def _filtered(s: DataSource, rel: str) -> bool:
@@ -189,7 +248,23 @@ class LocalAdapter(SourceAdapter):
         return _manifest(entries, truncated)
 
     def preview(self, path: str = "", max_bytes: int = PREVIEW_BYTES) -> bytes:
-        p = self._inside(path)
+        p = self._inside(path)  # refuses paths that escape the source first
+        base = self.root()
+        rel = path.replace("\\", "/").strip("/")
+        if _hidden(rel):
+            # The listing never shows dot-files (keys, .env, .ssh); preview must not
+            # read them either.
+            raise SourceError("hidden files are not shown")
+        if base.is_dir():
+            # The listing skips links; preview must not follow one either (a link to
+            # ~/.ssh/id_ed25519 resolves inside the folder but is still a key).
+            walk = base
+            for part in [x for x in rel.split("/") if x]:
+                walk = walk / part
+                if walk.is_symlink():
+                    raise SourceError("links are not followed")
+            if _hidden(str(p.relative_to(base))):
+                raise SourceError("hidden files are not shown")
         if p.is_dir():
             raise SourceError("that is a folder")
         with open(p, "rb") as fh:
@@ -198,7 +273,13 @@ class LocalAdapter(SourceAdapter):
     def fetch(self, dest: Path) -> Path:
         base = self.root()
         dest.mkdir(parents=True, exist_ok=True)
-        for e in self.manifest().entries_all:
+        m = self.manifest(LOCAL_FETCH_MAX)
+        if m.truncated:
+            raise SourceError(
+                f"{self.s.name} has more than {LOCAL_FETCH_MAX} files; pick a smaller "
+                "folder or add --include globs"
+            )
+        for e in m.entries_all:
             src = (base.parent if base.is_file() else base) / e.path
             out = dest / e.path
             out.parent.mkdir(parents=True, exist_ok=True)
@@ -306,22 +387,54 @@ class GCSAdapter(SourceAdapter):
         return f"gs://{bucket}/{'/'.join(x for x in (prefix, rel) if x)}"
 
     def preview(self, path: str = "", max_bytes: int = PREVIEW_BYTES) -> bytes:
-        out = _run(
+        out = _run_bytes(
             ["gcloud", "storage", "cat", f"--range=0-{max_bytes - 1}", self._obj(path)],
             timeout=120,
         )
-        return out.encode()[:max_bytes]
+        return out[:max_bytes]
+
+    def _filtered_files(self) -> list[ManifestEntry] | None:
+        """The exact file list when include/exclude globs are set, else None (copy
+        the whole prefix)."""
+        if not (self.s.options.get("include") or self.s.options.get("exclude")):
+            return None
+        m = self.manifest()
+        if m.truncated:
+            raise SourceError(
+                f"{self.s.name} matches more than {MANIFEST_LIMIT} files; narrow the "
+                "prefix or --include before fetching"
+            )
+        return list(m.entries_all)
 
     def fetch(self, dest: Path) -> Path:
         dest.mkdir(parents=True, exist_ok=True)
-        _run(
-            ["gcloud", "storage", "rsync", "-r", self._obj(""), str(dest)],
-            timeout=3600,
-        )
+        files = self._filtered_files()
+        if files is None:
+            _run(
+                ["gcloud", "storage", "rsync", "-r", self._obj(""), str(dest)],
+                timeout=3600,
+            )
+            return dest
+        for e in files:  # only what the filter selects
+            out = safe_join(dest, e.path)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            _run(["gcloud", "storage", "cp", self._obj(e.path), str(out)], timeout=3600)
         return dest
 
     def direct_snippet(self) -> str:
-        return f'gcloud storage rsync -r {shlex.quote(self._obj(""))} "$DEST"\n'
+        files = self._filtered_files()
+        if files is None:
+            return f'gcloud storage rsync -r {shlex.quote(self._obj(""))} "$DEST"\n'
+        lines = []
+        for e in files:
+            rel = safe_rel(e.path)
+            if rel is None:
+                raise SourceError(f"refusing unsafe file name: {e.path!r}")
+            lines.append(
+                f'mkdir -p "$(dirname "$DEST"/{shlex.quote(rel)})" && gcloud storage cp '
+                f'{shlex.quote(self._obj(rel))} "$DEST"/{shlex.quote(rel)}'
+            )
+        return "\n".join(lines) + "\n"
 
 
 # --------------------------------------------------------------------------- s3
@@ -367,16 +480,20 @@ class S3Adapter(SourceAdapter):
         return _manifest(entries[:limit], len(entries) > limit)
 
     def preview(self, path: str = "", max_bytes: int = PREVIEW_BYTES) -> bytes:
-        out = _run(["rclone", "cat", "--count", str(max_bytes), self._path(path)])
-        return out.encode()[:max_bytes]
+        out = _run_bytes(["rclone", "cat", "--count", str(max_bytes), self._path(path)])
+        return out[:max_bytes]
 
     def fetch(self, dest: Path) -> Path:
         dest.mkdir(parents=True, exist_ok=True)
-        _run(["rclone", "copy", self._path(), str(dest)], timeout=3600)
+        _run(
+            ["rclone", "copy", *_rclone_filters(self.s), self._path(), str(dest)],
+            timeout=3600,
+        )
         return dest
 
     def direct_snippet(self) -> str:
-        return f'rclone copy {shlex.quote(self._path())} "$DEST"\n'
+        flt = " ".join(shlex.quote(a) for a in _rclone_filters(self.s))
+        return f'rclone copy {flt + " " if flt else ""}{shlex.quote(self._path())} "$DEST"\n'
 
 
 # --------------------------------------------------------------------------- internal
@@ -411,7 +528,10 @@ class InternalAdapter(SourceAdapter):
         return _manifest(
             [
                 ManifestEntry(
-                    path=name, size=len(text.encode()), modified=str(hash(text))
+                    path=name,
+                    size=len(text.encode()),
+                    # stable across processes (hash() is salted per run)
+                    modified=hashlib.sha256(text.encode()).hexdigest()[:16],
                 )
             ],
             False,

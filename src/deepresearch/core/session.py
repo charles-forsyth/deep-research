@@ -172,10 +172,12 @@ class SessionManager:
     def find_session_since(self, prompt: str, since_iso: str) -> int | None:
         """Newest top-level session with this prompt created at or after `since_iso`."""
         with sqlite3.connect(self.db_path, timeout=10) as conn:
+            # The stored prompt can carry an appended File Search instruction, so
+            # match on the typed prompt as a prefix too.
             row = conn.execute(
-                "SELECT id FROM sessions WHERE prompt = ? AND created_at >= ? "
-                "ORDER BY id DESC LIMIT 1",
-                (prompt, since_iso),
+                "SELECT id FROM sessions WHERE (prompt = ? OR substr(prompt, 1, ?) = ?) "
+                "AND created_at >= ? ORDER BY id DESC LIMIT 1",
+                (prompt, len(prompt) + 2, prompt + "\n\n", since_iso),
             ).fetchone()
         return int(row[0]) if row else None
 

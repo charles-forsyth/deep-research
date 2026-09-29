@@ -1,3 +1,4 @@
+import time
 from unittest.mock import MagicMock, patch
 import pytest
 from deepresearch.storage.files import FileManager
@@ -102,7 +103,10 @@ def test_temp_stores_get_a_disposable_display_name(mock_client):
         def __init__(self, name, display_name):
             self.name, self.display_name = name, display_name
 
-    assert is_disposable_store(S("a", cfg["display_name"]))
+    fresh = S("a", cfg["display_name"])
+    # a store made moments ago may belong to a research run that is still going
+    assert not is_disposable_store(fresh)
+    assert is_disposable_store(fresh, now=time.time() + 37 * 3600)
     assert is_disposable_store(S("b", None))
     assert not is_disposable_store(S("c", "deep-research-source-x"))
     assert not is_disposable_store(S("d", None), protected={"d"})

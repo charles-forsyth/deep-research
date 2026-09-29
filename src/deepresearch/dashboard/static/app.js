@@ -44,8 +44,50 @@ function status(msg) { $("#sb-left").textContent = msg; }
 
 marked.setOptions({ gfm: true, breaks: false });
 function renderMd(md) {
-  const html = DOMPurify.sanitize(marked.parse(md || ""), { ADD_ATTR: ["target"] });
+  const html = DOMPurify.sanitize(marked.parse(texToText(md || "")), { ADD_ATTR: ["target"] });
   return html;
+}
+// Reports often carry LaTeX ($y^+$, $$U^+ = \frac{1}{\kappa}\ln y^+ + B$$). Without a
+// math renderer, turn it into readable Unicode instead of showing raw backslashes.
+// Code spans and fences are left alone; a "$" that is not math (prices) is untouched.
+const TEX_SYM = { alpha: "\u03b1", beta: "\u03b2", gamma: "\u03b3", delta: "\u03b4", epsilon: "\u03b5", varepsilon: "\u03b5", zeta: "\u03b6", eta: "\u03b7", theta: "\u03b8", kappa: "\u03ba", lambda: "\u03bb", mu: "\u03bc", nu: "\u03bd", xi: "\u03be", pi: "\u03c0", rho: "\u03c1", sigma: "\u03c3", tau: "\u03c4", phi: "\u03c6", varphi: "\u03c6", chi: "\u03c7", psi: "\u03c8", omega: "\u03c9", Gamma: "\u0393", Delta: "\u0394", Theta: "\u0398", Lambda: "\u039b", Sigma: "\u03a3", Phi: "\u03a6", Psi: "\u03a8", Omega: "\u03a9", le: "\u2264", leq: "\u2264", ge: "\u2265", geq: "\u2265", approx: "\u2248", sim: "~", neq: "\u2260", ne: "\u2260", times: "\u00d7", cdot: "\u00b7", pm: "\u00b1", mp: "\u2213", infty: "\u221e", partial: "\u2202", nabla: "\u2207", sum: "\u2211", prod: "\u220f", int: "\u222b", sqrt: "\u221a", rightarrow: "\u2192", to: "\u2192", leftarrow: "\u2190", Rightarrow: "\u21d2", propto: "\u221d", in: "\u2208", degree: "\u00b0", circ: "\u00b0", ln: "ln", log: "log", exp: "exp", sin: "sin", cos: "cos", tan: "tan", max: "max", min: "min", langle: "\u27e8", rangle: "\u27e9", ldots: "\u2026", cdots: "\u22ef", quad: " ", qquad: "  ", left: "", right: "", mathrm: "", text: "", mathbf: "", mathit: "", operatorname: "", displaystyle: "" };
+const SUP = { "0": "\u2070", "1": "\u00b9", "2": "\u00b2", "3": "\u00b3", "4": "\u2074", "5": "\u2075", "6": "\u2076", "7": "\u2077", "8": "\u2078", "9": "\u2079", "+": "\u207a", "-": "\u207b", n: "\u207f", i: "\u2071" };
+const SUB = { "0": "\u2080", "1": "\u2081", "2": "\u2082", "3": "\u2083", "4": "\u2084", "5": "\u2085", "6": "\u2086", "7": "\u2087", "8": "\u2088", "9": "\u2089", "+": "\u208a", "-": "\u208b" };
+function texMath(t) {
+  let x = t;
+  const atom = (v) => (/^[\w.]+$/.test(v) || /^\\[A-Za-z]+$/.test(v) ? v : "(" + v + ")");
+  for (let k = 0; k < 3; k++) x = x.replace(/\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, (m, a, b) => `${atom(a)}/${atom(b)}`);
+  x = x.replace(/\\sqrt\s*\{([^{}]*)\}/g, "\u221a($1)");
+  // a command eats the space after it in TeX; put one back after word-like results
+  // ("\\ln y" -> "ln y") and keep the author's spacing around symbols
+  x = x.replace(/\\([A-Za-z]+)(\s?)/g, (m, w, sp, off, all) => {
+    const r = w in TEX_SYM ? TEX_SYM[w] : w;
+    const word = /^[a-z]{2,}$/.test(r); // ln, sin, max: keep them apart from neighbours
+    const prev = all[off - 1] || "";
+    return (word && prev && !/[\s(/]/.test(prev) ? " " : "") + r + (word ? " " : sp);
+  });
+  x = x.replace(/\^\{([^{}]*)\}|\^(\S)/g, (m, a, b) => { const v = a ?? b; return [...v].every((c) => c in SUP) ? [...v].map((c) => SUP[c]).join("") : "^" + (v.length > 1 ? "(" + v + ")" : v); });
+  x = x.replace(/_\{([^{}]*)\}|_(\w)/g, (m, a, b) => { const v = a ?? b; return [...v].every((c) => c in SUB) ? [...v].map((c) => SUB[c]).join("") : "_" + v; });
+  return x.replace(/\\[,;:! ]/g, " ").replace(/[{}]/g, "").replace(/\s+\//g, "/").replace(/\/\s+/g, "/").replace(/\s{2,}/g, " ").trim();
+}
+function texToText(md) {
+  if (md.indexOf("$") < 0 && md.indexOf("\\(") < 0) return md;
+  // keep code blocks and inline code exactly as written
+  return md.split(/(```[\s\S]*?```|`[^`\n]*`)/).map((part, i) => {
+    if (i % 2) return part;
+    return part
+      .replace(/\$\$([\s\S]+?)\$\$/g, (m, t) => "\n\n" + texMath(t) + "\n\n")
+      .replace(/\\\[([\s\S]+?)\\\]/g, (m, t) => "\n\n" + texMath(t) + "\n\n")
+      .replace(/\\\((.+?)\\\)/g, (m, t) => texMath(t))
+      // inline $...$ when it looks like math: a TeX command, ^ or _, an "=" or "<",
+      // or a bare number/variable ($6.75$, $y$). Money ("$5 to $10", "$1.2M and $3")
+      // has a space or a letter right after the opening number, so it never matches.
+      .replace(/(^|[^\\$\w])\$([^$\n]{1,200}?)\$(?![\d\w])/g, (m, pre, t) => {
+        if (/^\s|\s$/.test(t)) return m;
+        const mathy = /[\\^_=<>]/.test(t) || /^-?\d+(\.\d+)?$/.test(t) || /^[A-Za-z](_?\w)?$/.test(t);
+        return mathy ? pre + texMath(t) : m;
+      });
+  }).join("");
 }
 function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u; } }
 // Grounding links are redirects (vertexaisearch.cloud.google.com/...); the real
@@ -114,13 +156,38 @@ const S = {
 const LS_TABS = "dr.tabs.v1";
 
 // ---------------------------------------------------------------- data loads
+// S.sessions is always the full list (live counts, notifications and completion checks
+// read it). A search fills S.results instead; a slow reply to an older keystroke is
+// dropped rather than overwriting a newer one.
+let SEARCH_SEQ = 0;
 async function loadSessions() {
-  const qs = S.q ? `?q=${encodeURIComponent(S.q)}` : "";
-  const data = await api(`/api/sessions${qs}`);
+  const data = await api("/api/sessions");
   NOTIFY.diff(S.sessions, data.sessions);
+  refreshFinished(S.sessions, data.sessions);
   S.sessions = data.sessions;
+  if (S.q) await loadSearch(); else S.results = null;
   renderSessionList();
   renderTelemetry();
+}
+async function loadSearch() {
+  const seq = ++SEARCH_SEQ;
+  const q = S.q;
+  if (!q) { S.results = null; return; }
+  const data = await api(`/api/sessions?q=${encodeURIComponent(q)}`);
+  if (seq !== SEARCH_SEQ) return; // a newer search started
+  S.results = data.sessions;
+}
+// A report that finishes while it is open reloads itself, whatever inspector tab is
+// showing (the Live log tab used to be the only thing that noticed).
+function refreshFinished(before, after) {
+  const was = new Map(before.map((s) => [s.id, s.status]));
+  const t = currentTab();
+  for (const s of after) {
+    if (was.get(s.id) === "running" && s.status !== "running") {
+      delete S.cache[s.id];
+      if (t?.kind === "session" && t.id === s.id && !(LOG.sid === s.id && S.rtab === "log")) renderStage();
+    }
+  }
 }
 async function loadStats() {
   S.stats = await api("/api/stats");
@@ -144,7 +211,7 @@ function renderTelemetry() {
   $("#telemetry").innerHTML = `
     <span class="chip ${live ? "live" : ""}"><span class="dot"></span>LIVE <b>${live}</b></span>
     <span class="chip ok"><span class="dot"></span>COMPLETE <b>${fmtN(st.completed)}</b></span>
-    <span class="chip ${(st.failed || 0) + (st.crashed || 0) ? "bad" : ""}"><span class="dot"></span>FAILED <b>${fmtN((st.failed || 0) + (st.crashed || 0))}</b></span>
+    <span class="chip ${(st.failed || 0) + (st.crashed || 0) ? "bad" : ""}" title="failed, crashed or cancelled (the Failed filter)"><span class="dot"></span>FAILED <b>${fmtN((st.failed || 0) + (st.crashed || 0) + (st.cancelled || 0))}</b></span>
     <span class="chip"><span class="dot"></span>CORPUS <b>${fmtN(Math.round((S.stats?.result_chars || 0) / 1000))}k</b> chars</span>
     <span class="chip ${key ? "ok" : "bad"}"><span class="dot"></span>API KEY <b>${key ? "OK" : S.health?.api_key ? "INVALID" : "MISSING"}</b></span>`;
   $("#sb-right").textContent = `${fmtN(S.stats?.total)} sessions \u00b7 ${fmtN(S.stats?.notebooks)} notebooks \u00b7 ${fmtN(S.stats?.annotations)} annotations`;
@@ -152,7 +219,7 @@ function renderTelemetry() {
 
 // ---------------------------------------------------------------- archive (left)
 function filteredSessions() {
-  return S.sessions.filter((s) => {
+  return (S.q && S.results ? S.results : S.sessions).filter((s) => {
     if (S.rootsOnly && s.parent_id && !S.q) return false;
     if (S.filter === "running") return s.status === "running";
     if (S.filter === "starred") return s.starred;
@@ -165,10 +232,10 @@ function renderSessionList() {
   $("#count").textContent = `${list.length} shown`;
   const activeId = currentTab()?.kind === "session" ? currentTab().id : null;
   $("#session-list").innerHTML = list.map((s) => `
-    <div class="sess ${s.id === activeId ? "active" : ""}" data-id="${s.id}">
-      <span class="st ${esc(s.status)}"></span>
+    <div class="sess ${s.id === activeId ? "active" : ""}" data-id="${s.id}" tabindex="0" role="link" aria-label="Session ${s.id}: ${esc(clip(oneLine(s.prompt), 120))} (${esc(s.status)})">
+      <span class="st ${esc(s.status)}" aria-hidden="true"></span>
       <div>
-        <div class="p">${esc(clip(s.prompt, 160))}</div>
+        <div class="p">${esc(clip(oneLine(s.prompt), 160))}</div>
         <div class="m">
           <span>${ago(s.created_at)}</span>
           ${s.result_chars >= 1000 ? `<span>${fmtN(Math.round(s.result_chars / 1000))}k chars</span>` : ""}
@@ -191,30 +258,82 @@ function saveTabs() {
 }
 function openTab(tab) {
   if (!S.tabs.find((t) => t.key === tab.key)) S.tabs.push(tab);
+  if (S.active !== tab.key) stashView();
   S.active = tab.key;
   saveTabs();
   renderTabs();
   renderStage();
 }
-function closeTab(key) {
+async function closeTab(key) {
   const i = S.tabs.findIndex((t) => t.key === key);
   if (i < 0) return;
-  if (S.tabs[i].kind === "notebook" && NB.dirty) NB.saveNow();
-  S.tabs.splice(i, 1);
-  if (S.active === key) S.active = (S.tabs[i] || S.tabs[i - 1] || S.tabs[0])?.key || null;
+  if (S.tabs[i].kind === "notebook" && NB.dirty && S.active === key) {
+    // keep the tab (and its text) open if the save fails
+    try { await NB.saveNow(); } catch (e) { toast(`Not closed: the notebook could not be saved (${e.message})`, "err"); return; }
+  }
+  const j = S.tabs.findIndex((t) => t.key === key);
+  if (j < 0) return;
+  S.tabs.splice(j, 1);
+  if (S.active === key) S.active = (S.tabs[j] || S.tabs[j - 1] || S.tabs[0])?.key || null;
   if (!S.tabs.length) { S.tabs.push({ key: "home", kind: "home", title: "Mission control" }); S.active = "home"; }
   saveTabs(); renderTabs(); renderStage();
 }
-const ICONS = { home: "\u25CE", session: "\u00a7", notebook: "\u270E", launch: "+", search: "\u2315", tree: "\u2937", map: "\u2B21", compare: "\u21C4" };
+const ICONS = { notes: "\u270E", home: "\u25CE", session: "\u00a7", notebook: "\u270E", launch: "+", search: "\u2315", tree: "\u2937", map: "\u2B21", compare: "\u21C4" };
 function renderTabs() {
+  $("#tabs").setAttribute("role", "tablist");
   $("#tabs").innerHTML = S.tabs.map((t) => `
-    <div class="tab ${t.key === S.active ? "on" : ""}" data-key="${esc(t.key)}" title="${esc(t.title)}">
-      <span class="ico">${ICONS[t.kind] || "\u2022"}</span>
+    <div class="tab ${t.key === S.active ? "on" : ""}" data-key="${esc(t.key)}" title="${esc(t.title)}" role="tab" tabindex="${t.key === S.active ? 0 : -1}" aria-selected="${t.key === S.active}">
+      <span class="ico" aria-hidden="true">${ICONS[t.kind] || "\u2022"}</span>
       <span class="t">${esc(clip(t.title, 34))}</span>
-      ${t.kind !== "home" ? `<button class="x" data-close="${esc(t.key)}" title="Close">\u00d7</button>` : ""}
+      ${t.kind !== "home" ? `<button class="x" data-close="${esc(t.key)}" title="Close" aria-label="Close ${esc(t.title)}">\u00d7</button>` : ""}
     </div>`).join("");
+  $("#tabs .tab.on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
   renderSessionList();
 }
+// Each tab remembers its scroll position and form drafts (launch form, search, Ask box)
+// so switching away and back does not throw work away.
+const VIEWSTATE = {};
+function stashView() {
+  const t = currentTab(); const v = $("#stage .view");
+  if (!t || !v) return;
+  const st = { scroll: (v.querySelector(".reader, .pad, .nb, .runs-view") || v).scrollTop || v.scrollTop, fields: {} };
+  v.querySelectorAll("input[id], textarea[id], select[id]").forEach((i) => {
+    if (i.type === "file" || i.closest(".nb")) return; // notebooks save themselves
+    st.fields[i.id] = i.type === "checkbox" ? i.checked : i.value;
+  });
+  VIEWSTATE[t.key] = st;
+}
+function restoreView(t, v) {
+  const st = VIEWSTATE[t.key]; if (!st) return;
+  // after the renderer has filled the view (some render async)
+  const apply = () => {
+    for (const [id, val] of Object.entries(st.fields || {})) {
+      const i = v.querySelector("#" + CSS.escape(id)); if (!i || i.type === "file") continue;
+      if (i.type === "checkbox") i.checked = !!val; else if (!i.value || i.tagName === "SELECT" || i.value !== val) i.value = val;
+      i.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    const box = v.querySelector(".reader, .pad, .nb, .runs-view") || v;
+    if (st.scroll) box.scrollTop = st.scroll;
+  };
+  requestAnimationFrame(() => setTimeout(apply, 0));
+  setTimeout(apply, 400); // session detail loads async
+}
+function activateTab(key) {
+  if (key === S.active) return; // re-clicking the active tab keeps the reading position
+  if (NB.dirty) NB.saveNow().catch((e) => toast(`Notebook not saved: ${e.message}`, "err"));
+  stashView();
+  S.active = key; saveTabs(); renderTabs(); renderStage();
+}
+$("#tabs").addEventListener("keydown", (e) => {
+  const t = e.target.closest(".tab"); if (!t || e.target.closest(".x")) return;
+  const tabs = [...$$("#tabs .tab")]; const i = tabs.indexOf(t);
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); activateTab(t.dataset.key); }
+  else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+    e.preventDefault();
+    const n = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+    activateTab(n.dataset.key); $("#tabs .tab.on")?.focus();
+  } else if ((e.key === "Delete" || e.key === "Backspace") && t.querySelector(".x")) { e.preventDefault(); closeTab(t.dataset.key); }
+});
 function openSession(id) { openTab({ key: `s${id}`, kind: "session", id: Number(id), title: `#${id}` }); }
 function openNotebook(id, title) { openTab({ key: `n${id}`, kind: "notebook", id: Number(id), title: title || "Notebook" }); }
 function openLaunch(prefill) { S.launchPrefill = prefill || null; openTab({ key: "launch", kind: "launch", title: "New research" }); }
@@ -222,6 +341,36 @@ function openSearch() { openTab({ key: "search", kind: "search", title: "Semanti
 function openTree(id) { openTab({ key: `t${id}`, kind: "tree", id: Number(id), title: `Tree #${id}` }); }
 function openMap() { openTab({ key: "map", kind: "map", title: "Research map" }); }
 function openSources() { openTab({ key: "sources", kind: "sources", title: "Data sources" }); }
+function openNotes() { openTab({ key: "notes", kind: "notes", title: "All notes" }); }
+// Every highlight and note across reports, newest first, filterable; click to jump.
+async function renderNotes(v) {
+  v.innerHTML = `<div class="pad"><div class="runs-head"><h2>All notes</h2>
+    <input id="notes-q" class="inline-input" placeholder="Filter notes and quotes" aria-label="Filter notes" style="max-width:280px">
+    <span class="grow"></span><span class="dim" id="notes-count"></span></div><div id="notes-body"><span class="spinner"></span></div></div>`;
+  let anns;
+  try { anns = (await api("/api/annotations")).annotations || []; }
+  catch (e) { if (!stale(v)) v.querySelector("#notes-body").innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
+  if (stale(v)) return;
+  const title = (id) => clip(oneLine((S.sessions.find((x) => x.id === id) || {}).prompt || `Session #${id}`), 90);
+  const draw = () => {
+    const q = v.querySelector("#notes-q").value.trim().toLowerCase();
+    const shown = anns.filter((a) => !q || (a.quote + " " + (a.note || "")).toLowerCase().includes(q))
+      .sort((a, b) => String(b.created_at || b.id).localeCompare(String(a.created_at || a.id)));
+    v.querySelector("#notes-count").textContent = `${shown.length} of ${anns.length}`;
+    v.querySelector("#notes-body").innerHTML = shown.map((a) => `
+      <div class="ann-card ${esc(a.color)} note-row" data-sid="${a.session_id}" data-id="${a.id}" tabindex="0" role="link">
+        <div class="mono dim" style="font-size:10.5px">#${a.session_id} \u00b7 ${esc(title(a.session_id))}</div>
+        <div class="q">\u201c${esc(clip(a.quote, 400))}\u201d</div>
+        ${a.note ? `<div style="font-size:12.5px;margin-top:4px">${esc(a.note)}</div>` : ""}
+      </div>`).join("") || `<div class="empty-result">${anns.length ? "No notes match." : "No highlights or notes yet. Select text in a report to add one."}</div>`;
+    v.querySelectorAll(".note-row").forEach((el) => {
+      const go = () => { S.rtab = "notes"; S.flashAnn = +el.dataset.id; openSession(+el.dataset.sid); };
+      el.onclick = go; el.onkeydown = (e) => { if (e.key === "Enter") go(); };
+    });
+  };
+  v.querySelector("#notes-q").oninput = debounce(draw, 150);
+  draw();
+}
 function openLabRuns() { openTab({ key: "labruns", kind: "labruns", title: "Lab runs" }); }
 function openCompare(a, b) { openTab({ key: `c${a}-${b}`, kind: "compare", a: Number(a), b: Number(b), title: `#${a} \u21C4 #${b}` }); }
 
@@ -236,10 +385,17 @@ function renderStage() {
   const v = document.createElement("div");
   v.className = "view";
   stage.appendChild(v);
-  const renderers = { home: renderHome, session: renderSession, notebook: renderNotebook, launch: renderLaunch, search: renderSearch, tree: renderTree, map: renderMap, compare: renderCompare, sources: (v) => SRC.render(v), labruns: (v) => LAB.renderAll(v), source: (v, t) => SRC.renderOne(v, t.id) };
+  const renderers = { home: renderHome, session: renderSession, notebook: renderNotebook, launch: renderLaunch, search: renderSearch, tree: renderTree, map: renderMap, compare: renderCompare, sources: (v) => SRC.render(v), labruns: (v) => LAB.renderAll(v), notes: renderNotes, source: (v, t) => SRC.renderOne(v, t.id) };
+  const gen = ++RENDER_GEN;
+  v.dataset.gen = gen;
   (renderers[t.kind] || renderHome)(v, t);
+  restoreView(t, v);
   renderRight();
 }
+// Bumped on every renderStage; async renderers compare it after each await and stop
+// if the user has moved on (instead of writing into a view that is gone).
+let RENDER_GEN = 0;
+const stale = (v) => !v.isConnected || +v.dataset.gen !== RENDER_GEN;
 
 // ---------------------------------------------------------------- home
 function renderHome(v) {
@@ -314,21 +470,25 @@ async function renderSession(v, t) {
   let s;
   try { s = await loadSession(t.id, true); }
   catch (e) { v.innerHTML = `<div class="reader"><div class="empty-result">${esc(e.message)}</div></div>`; return; }
-  if (currentTab()?.key !== t.key) return;
+  if (currentTab()?.key !== t.key || stale(v)) return;
   t.title = clip(s.prompt, 40); renderTabs();
   const running = s.status === "running";
+  // A failed or crashed run has no report: show the error as an error, offer Re-run,
+  // and hide the reading tools (Listen, Export, Lab, Ask) that need a report.
+  const broken = ["failed", "crashed", "cancelled"].includes(s.status);
+  const hasReport = !!s.result && !broken;
   v.innerHTML = `
     <div class="vbar">
       <button class="btn small" data-a="star">${s.meta.starred ? "\u2605 Starred" : "\u2606 Star"}</button>
-      <button class="btn small" data-a="copy">Copy report</button>
+      ${hasReport ? `<button class="btn small" data-a="copy">Copy report</button>
       <button class="btn small" data-a="to-nb">\u2192 Notebook</button>
       <button class="btn small" data-a="find">Find</button>
-      ${s.result ? `<button class="btn small" data-a="listen" title="Read the report aloud, word for word">\u25B6 Listen</button>` : ""}
+      <button class="btn small" data-a="listen" title="Read the report aloud, word for word">\u25B6 Listen</button>` : ""}
       ${s.children.length ? `<button class="btn small" data-a="tree">\u2937 Tree (${s.children.length})</button>` : ""}
-      ${s.result && !s.parent_id ? `<button class="btn small" data-a="rerun" title="Run this question again and compare">\u21BB Re-run</button>` : ""}
+      ${(hasReport || broken) && !s.parent_id ? `<button class="btn small ${broken ? "primary" : ""}" data-a="rerun" title="Run this question again${broken ? "" : " and compare"}">\u21BB Re-run</button>` : ""}
       ${s.reruns?.length || s.run?.rerun_of ? `<button class="btn small" data-a="compare">\u21C4 Compare</button>` : ""}
       <span class="grow"></span>
-      <select class="btn small" data-a="export">
+      ${hasReport ? `<select class="btn small" data-a="export" aria-label="Export">
         <option value="">Export\u2026</option>
         <option value="md">Markdown (+annotations)</option>
         <option value="md-rec">Markdown, with sub-reports</option>
@@ -338,13 +498,13 @@ async function renderSession(v, t) {
         <option value="audio-full">Audio: full report (AI voice)</option>
         <option value="audio-summary">Audio: AI voice summary</option>
         <option value="brief">Brief: executive / slides / email</option>
-      </select>
-      ${running ? `<button class="btn small danger" data-a="cancel">Cancel run</button>` : ""}
+      </select>` : ""}
+      ${running ? `<button class="btn small danger" data-a="cancel">Stop research</button>` : ""}
       <button class="btn small danger" data-a="delete" title="Delete session">Delete</button>
     </div>
     <div class="reader">
       <div class="dossier">
-        <h1>${esc(s.prompt)}</h1>
+        <h1>${esc(texToText(s.prompt))}</h1>
         <div class="meta">
           <span class="status-badge ${esc(s.status)}">${esc(s.status)}</span>
           <span>SESSION <b>#${s.id}</b></span>
@@ -356,28 +516,43 @@ async function renderSession(v, t) {
         </div>
       </div>
       <div class="listenbar" hidden></div>
-      <div class="findbar" hidden>
-        <input class="inline-input" placeholder="Find in report\u2026" style="max-width:320px">
-        <span class="mono dim find-count" style="align-self:center"></span>
+      <div class="findbar" hidden role="search">
+        <input class="inline-input" placeholder="Find in report\u2026" style="max-width:320px" aria-label="Find in report">
+        <span class="mono dim find-count" style="align-self:center" aria-live="polite"></span>
+        <button class="icon-btn" data-find="prev" title="Previous (Shift+Enter)" aria-label="Previous match">\u2191</button>
+        <button class="icon-btn" data-find="next" title="Next (Enter)" aria-label="Next match">\u2193</button>
+        <button class="icon-btn" data-find="close" title="Close (Esc)" aria-label="Close find">\u2715</button>
       </div>
       <article class="md" id="report"></article>
-      ${s.result && !running ? '<section class="lab-panel" id="lab-panel"></section>' : ""}
+      ${hasReport && !running ? '<section class="lab-panel" id="lab-panel"></section>' : ""}
     </div>
-    <div class="dock">
+    ${broken ? "" : `<div class="dock">`}
       <div class="dock-ds" id="ask-ds" ${running ? "hidden" : ""}></div>
       <div class="dock-inner">
-        <textarea rows="1" placeholder="${running ? "Follow-ups unlock when the run finishes\u2026" : (window.innerWidth < 820 ? "Ask a follow-up about this research\u2026" : "Ask a follow-up about this research\u2026 (Enter to send, Shift+Enter for newline)")}" ${running ? "disabled" : ""}></textarea>
+        <textarea id="ask-q" rows="1" placeholder="${running ? "Follow-ups unlock when the run finishes\u2026" : (window.innerWidth < 820 ? "Ask a follow-up about this research\u2026" : "Ask a follow-up about this research\u2026 (Enter to send, Shift+Enter for newline)")}" ${running ? "disabled" : ""}></textarea>
         <button class="btn primary" data-a="ask" ${running ? "disabled" : ""}>Ask</button>
       </div>
     </div>`;
+  if (broken) v.innerHTML = v.innerHTML.replace(/<div class="dock-ds"[\s\S]*$/, "");
   const art = v.querySelector("#report");
-  if (s.result) {
+  if (hasReport) {
     art.innerHTML = renderMd(s.result);
     art.querySelectorAll("a[href^='http']").forEach((a) => { a.target = "_blank"; a.rel = "noopener noreferrer"; });
     art.querySelectorAll("h1,h2,h3,h4").forEach((h, i) => (h.id = `h-${i}-${slug(h.textContent)}`));
-    applyAnnotations(art, s.annotations);
+    // Citations first: highlights are saved against the text the reader sees (with
+    // citation chips), so they must be applied to that same text.
     CITE.decorate(art, s.result);
+    applyAnnotations(art, s.annotations);
+    if (S.flashAnn) {
+      const m = art.querySelector(`mark.ann[data-ann="${S.flashAnn}"]`); S.flashAnn = null;
+      if (m) setTimeout(() => { m.scrollIntoView({ block: "center", behavior: "smooth" }); m.classList.add("flash"); setTimeout(() => m.classList.remove("flash"), 1600); }, 250);
+    }
     const lp = v.querySelector("#lab-panel"); if (lp) LAB.mount(lp, s);
+  } else if (broken) {
+    const why = (s.result || "").trim();
+    art.innerHTML = `<div class="run-error"><div class="run-error-h">This research ${s.status === "cancelled" ? "was cancelled" : s.status === "crashed" ? "stopped unexpectedly" : "failed"}${why ? "" : " before it produced a report"}.</div>
+      ${why ? `<pre class="run-error-msg">${esc(clip(why, 2000))}</pre>` : ""}
+      <div class="dim">Re-run asks the same question again${s.parent_id ? " (from the parent report)" : ""}. ${/api key/i.test(why) ? "The API key was rejected: run <span class=\"mono\">deep-research auth login</span> first." : ""}</div></div>`;
   } else {
     art.innerHTML = `<div class="empty-result ${running ? "scan" : ""}">${running ? "Research in progress. The live log is streaming in the right panel." : "No result stored for this session."}</div>`;
   }
@@ -385,30 +560,33 @@ async function renderSession(v, t) {
   renderRight();
 
   // toolbar
-  v.querySelector('[data-a="star"]').onclick = async () => {
+  const starBtn = v.querySelector('[data-a="star"]');
+  starBtn.onclick = () => busy(starBtn, async () => {
     const m = await api(`/api/sessions/${s.id}/meta`, { method: "PATCH", body: { starred: !s.meta.starred } });
-    s.meta = m; toast(m.starred ? "Starred" : "Unstarred"); loadSessions(); renderStage();
-  };
-  v.querySelector('[data-a="copy"]').onclick = () => copyText(s.result || "");
-  v.querySelector('[data-a="to-nb"]').onclick = () => NB.append(`## ${s.prompt}\n\n${s.result || ""}\n\n*Source: Session #${s.id}*\n`);
+    s.meta = m; toast(m.starred ? "Starred" : "Unstarred");
+    starBtn.dataset.keepLabel = "1"; starBtn.textContent = m.starred ? "\u2605 Starred" : "\u2606 Star"; // no re-render: keep the reading position
+    loadSessions().catch(() => {});
+  });
+  v.querySelector('[data-a="copy"]')?.addEventListener("click", () => copyText(s.result || ""));
+  v.querySelector('[data-a="to-nb"]')?.addEventListener("click", safe(() => NB.append(`## ${s.prompt}\n\n${s.result || ""}\n\n*Source: Session #${s.id}*\n`)));
   v.querySelector('[data-a="tree"]')?.addEventListener("click", () => openTree(s.id));
   v.querySelector('[data-a="listen"]')?.addEventListener("click", () => READER.toggle(v, art, s));
-  v.querySelector('[data-a="rerun"]')?.addEventListener("click", async () => {
+  const rerunBtn = v.querySelector('[data-a="rerun"]');
+  rerunBtn?.addEventListener("click", () => busy(rerunBtn, async () => {
     const d = s.run?.depth || s.depth || 1, b = s.run?.breadth || 3;
     let est = null; try { est = await api("/api/estimate", { method: "POST", body: { depth: d, breadth: b } }); } catch { /* ignore */ }
-    if (!(await confirmBox(`Re-run #${s.id}?`, `Runs the same question again (depth ${d}) so you can compare what changed.${est ? ` Estimated cost about $${est.cost_usd.toFixed(2)}.` : ""}`, "Re-run"))) return;
-    try {
-      const r = await api("/api/research", { method: "POST", body: { prompt: s.prompt, depth: d, breadth: b, rerun_of: s.id } });
-      toast(`Re-run #${r.id} launched`, "ok"); S.rtab = "log"; await loadSessions(); openSession(r.id);
-    } catch (e) { toast(e.message, "err"); }
-  });
+    if (!(await confirmBox(`Re-run #${s.id}?`, `Runs the same question again (depth ${d})${broken ? "" : " so you can compare what changed"}.${est ? ` Estimated cost about $${est.cost_usd.toFixed(2)}.` : ""}`, "Re-run"))) return;
+    const r = await api("/api/research", { method: "POST", body: { prompt: s.prompt, depth: d, breadth: b, rerun_of: s.id } });
+    toast(`Re-run #${r.id} launched`, "ok"); S.rtab = "log"; await loadSessions(); openSession(r.id);
+  }));
   v.querySelector('[data-a="compare"]')?.addEventListener("click", () => {
     const other = s.run?.rerun_of || s.reruns[s.reruns.length - 1];
     const [a, b] = [Math.min(s.id, other), Math.max(s.id, other)];
     openCompare(a, b);
   });
   v.querySelector("[data-open]")?.addEventListener("click", (e) => { e.preventDefault(); openSession(e.target.dataset.open); });
-  v.querySelector('[data-a="export"]').onchange = async (e) => {
+  const exp = v.querySelector('[data-a="export"]');
+  if (exp) exp.onchange = safe(async (e) => {
     const f = e.target.value; e.target.value = "";
     if (!f) return;
     if (f === "print") return window.print();
@@ -419,14 +597,15 @@ async function renderSession(v, t) {
     const fmt = f === "json" ? "json" : "md";
     const out = await api(`/api/sessions/${s.id}/export?format=${fmt}${rec}`);
     download(out.filename, fmt === "json" ? JSON.stringify(out.content, null, 2) : out.content, fmt === "json" ? "application/json" : "text/markdown");
-  };
+  });
   v.querySelector('[data-a="cancel"]')?.addEventListener("click", async () => {
-    if (!(await confirmBox("Cancel this run?", "Stops the background process and asks Gemini to cancel the interaction."))) return;
+    if (!(await confirmBox("Stop this research?", "Stops the background process and asks Gemini to cancel the interaction.", "Stop research", "Keep running"))) return;
     try { const r = await api(`/api/sessions/${s.id}/cancel`, { method: "POST" }); toast(r.notes.join("; ") || "Cancelled"); }
     catch (err) { toast(err.message, "err"); }
     delete S.cache[s.id]; loadSessions(); renderStage();
   });
-  v.querySelector('[data-a="delete"]').onclick = async () => {
+  const delBtn = v.querySelector('[data-a="delete"]');
+  delBtn.onclick = () => busy(delBtn, async () => {
     const hasKids = s.children.length > 0;
     const ok = await confirmBox(`Delete session #${s.id}?`, `This removes it from local history${hasKids ? ` along with its ${s.children.length} direct sub-task(s) and their descendants` : ""}, plus its annotations. It cannot be undone.`, "Delete");
     if (!ok) return;
@@ -434,20 +613,40 @@ async function renderSession(v, t) {
     catch (err) { toast(err.message, "err"); return; }
     toast(`Deleted #${s.id}`, "ok"); delete S.cache[s.id];
     closeTab(t.key); loadSessions(); loadStats();
-  };
-  // find
+  });
+  // find: Enter / Shift+Enter step through matches, "3 of 471", Esc closes and clears
   const fb = v.querySelector(".findbar");
   const findInput = fb.querySelector("input");
-  v.querySelector('[data-a="find"]').onclick = () => { fb.hidden = !fb.hidden; if (!fb.hidden) findInput.focus(); };
+  let marks = [], cur = -1;
+  const count = fb.querySelector(".find-count");
+  const clearFind = () => { $$("mark.find", art).forEach((m) => m.replaceWith(...m.childNodes)); art.normalize(); marks = []; cur = -1; };
+  const step = (d) => {
+    if (!marks.length) return;
+    marks[cur]?.classList.remove("cur");
+    cur = (cur + d + marks.length) % marks.length;
+    marks[cur].classList.add("cur");
+    marks[cur].scrollIntoView({ block: "center", behavior: "smooth" });
+    count.textContent = `${cur + 1} of ${marks.length}`;
+  };
+  const closeFind = () => { clearFind(); findInput.value = ""; count.textContent = ""; fb.hidden = true; };
+  v.querySelector('[data-a="find"]')?.addEventListener("click", () => { if (fb.hidden) { fb.hidden = false; findInput.focus(); findInput.select(); } else closeFind(); });
   findInput.oninput = debounce(() => {
-    $$("mark.find", art).forEach((m) => m.replaceWith(...m.childNodes));
-    art.normalize();
+    clearFind();
     const q = findInput.value.trim();
-    if (q.length < 2) { fb.querySelector(".find-count").textContent = ""; return; }
-    const n = wrapText(art, q, () => { const m = document.createElement("mark"); m.className = "find"; return m; }, Infinity);
-    fb.querySelector(".find-count").textContent = `${n} match${n === 1 ? "" : "es"}`;
-    art.querySelector("mark.find")?.scrollIntoView({ block: "center", behavior: "smooth" });
+    if (q.length < 2) { count.textContent = ""; return; }
+    wrapText(art, q, () => { const m = document.createElement("mark"); m.className = "find"; return m; }, Infinity);
+    marks = [...art.querySelectorAll("mark.find")];
+    if (!marks.length) { count.textContent = "no matches"; return; }
+    step(1);
   }, 200);
+  findInput.onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); step(e.shiftKey ? -1 : 1); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeFind(); }
+  };
+  fb.querySelector('[data-find="next"]').onclick = () => step(1);
+  fb.querySelector('[data-find="prev"]').onclick = () => step(-1);
+  fb.querySelector('[data-find="close"]').onclick = closeFind;
+  if (broken) return;
   // follow-up dock
   const ta = v.querySelector(".dock textarea");
   const askBtn = v.querySelector('[data-a="ask"]');
@@ -456,17 +655,18 @@ async function renderSession(v, t) {
   const grow = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 160) + "px"; };
   ta.oninput = grow;
   ta.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); askBtn.click(); } };
-  askBtn.onclick = async () => {
+  ta.setAttribute("aria-label", "Ask a follow-up about this research");
+  askBtn.onclick = () => busy(askBtn, async () => {
     const q = ta.value.trim(); if (!q) return;
-    askBtn.disabled = true; askBtn.innerHTML = '<span class="spinner"></span>'; status(`follow-up on #${s.id}\u2026`);
+    askBtn.innerHTML = '<span class="spinner"></span>'; status(`follow-up on #${s.id}\u2026`);
     try {
       await api(`/api/sessions/${s.id}/followup`, { method: "POST", body: { prompt: q, data_sources: askSources() } });
       toast("Follow-up added to the report", "ok"); ta.value = "";
-      delete S.cache[s.id]; await renderStage();
-      setTimeout(() => { const r = $("#report"); r?.lastElementChild?.scrollIntoView({ behavior: "smooth", block: "end" }); }, 100);
-    } catch (e) { toast(e.message, "err"); askBtn.disabled = false; askBtn.textContent = "Ask"; }
-    status("ready");
-  };
+      if (VIEWSTATE[t.key]) delete VIEWSTATE[t.key].fields;
+      delete S.cache[s.id];
+      if (!stale(v)) { await renderStage(); setTimeout(() => { const r = $("#report"); r?.lastElementChild?.scrollIntoView({ behavior: "smooth", block: "end" }); }, 100); }
+    } finally { status("ready"); }
+  });
   if (S.pendingAsk) { ta.value = S.pendingAsk; S.pendingAsk = null; grow(); ta.focus(); }
 }
 
@@ -527,8 +727,8 @@ function applyAnnotations(art, anns) {
 // ---------------------------------------------------------------- selection toolbar
 let SEL = null;
 function hideSelbar() { $("#selbar").hidden = true; $("#selbar .sel-colors").hidden = true; SEL = null; }
-document.addEventListener("mouseup", (e) => {
-  if (e.target instanceof Element && e.target.closest("#selbar")) return;
+function onSelectionEnd(e) {
+  if (e && e.target instanceof Element && e.target.closest("#selbar")) return;
   setTimeout(() => {
     const sel = window.getSelection();
     const art = $("#report") || $(".nb .preview");
@@ -549,11 +749,30 @@ document.addEventListener("mouseup", (e) => {
     $$('[data-act="hl"],[data-act="note"],[data-act="ask"],[data-act="lab"]', bar).forEach((b) => (b.style.display = SEL.inNotebook ? "none" : ""));
     bar.querySelector(".sep").style.display = SEL.inNotebook ? "none" : "";
     const bw = bar.offsetWidth;
-    bar.style.left = Math.max(8, Math.min(window.innerWidth - bw - 8, rect.left + rect.width / 2 - bw / 2)) + "px";
-    bar.style.top = Math.max(60, rect.top - 44) + "px";
+    if (window.innerWidth < 820) {
+      // phones: dock it at the bottom, clear of the system selection menu
+      bar.classList.add("docked"); bar.style.left = ""; bar.style.top = "";
+    } else {
+      bar.classList.remove("docked");
+      bar.style.left = Math.max(8, Math.min(window.innerWidth - bw - 8, rect.left + rect.width / 2 - bw / 2)) + "px";
+      bar.style.top = Math.max(60, rect.top - 44) + "px";
+    }
   }, 10);
-});
-document.addEventListener("scroll", hideSelbar, true);
+}
+document.addEventListener("mouseup", onSelectionEnd);
+document.addEventListener("touchend", onSelectionEnd);
+// long-press selections on phones may not fire mouseup; follow the selection itself
+document.addEventListener("selectionchange", debounce(() => {
+  if (!("ontouchstart" in window)) return;
+  const t = window.getSelection()?.toString().trim();
+  if (t) onSelectionEnd(); else if (!$("#selbar").contains(document.activeElement)) hideSelbar();
+}, 350));
+// only hide on scroll of the reading area itself (and not when docked at the bottom)
+document.addEventListener("scroll", (e) => {
+  if ($("#selbar").classList.contains("docked")) return;
+  if (e.target instanceof Element && e.target.closest("#selbar, .palette, .modal")) return;
+  hideSelbar();
+}, true);
 $("#selbar").addEventListener("click", async (e) => {
   const b = e.target.closest("button"); if (!b || !SEL) return;
   const t = currentTab();
@@ -563,7 +782,7 @@ $("#selbar").addEventListener("click", async (e) => {
   if (act === "copy") { await copyText(SEL.text); }
   else if (act === "quote") {
     const src = sid ? `\n>\n> *Session #${sid}*` : "";
-    await NB.append("> " + SEL.text.replace(/\n+/g, "\n> ") + src + "\n");
+    try { await NB.append("> " + SEL.text.replace(/\n+/g, "\n> ") + src + "\n"); } catch (err) { toast(err.message, "err"); }
   } else if (act === "lab" && sid) {
     const s = S.cache[sid];
     if (s) LAB.startDialog(s, { scope: "selection", selection: SEL.text });
@@ -611,13 +830,24 @@ const NB = {
     const ta = $(".nb textarea");
     if (ta && NB.current === nb.id) { ta.value = content; NB.preview(); }
   },
+  rev: 0, // bumped on every edit; a save only clears `dirty` if nothing changed since it started
   async saveNow() {
     clearTimeout(NB.timer);
     const ta = $(".nb textarea"); const ti = $(".nb-title");
     if (!ta || !NB.current) { NB.dirty = false; return; }
-    const nb = await api(`/api/notebooks/${NB.current}`, { method: "PUT", body: { content: ta.value, title: ti.value } });
-    NB.dirty = false;
-    const st = $(".save-state"); if (st) { st.textContent = `saved ${new Date().toLocaleTimeString()}`; st.className = "save-state saved"; }
+    const rev = NB.rev;
+    const id = NB.current;
+    let nb;
+    try {
+      nb = await api(`/api/notebooks/${id}`, { method: "PUT", body: { content: ta.value, title: ti.value } });
+    } catch (e) {
+      const st = $(".save-state"); if (st) { st.textContent = "not saved"; st.className = "save-state dirty"; }
+      throw e;
+    }
+    if (NB.rev === rev) {
+      NB.dirty = false;
+      const st = $(".save-state"); if (st) { st.textContent = `saved ${new Date().toLocaleTimeString()}`; st.className = "save-state saved"; }
+    }
     const tab = S.tabs.find((t) => t.key === `n${nb.id}`); if (tab && tab.title !== nb.title) { tab.title = nb.title; saveTabs(); renderTabs(); }
   },
   preview() {
@@ -663,7 +893,7 @@ async function renderNotebook(v, t) {
     b.onclick = () => { localStorage.setItem("dr.nbmode", b.dataset.m); v.querySelector(".nb").className = `nb mode-${b.dataset.m}`; $$("#nbmode button", v).forEach((x) => x.classList.toggle("on", x === b)); };
   });
   const dirty = () => {
-    NB.dirty = true; const st = v.querySelector(".save-state"); st.textContent = "unsaved"; st.className = "save-state dirty";
+    NB.dirty = true; NB.rev++; const st = v.querySelector(".save-state"); st.textContent = "unsaved"; st.className = "save-state dirty";
     clearTimeout(NB.timer); NB.timer = setTimeout(() => NB.saveNow().catch((e) => toast(e.message, "err")), 900);
   };
   ta.oninput = () => { dirty(); NB.previewSoon(); };
@@ -711,32 +941,41 @@ function renderLaunch(v) {
     </div>
     ${noKey ? `<p class="warn">${S.health?.api_key ? "Google rejected the dashboard's GEMINI_API_KEY." : "GEMINI_API_KEY is not visible to the dashboard process."} Run <span class="mono">deep-research auth login</span>, then <span class="mono">deep-research dashboard --restart</span>.</p>` : ""}
     <div class="templates">${TEMPLATES.map(([n], i) => `<button data-t="${i}">${esc(n)}</button>`).join("")}</div>
-    <div class="field"><label>Research objective</label>
+    <div class="field"><label for="l-prompt">Research objective</label>
       <textarea id="l-prompt" placeholder="What do you want to know? Be specific about scope, timeframe, and what the output should contain.">${esc(pre.prompt || "")}</textarea></div>
     <div class="row">
-      <div class="field"><label>Depth (recursion)</label>
+      <div class="field"><label for="l-depth">Depth (recursion)</label>
         <div class="range-wrap"><input type="range" id="l-depth" min="1" max="4" value="1"><output id="o-depth">1</output></div></div>
-      <div class="field"><label>Breadth (sub-tasks per level)</label>
+      <div class="field"><label for="l-breadth">Breadth (sub-tasks per level)</label>
         <div class="range-wrap"><input type="range" id="l-breadth" min="1" max="6" value="3"><output id="o-breadth">3</output></div></div>
     </div>
-    <div class="field"><label>Output format (optional)</label>
+    <div class="field"><label for="l-format">Output format (optional)</label>
       <input id="l-format" placeholder='e.g. "Executive summary, then a Markdown comparison table"'></div>
-    <div class="field"><label>Your documents (optional)</label>
-      <div class="drop" id="l-drop">Drop files here or click to choose. They are uploaded to a temporary File Search Store for this run.</div>
+    <div class="field"><label id="l-drop-label">Your documents (optional)</label>
+      <div class="drop" id="l-drop" role="button" tabindex="0" aria-labelledby="l-drop-label">Drop files here or click to choose. They are uploaded to a temporary File Search Store for this run.</div>
       <input type="file" id="l-file" multiple hidden>
       <div class="filelist" id="l-files"></div></div>
     <div class="field"><label>Data sources (optional)</label>
       <div id="l-ds"></div>
       <div class="dim" style="font-size:11.5px;margin-top:4px">Readable files (text, CSV, JSON, PDF, Office) are fetched on this machine and searched like uploads. Up to 200 files and 200 MB per source; use a Lab run for bigger data.</div></div>
-    <div class="field"><label>Existing File Search Stores (optional, space separated)</label>
-      <input id="l-stores" placeholder="fileSearchStores/abc123"></div>
+    <div class="field"><label for="l-stores">Existing File Search Stores (optional, space separated)</label>
+      <input id="l-stores" placeholder="fileSearchStores/abc123" list="l-stores-list"><datalist id="l-stores-list"></datalist></div>
     <div class="estimate" id="l-est"></div>
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
       <button class="btn primary" id="l-go" ${noKey ? "disabled" : ""}>Launch research \u2192</button>
     </div>
   </div>`;
-  const uploads = [];
-  const launchSources = typeof SRC !== "undefined" ? SRC.picker($("#l-ds"), (S.launchPrefill && S.launchPrefill.data_sources) || []) : () => [];
+  // uploads and picked sources live on the tab, so switching tabs keeps them
+  const tab = currentTab() || {};
+  const uploads = (tab.uploads = tab.uploads || []);
+  const launchSources = typeof SRC !== "undefined"
+    ? SRC.picker($("#l-ds"), tab.ds || (S.launchPrefill && S.launchPrefill.data_sources) || [], (names) => { tab.ds = names; })
+    : () => [];
+  api("/api/stores").then((r) => {
+    const dl = v.querySelector("#l-stores-list");
+    if (dl) dl.innerHTML = (r.stores || []).map((x) => `<option value="${esc(x.name)}">${esc(x.display_name || "")}</option>`).join("");
+  }).catch(() => { /* optional */ });
+  let pending = 0; // files still uploading; Launch waits for them
   const est = debounce(async () => {
     const d = +$("#l-depth").value, b = +$("#l-breadth").value;
     $("#o-depth").textContent = d; $("#o-breadth").textContent = b;
@@ -753,29 +992,44 @@ function renderLaunch(v) {
     $("#l-files").innerHTML = uploads.map((u, i) => `<span class="filechip">${esc(u.name)} <span class="dim">${fmtN(Math.round(u.size / 1024))}KB</span><button data-rm="${i}">\u00d7</button></span>`).join("");
     $$("[data-rm]", v).forEach((b) => (b.onclick = () => { uploads.splice(+b.dataset.rm, 1); renderFiles(); est(); }));
   };
+  const goBtn = () => v.querySelector("#l-go");
   const addFiles = async (files) => {
-    for (const f of files) {
-      if (f.size > 18 * 1024 * 1024) { toast(`${f.name} is over 18 MB`, "err"); continue; }
-      status(`uploading ${f.name}\u2026`);
-      const data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1] || ""); r.onerror = rej; r.readAsDataURL(f); });
-      try { uploads.push(await api("/api/uploads", { method: "POST", body: { name: f.name, data } })); }
-      catch (e) { toast(e.message, "err"); }
+    pending += files.length;
+    if (goBtn()) { goBtn().disabled = true; goBtn().textContent = "Uploading files\u2026"; }
+    try {
+      for (const f of files) {
+        try {
+          if (f.size > 18 * 1024 * 1024) { toast(`${f.name} is over 18 MB`, "err"); continue; }
+          status(`uploading ${f.name}\u2026`);
+          const data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1] || ""); r.onerror = () => rej(new Error(`could not read ${f.name}`)); r.readAsDataURL(f); });
+          uploads.push(await api("/api/uploads", { method: "POST", body: { name: f.name, data } }));
+        } catch (e) { toast(e.message, "err"); }
+        finally { pending--; }
+      }
+    } finally {
+      status(pending ? "uploading\u2026" : "ready");
+      if (!stale(v)) {
+        renderFiles(); est();
+        if (!pending && goBtn()) { goBtn().disabled = !!noKey; goBtn().innerHTML = "Launch research \u2192"; }
+      }
     }
-    status("ready"); renderFiles(); est();
   };
+  renderFiles();
   const drop = $("#l-drop");
   drop.onclick = () => $("#l-file").click();
+  drop.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("#l-file").click(); } };
   $("#l-file").onchange = (e) => addFiles([...e.target.files]);
   drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
   drop.ondragleave = () => drop.classList.remove("over");
   drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); addFiles([...e.dataTransfer.files]); };
-  $("#l-go").onclick = async () => {
+  $("#l-go").onclick = () => busy($("#l-go"), async () => {
+    if (pending) return toast("Wait for the files to finish uploading", "err");
     const prompt = $("#l-prompt").value.trim();
-    if (!prompt) return toast("Write a research objective first", "err");
+    if (!prompt) { $("#l-prompt").focus(); return toast("Write a research objective first", "err"); }
     const d = +$("#l-depth").value;
     if (d > 1 && !(await confirmBox("Launch recursive research?", `Depth ${d} runs ${$("#l-est").querySelector("b")?.textContent || "several"} agent tasks. Check the cost estimate.`, "Launch"))) return;
-    $("#l-go").disabled = true; $("#l-go").innerHTML = '<span class="spinner"></span> Launching';
-    try {
+    $("#l-go").innerHTML = '<span class="spinner"></span> Launching';
+    {
       const r = await api("/api/research", { method: "POST", body: {
         prompt, depth: d, breadth: +$("#l-breadth").value, format: $("#l-format").value,
         uploads: uploads.map((u) => u.path), stores: $("#l-stores").value.split(/\s+/).filter(Boolean),
@@ -784,11 +1038,12 @@ function renderLaunch(v) {
       toast(`Research #${r.id} launched`, "ok");
       NOTIFY.ask();
       S.launchPrefill = null;
+      tab.uploads = []; tab.ds = null; delete VIEWSTATE.launch;
       closeTab("launch"); S.rtab = "log";
       await loadSessions(); loadStats();
       openSession(r.id);
-    } catch (e) { toast(e.message, "err"); $("#l-go").disabled = false; $("#l-go").textContent = "Launch research \u2192"; }
-  };
+    }
+  });
   $("#l-prompt").focus();
 }
 
@@ -806,13 +1061,10 @@ function renderSearch(v) {
     </div>
     <div id="sres"></div>
   </div>`;
-  const go = async () => {
-    const q = $("#sq").value.trim(); if (!q) return;
-    $("#sgo").disabled = true;
-    $("#sres").innerHTML = `<div class="empty-result scan">Embedding and ranking\u2026</div>`;
-    try {
-      const r = await api("/api/search", { method: "POST", body: { query: q, limit: 6, synthesize: $("#ssyn").checked } });
-      $("#sres").innerHTML = `
+  const res = v.querySelector("#sres");
+  const show = (q, r) => {
+    const $v = (sel) => v.querySelector(sel);
+      res.innerHTML = `
         ${r.embedded_now ? `<p class="dim mono">Indexed ${r.embedded_now} new session(s).</p>` : ""}
         ${r.answer ? `<div class="card" style="margin-bottom:14px"><h3>Synthesized answer</h3><div class="md" id="sans">${renderMd(r.answer)}</div>
            <div style="margin-top:10px;display:flex;gap:6px"><button class="btn small" id="scopy">Copy</button><button class="btn small" id="snb">\u2192 Notebook</button></div></div>` : ""}
@@ -820,32 +1072,56 @@ function renderSearch(v) {
           <div class="match" data-id="${m.id}"><div class="score">${(m.score * 100).toFixed(1)}</div>
           <div style="flex:1"><div>${esc(clip(m.prompt, 200))}</div><div class="bar"><i style="width:${Math.max(4, m.score * 100)}%"></i></div></div>
           <div class="mono dim">#${m.id}</div></div>`).join("") || '<div class="dim">No indexed sessions.</div>'}</div>`;
-      $$(".match", v).forEach((m) => (m.onclick = () => openSession(m.dataset.id)));
-      $("#sans")?.addEventListener("click", (e) => {
+      $$(".match", v).forEach((m) => {
+        m.tabIndex = 0; m.setAttribute("role", "link");
+        m.onclick = () => openSession(m.dataset.id);
+        m.onkeydown = (e) => { if (e.key === "Enter") openSession(m.dataset.id); };
+      });
+      $v("#sans")?.addEventListener("click", (e) => {
         const a = e.target.textContent.match(/Session #(\d+)/); if (a) openSession(a[1]);
       });
-      $("#scopy")?.addEventListener("click", () => copyText(r.answer));
-      $("#snb")?.addEventListener("click", () => NB.append(`### Search: ${q}\n\n${r.answer}\n`));
-    } catch (e) { $("#sres").innerHTML = `<div class="empty-result">${esc(e.message)}</div>`; }
-    $("#sgo").disabled = false;
+      $v("#scopy")?.addEventListener("click", () => copyText(r.answer));
+      $v("#snb")?.addEventListener("click", safe(() => NB.append(`### Search: ${q}\n\n${r.answer}\n`)));
   };
-  $("#sgo").onclick = go;
-  $("#sq").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); go(); } };
-  $("#sq").focus();
+  // the last answer stays with the tab (it was a paid call); switching away keeps it
+  const t = currentTab();
+  if (t?.last) { v.querySelector("#sq").value = t.last.q; show(t.last.q, t.last.r); }
+  const go = async () => {
+    const q = v.querySelector("#sq").value.trim(); if (!q) return;
+    const btn = v.querySelector("#sgo");
+    await busy(btn, async () => {
+      res.innerHTML = `<div class="empty-result scan">Embedding and ranking\u2026</div>`;
+      try {
+        const r = await api("/api/search", { method: "POST", body: { query: q, limit: 6, synthesize: v.querySelector("#ssyn").checked } });
+        if (t) t.last = { q, r };
+        if (!stale(v)) show(q, r);
+      } catch (e) { if (!stale(v)) res.innerHTML = `<div class="empty-result">${esc(e.message)}</div>`; }
+    });
+  };
+  v.querySelector("#sgo").onclick = go;
+  v.querySelector("#sq").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); go(); } };
+  v.querySelector("#sq").focus();
 }
 
 // ---------------------------------------------------------------- tree
 async function renderTree(v, t) {
   v.innerHTML = `<div class="pad"><div class="empty-result scan">Loading tree\u2026</div></div>`;
-  const tree = await api(`/api/sessions/${t.id}/tree`);
+  let tree;
+  try { tree = await api(`/api/sessions/${t.id}/tree`); }
+  catch (e) { if (!stale(v)) v.innerHTML = `<div class="pad"><div class="empty-result">Could not load the tree: ${esc(e.message)} <button class="btn small" id="t-retry">Retry</button></div></div>`; v.querySelector("#t-retry")?.addEventListener("click", () => renderTree(v, t)); return; }
+  if (stale(v)) return;
   const node = (n) => `<li><div class="tnode" data-id="${n.id}"><span class="st ${esc(n.status)}"></span>
     <div><div class="mono dim" style="font-size:10.5px">#${n.id} \u00b7 depth ${n.depth} \u00b7 ${esc(n.status)}</div><div>${esc(clip(n.prompt, 180))}</div></div></div>
     ${n.children.length ? `<ul>${n.children.map(node).join("")}</ul>` : ""}</li>`;
   v.innerHTML = `<div class="vbar"><span class="title">Research tree</span><span class="grow"></span>
     <button class="btn small" id="t-rec">Export full report (Markdown)</button></div>
     <div class="pad tree"><ul>${node(tree)}</ul></div>`;
-  $$(".tnode", v).forEach((n) => (n.onclick = () => openSession(n.dataset.id)));
-  $("#t-rec").onclick = async () => { const o = await api(`/api/sessions/${t.id}/export?format=md&recursive=1`); download(o.filename.replace(".md", "_tree.md"), o.content); };
+  $$(".tnode", v).forEach((n) => {
+    n.tabIndex = 0; n.setAttribute("role", "link");
+    n.onclick = () => openSession(n.dataset.id);
+    n.onkeydown = (e) => { if (e.key === "Enter") openSession(n.dataset.id); };
+  });
+  $("#t-rec").onclick = () => busy($("#t-rec"), async () => { const o = await api(`/api/sessions/${t.id}/export?format=md&recursive=1`); download(o.filename.replace(".md", "_tree.md"), o.content); });
 }
 
 // ---------------------------------------------------------------- right inspector
@@ -899,7 +1175,7 @@ function renderRight() {
         <input placeholder="+ tag" id="tag-in"></div>
       ${s.files.length ? `<div class="section label">Files</div>${s.files.map((f) => `<div class="mono dim" style="font-size:11px;word-break:break-all">${esc(f)}</div>`).join("")}` : ""}
       ${s.children.length ? `<div class="section label">Sub-tasks</div><div class="children">${s.children.map((c) => `<a data-id="${c.id}"><span class="st ${esc(c.status)}" style="display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px"></span>#${c.id} ${esc(clip(c.prompt, 90))}</a>`).join("")}</div>` : ""}
-      <div class="section label">Sources</div>
+      <div class="section label">Citations</div>
       <div id="srcs"></div>`;
     const srcs = extractSources(s.result || "");
     $("#srcs").innerHTML = srcs.slice(0, 120).map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer" class="src" title="${esc(x.url)}"><span>${esc(x.label)}</span>${x.n > 1 ? `<i>${x.n}</i>` : ""}</a>`).join("") || '<div class="dim">No links found in the report.</div>';
@@ -907,38 +1183,56 @@ function renderRight() {
     COST.fill(s);
     AUDIO.fillList("session", s.id);
     $$(".children a", body).forEach((a) => (a.onclick = () => openSession(a.dataset.id)));
-    const saveTags = async (tags) => { s.meta = await api(`/api/sessions/${s.id}/meta`, { method: "PATCH", body: { tags } }); renderRight(); loadSessions(); };
-    $("#tag-in").onkeydown = (e) => { if (e.key === "Enter" && e.target.value.trim()) saveTags([...s.meta.tags, e.target.value.trim()]); };
-    $$("#tags button", body).forEach((b) => (b.onclick = () => saveTags(s.meta.tags.filter((_, i) => i !== +b.dataset.i))));
+    let saving = false;
+    const saveTags = safe(async (tags) => {
+      if (saving) return; saving = true;
+      try { s.meta = await api(`/api/sessions/${s.id}/meta`, { method: "PATCH", body: { tags } }); renderRight(); loadSessions().catch(() => {}); }
+      finally { saving = false; }
+    });
+    const tagIn = $("#tag-in");
+    tagIn.setAttribute("aria-label", "Add a tag");
+    tagIn.onkeydown = (e) => {
+      if (e.key !== "Enter") return;
+      const tag = e.target.value.trim(); if (!tag) return;
+      e.target.value = "";
+      if (s.meta.tags.some((x) => x.toLowerCase() === tag.toLowerCase())) return; // no duplicates
+      saveTags([...s.meta.tags, tag]);
+    };
+    $$("#tags button", body).forEach((b) => { b.setAttribute("aria-label", `Remove tag ${s.meta.tags[+b.dataset.i]}`); b.onclick = () => saveTags(s.meta.tags.filter((_, i) => i !== +b.dataset.i)); });
   } else if (S.rtab === "notes") {
     body.innerHTML = `
       <div class="dim" style="font-size:11.5px;margin-bottom:8px">Select text in the report to highlight it or attach a note.</div>
       ${s.annotations.map((a) => `
         <div class="ann-card ${esc(a.color)}" data-id="${a.id}">
           <div class="q">\u201c${esc(a.quote)}\u201d</div>
-          <textarea placeholder="Add a note\u2026">${esc(a.note)}</textarea>
-          <div class="acts"><button data-a="nb">\u2192 notebook</button><button data-a="copy">copy</button><button data-a="del">delete</button></div>
+          <textarea placeholder="Add a note\u2026" aria-label="Note for this highlight">${esc(a.note)}</textarea>
+          <div class="acts"><span class="note-state dim" aria-live="polite"></span><button data-a="nb">\u2192 notebook</button><button data-a="copy">copy</button><button data-a="del">delete</button></div>
         </div>`).join("") || '<div class="empty-result" style="padding:18px">No annotations yet.</div>'}
       ${s.annotations.length ? '<button class="btn small" id="all-nb" style="margin-top:8px">Send all to notebook</button>' : ""}`;
     $$(".ann-card", body).forEach((card) => {
       const a = s.annotations.find((x) => x.id == card.dataset.id);
       card.querySelector(".q").onclick = () => { const m = $(`mark.ann[data-ann="${a.id}"]`); if (m) { m.scrollIntoView({ block: "center", behavior: "smooth" }); m.classList.add("flash"); setTimeout(() => m.classList.remove("flash"), 1400); } };
       const ta = card.querySelector("textarea");
-      ta.oninput = debounce(async () => {
-        const u = await api(`/api/annotations/${a.id}`, { method: "PATCH", body: { note: ta.value } });
-        Object.assign(a, u);
-        $$(`mark.ann[data-ann="${a.id}"]`).forEach((m) => { m.classList.toggle("has-note", !!u.note); m.title = u.note || "Highlight"; });
+      const st = card.querySelector(".note-state");
+      const saveNote = debounce(async () => {
+        try {
+          const u = await api(`/api/annotations/${a.id}`, { method: "PATCH", body: { note: ta.value } });
+          Object.assign(a, u);
+          st.textContent = "saved"; st.className = "note-state dim";
+          $$(`mark.ann[data-ann="${a.id}"]`).forEach((m) => { m.classList.toggle("has-note", !!u.note); m.title = u.note || "Highlight"; });
+        } catch (e) { st.textContent = "not saved"; st.className = "note-state bad"; toast(`Note not saved: ${e.message}`, "err"); }
       }, 500);
+      ta.oninput = () => { st.textContent = "\u2026"; saveNote(); };
       card.querySelector('[data-a="copy"]').onclick = () => copyText(`> ${a.quote}\n\n${a.note}`);
-      card.querySelector('[data-a="nb"]').onclick = () => NB.append(`> ${a.quote.replace(/\n+/g, "\n> ")}\n>\n> *Session #${s.id}*\n\n${a.note}\n`);
-      card.querySelector('[data-a="del"]').onclick = async () => {
+      card.querySelector('[data-a="nb"]').onclick = safe(() => NB.append(`> ${a.quote.replace(/\n+/g, "\n> ")}\n>\n> *Session #${s.id}*\n\n${a.note}\n`));
+      card.querySelector('[data-a="del"]').onclick = safe(async () => {
         await api(`/api/annotations/${a.id}`, { method: "DELETE" });
         s.annotations = s.annotations.filter((x) => x.id !== a.id);
         $$(`mark.ann[data-ann="${a.id}"]`).forEach((m) => m.replaceWith(...m.childNodes));
         renderRight(); loadStats();
-      };
+      });
     });
-    $("#all-nb")?.addEventListener("click", () => NB.append(`## Notes on: ${s.prompt}\n\n` + s.annotations.map((a) => `> ${a.quote.replace(/\n+/g, "\n> ")}\n\n${a.note}`).join("\n\n") + `\n\n*Source: Session #${s.id}*\n`));
+    $("#all-nb")?.addEventListener("click", safe(() => NB.append(`## Notes on: ${s.prompt}\n\n` + s.annotations.map((a) => `> ${a.quote.replace(/\n+/g, "\n> ")}\n\n${a.note}`).join("\n\n") + `\n\n*Source: Session #${s.id}*\n`)));
   } else if (S.rtab === "outline") {
     const hs = $$("#report h1, #report h2, #report h3, #report h4");
     body.innerHTML = `<div class="outline">${hs.map((h) => `<a href="#" data-h="${h.id}" style="--lvl:${+h.tagName[1] - 1}">${esc(h.textContent)}</a>`).join("") || '<div class="dim">No headings in this report.</div>'}</div>`;
@@ -957,23 +1251,26 @@ function colorLog(text) {
     .replace(/^(.*\[(?:ERROR|CRITICAL ERROR)\].*)$/gm, '<span class="er">$1</span>')
     .replace(/^(.*\[WARN\].*)$/gm, '<span class="wa">$1</span>');
 }
-function stopLog() { clearTimeout(LOG.timer); LOG.sid = null; TIMELINE.stop(); }
+let LOG_GEN = 0;
+function stopLog() { clearTimeout(LOG.timer); LOG.sid = null; LOG_GEN++; TIMELINE.stop(); }
 async function startLog(s) {
   stopLog();
-  LOG = { sid: s.id, offset: 0, timer: null };
+  const gen = LOG_GEN; // a tick from an older loop (same session, re-rendered) stops itself
+  const me = (LOG = { sid: s.id, offset: 0, timer: null });
   const el = $("#log");
   const tick = async () => {
-    if (LOG.sid !== s.id || !$("#log")) return;
+    if (gen !== LOG_GEN || !el.isConnected) return;
     try {
-      const r = await api(`/api/sessions/${s.id}/log?offset=${LOG.offset}`);
-      if (!r.exists) { el.innerHTML = '<span class="dim">No log file for this session (runs started with `research` in a terminal log to that terminal).</span>'; }
+      const r = await api(`/api/sessions/${s.id}/log?offset=${me.offset}`);
+      if (gen !== LOG_GEN || !el.isConnected) return;
+      if (!r.exists) { el.innerHTML = '<span class="dim">No log file for this session (runs started with <span class="mono">deep-research research</span> in a terminal log to that terminal).</span>'; }
       else if (r.text) {
         const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
-        if (LOG.offset === 0) el.innerHTML = "";
+        if (me.offset === 0) el.innerHTML = "";
         el.insertAdjacentHTML("beforeend", colorLog(r.text));
         if (stick) el.scrollTop = el.scrollHeight;
       }
-      LOG.offset = r.size || LOG.offset;
+      me.offset = r.size || me.offset;
       // detect completion so the reader refreshes itself
       const fresh = S.sessions.find((x) => x.id === s.id);
       if (s.status === "running" && fresh && fresh.status !== "running") {
@@ -981,25 +1278,101 @@ async function startLog(s) {
         S.rtab = "info"; renderStage(); return;
       }
     } catch { /* transient */ }
-    LOG.timer = setTimeout(tick, s.status === "running" ? 2000 : 15000);
+    if (gen === LOG_GEN) me.timer = setTimeout(tick, s.status === "running" ? 2000 : 15000);
   };
   tick();
 }
 
 // ---------------------------------------------------------------- modal + palette
-function confirmBox(title, body, okLabel = "Confirm") {
-  return new Promise((resolve) => {
-    $("#modal").innerHTML = `<h3>${esc(title)}</h3><div class="dim">${esc(body)}</div>
-      <div class="acts"><button class="btn" data-x="0">Cancel</button><button class="btn ${okLabel === "Delete" ? "danger" : "primary"}" data-x="1">${esc(okLabel)}</button></div>`;
+// One modal at a time. MODAL.open() gives every dialog the same behaviour: role=dialog,
+// Escape and backdrop close it, Tab stays inside, focus returns to where it was, and an
+// optional dirty() check asks before throwing away edits.
+const MODAL = {
+  onClose: null, dirty: null, prevFocus: null, cls: "",
+  open(html, { onClose = null, dirty = null, cls = "", label = "" } = {}) {
+    this.close(true); // a replaced dialog is closed (and its promise settled) first
+    const m = $("#modal");
+    this.prevFocus = document.activeElement;
+    m.innerHTML = html;
+    m.className = "modal" + (cls ? " " + cls : "");
+    m.setAttribute("role", "dialog");
+    m.setAttribute("aria-modal", "true");
+    const h = m.querySelector("h3");
+    if (h) { h.id = "modal-title"; m.setAttribute("aria-labelledby", "modal-title"); m.removeAttribute("aria-label"); }
+    else if (label) m.setAttribute("aria-label", label);
+    this.onClose = onClose; this.dirty = dirty; this.cls = cls;
     $("#modal-back").hidden = false;
-    const done = (v) => { $("#modal-back").hidden = true; document.removeEventListener("keydown", key); resolve(v); };
-    const key = (e) => { if (e.key === "Escape") done(false); if (e.key === "Enter") done(true); };
-    document.addEventListener("keydown", key);
-    $$("#modal [data-x]").forEach((b) => (b.onclick = () => done(b.dataset.x === "1")));
-    $("#modal-back").onclick = (e) => { if (e.target.id === "modal-back") done(false); };
-    $('#modal [data-x="1"]').focus();
+    const first = m.querySelector("[autofocus], input, textarea, select, button:not([disabled])");
+    (first || m).focus?.();
+    return m;
+  },
+  get isOpen() { return !$("#modal-back").hidden; },
+  async requestClose() {
+    if (this.dirty && this.dirty() && !(await this._discard())) return false;
+    this.close();
+    return true;
+  },
+  _discard() {
+    // an inline confirm inside the open dialog (does not replace it)
+    return new Promise((res) => {
+      const bar = document.createElement("div");
+      bar.className = "modal-discard";
+      bar.innerHTML = `<span>Discard your changes?</span><button class="btn small" data-d="0">Keep editing</button><button class="btn small danger" data-d="1">Discard</button>`;
+      $("#modal").appendChild(bar);
+      bar.querySelector('[data-d="0"]').focus();
+      bar.onclick = (e) => { const b = e.target.closest("[data-d]"); if (!b) return; bar.remove(); res(b.dataset.d === "1"); };
+    });
+  },
+  close(replaced = false) {
+    if (!this.isOpen && !this.onClose) return;
+    const cb = this.onClose;
+    this.onClose = null; this.dirty = null;
+    $("#modal-back").hidden = true;
+    $("#modal").className = "modal";
+    if (cb) cb(replaced);
+    if (!replaced && this.prevFocus && document.contains(this.prevFocus)) this.prevFocus.focus?.();
+  },
+};
+$("#modal-back").addEventListener("mousedown", (e) => { if (e.target.id === "modal-back") MODAL.requestClose(); });
+document.addEventListener("keydown", (e) => {
+  if (!MODAL.isOpen) return;
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); MODAL.requestClose(); return; }
+  if (e.key === "Tab") {
+    const f = [...$("#modal").querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')].filter((x) => x.offsetParent !== null);
+    if (!f.length) return;
+    const i = f.indexOf(document.activeElement);
+    if (e.shiftKey && (i <= 0)) { e.preventDefault(); f[f.length - 1].focus(); }
+    else if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); f[0].focus(); }
+  }
+}, true);
+
+function confirmBox(title, body, okLabel = "Confirm", cancelLabel = "Cancel") {
+  // Enter activates whichever button has focus (the browser default); nothing
+  // document-wide listens for it, so a hidden dialog can never be confirmed.
+  // Destructive actions start with focus on Cancel.
+  const danger = /^(Delete|Remove|Stop|Discard)/i.test(okLabel);
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const m = MODAL.open(`<h3>${esc(title)}</h3><div class="dim">${esc(body)}</div>
+      <div class="acts"><button class="btn" data-x="0">${esc(cancelLabel)}</button><button class="btn ${danger ? "danger" : "primary"}" data-x="1">${esc(okLabel)}</button></div>`,
+      { onClose: () => settle(false) });
+    m.querySelectorAll("[data-x]").forEach((b) => (b.onclick = () => { const v = b.dataset.x === "1"; settle(v); MODAL.close(); }));
+    m.querySelector(danger ? '[data-x="0"]' : '[data-x="1"]').focus();
   });
 }
+// Runs an async click handler once at a time: the button is disabled until it ends and
+// any error becomes a toast instead of an unhandled rejection.
+async function busy(btn, fn) {
+  if (btn && btn.dataset.busy) return;
+  const label = btn ? btn.innerHTML : "";
+  if (btn) { btn.dataset.busy = "1"; btn.disabled = true; }
+  try { return await fn(); }
+  catch (e) { toast(e.message || String(e), "err"); }
+  finally { if (btn) { delete btn.dataset.busy; btn.disabled = false; if (btn.innerHTML !== label && btn.isConnected && !btn.dataset.keepLabel) btn.innerHTML = label; } }
+}
+// Wraps a handler so a failed request shows a toast instead of failing silently.
+const safe = (fn) => async (...a) => { try { return await fn(...a); } catch (e) { toast(e.message || String(e), "err"); } };
 const PAL = { items: [], idx: 0 };
 function paletteItems(q) {
   const cmds = [
@@ -1008,6 +1381,7 @@ function paletteItems(q) {
     ["cmd", "New notebook", () => NB.create()],
     ["cmd", "Research map", openMap],
     ["cmd", "Data sources", openSources],
+    ["cmd", "All notes and highlights", openNotes],
     ["cmd", "Lab runs", openLabRuns],
     ["cmd", "Mission control", () => openTab({ key: "home", kind: "home", title: "Mission control" })],
     ["cmd", "Refresh archive", () => { loadSessions(); loadStats(); }],
@@ -1023,9 +1397,15 @@ function openPalette() {
 }
 function drawPalette() {
   PAL.items = paletteItems($("#palette-input").value);
-  $("#palette-list").innerHTML = PAL.items.map(([g, t], i) => `<div class="pitem ${i === PAL.idx ? "on" : ""}" data-i="${i}"><span class="g">${esc(g)}</span><span class="t">${esc(clip(t, 110))}</span></div>`).join("");
+  const list = $("#palette-list");
+  list.setAttribute("role", "listbox");
+  list.innerHTML = PAL.items.map(([g, t], i) => `<div class="pitem ${i === PAL.idx ? "on" : ""}" data-i="${i}" id="pal-${i}" role="option" aria-selected="${i === PAL.idx}"><span class="g">${esc(g)}</span><span class="t">${esc(clip(oneLine(t), 110))}</span></div>`).join("");
   $$(".pitem").forEach((p) => (p.onclick = () => runPalette(+p.dataset.i)));
+  $("#palette-input").setAttribute("aria-activedescendant", `pal-${PAL.idx}`);
+  $("#pal-" + PAL.idx)?.scrollIntoView({ block: "nearest" });
 }
+// prompts pasted from a terminal can carry box-drawing banners; show plain text
+function oneLine(t) { return String(t || "").replace(/[\u2500-\u257F\u2580-\u259F]+/g, " ").replace(/\s+/g, " ").trim(); }
 function runPalette(i) { const it = PAL.items[i]; $("#palette-back").hidden = true; if (it) it[2](); }
 $("#palette-input").addEventListener("input", () => { PAL.idx = 0; drawPalette(); });
 $("#palette-input").addEventListener("keydown", (e) => {
@@ -1053,17 +1433,28 @@ $("#btn-sources").onclick = () => { closeDrawers(); openSources(); };
 $("#btn-labruns").onclick = () => { closeDrawers(); openLabRuns(); };
 $("#nav-labruns").onclick = () => { closeDrawers(); openLabRuns(); };
 $("#nav-sources").onclick = () => { closeDrawers(); openSources(); };
+$("#btn-notes").onclick = () => { closeDrawers(); openNotes(); };
+$("#nav-notes").onclick = () => { closeDrawers(); openNotes(); };
 $("#btn-palette").onclick = openPalette;
-$("#q").addEventListener("input", debounce((e) => { S.q = e.target.value.trim(); loadSessions(); }, 250));
+$("#q").addEventListener("input", debounce(async (e) => {
+  S.q = e.target.value.trim();
+  try { await loadSearch(); } catch (err) { toast(err.message, "err"); }
+  renderSessionList();
+}, 250));
 $("#roots-only").onchange = (e) => { S.rootsOnly = e.target.checked; renderSessionList(); };
 $("#filter-seg").addEventListener("click", (e) => {
   const b = e.target.closest("button"); if (!b) return;
   S.filter = b.dataset.f; $$("#filter-seg button").forEach((x) => x.classList.toggle("on", x === b)); renderSessionList();
 });
 $("#session-list").addEventListener("click", (e) => { const el = e.target.closest(".sess"); if (el) { closeDrawers(); openSession(el.dataset.id); } });
+$("#session-list").addEventListener("keydown", (e) => {
+  const el = e.target.closest(".sess"); if (!el) return;
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); closeDrawers(); openSession(el.dataset.id); }
+  else if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); (e.key === "ArrowDown" ? el.nextElementSibling : el.previousElementSibling)?.focus(); }
+});
 $("#tabs").addEventListener("click", (e) => {
   const x = e.target.closest("[data-close]"); if (x) { e.stopPropagation(); return closeTab(x.dataset.close); }
-  const t = e.target.closest(".tab"); if (t) { if (NB.dirty) NB.saveNow(); S.active = t.dataset.key; saveTabs(); renderTabs(); renderStage(); }
+  const t = e.target.closest(".tab"); if (t) activateTab(t.dataset.key);
 });
 $("#tabs").addEventListener("auxclick", (e) => { const t = e.target.closest(".tab"); if (e.button === 1 && t) closeTab(t.dataset.key); });
 $("#rtabs").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.rtab = b.dataset.r; renderRight(); } });

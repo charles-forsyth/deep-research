@@ -88,7 +88,10 @@ def test_usage_endpoint_caches_expired_but_retries_transient(app, monkeypatch): 
 
     app["api"].fx._genai = FakeClient()
     st, body = app["call"]("GET", f"/api/sessions/{sid}/usage")
-    assert st == 200 and body["usage"] is None and "reset" in body["error"]
+    # a plain reason (no raw exception text), and not cached
+    assert (
+        st == 200 and body["usage"] is None and body["error"].startswith("unavailable")
+    )
     app["call"]("GET", f"/api/sessions/{sid}/usage")
     assert len(calls) == 2  # transient error not cached
 

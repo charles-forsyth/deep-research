@@ -52,10 +52,39 @@ AVG_OUTPUT_TOKENS = 60_000
 class RawResponse:
     """Binary payload (audio) instead of JSON."""
 
-    def __init__(self, data: bytes, ctype: str, filename: str | None = None):
+    def __init__(
+        self,
+        data: bytes,
+        ctype: str,
+        filename: str | None = None,
+        inline: bool = True,
+        sandbox: bool = False,
+    ):
         self.data = data
         self.ctype = ctype
         self.filename = filename
+        self.inline = inline
+        self.sandbox = sandbox
+
+
+# Types a browser shows without running anything.
+SAFE_INLINE = {
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "application/pdf",
+    "audio/mpeg",
+    "audio/wav",
+    "audio/x-wav",
+    "video/mp4",
+}
+
+
+def _clean_msg(e: Any) -> str:
+    """A pydantic error as a sentence (no 'Value error, ' prefix)."""
+    msg = str(e.errors()[0].get("msg", e))
+    return re.sub(r"^(Value error|Assertion failed), ", "", msg)
 
 
 class ApiError(Exception):
@@ -840,18 +869,21 @@ class Api:
     def sources_add(self, query, body):
         from pydantic import ValidationError
 
-        from deepresearch.cli.sources import guess_kind
+        from deepresearch.cli.sources import guess_kind, local_uri
         from deepresearch.sources import DataSource
         from deepresearch.sources.service import check
 
         b = dict(body or {})
         uri = str(b.get("uri") or "").strip()
         if not uri:
-            raise ApiError(400, "uri is required")
+            raise ApiError(400, "Location is required")
         b["uri"] = uri
         b["kind"] = b.get("kind") or guess_kind(uri, str(b.get("auth_ref") or ""))
         if b["kind"].startswith("local_"):
-            b["uri"] = os.path.abspath(os.path.expanduser(uri))
+            try:
+                b["uri"] = local_uri(uri)
+            except ValueError as e:
+                raise ApiError(400, str(e)) from e
         b.setdefault("protection_level", "P1" if b["kind"] == "web" else "P2")
         keep = set(DataSource.model_fields) - {
             "id",
@@ -866,7 +898,7 @@ class Api:
             s = DataSource(**{k: v for k, v in b.items() if k in keep})
             s = self.sources.add(s)
         except ValidationError as e:
-            raise ApiError(400, e.errors()[0]["msg"]) from e
+            raise ApiError(400, _clean_msg(e)) from e
         except ValueError as e:
             raise ApiError(409, str(e)) from e
         if b.get("test", True):
@@ -894,12 +926,20 @@ class Api:
         )
         data = s.model_dump()
         data.update({k: v for k, v in (body or {}).items() if k in editable})
+        if isinstance(data.get("options"), dict):
+            # the saved index is managed by index/unindex, never by an edit form
+            fresh = self._source(sid).options
+            for k in ("store", "store_hash"):
+                if k in fresh:
+                    data["options"][k] = fresh[k]
+                else:
+                    data["options"].pop(k, None)
         try:
             from deepresearch.sources import DataSource
 
             s = self.sources.update(DataSource(**data))
         except ValidationError as e:
-            raise ApiError(400, e.errors()[0]["msg"]) from e
+            raise ApiError(400, _clean_msg(e)) from e
         return self._source_view(s)
 
     def _genai(self):
@@ -1400,7 +1440,11 @@ class Api:
             ".sh",
         ):
             ctype = "text/plain; charset=utf-8"
-        return RawResponse(p.read_bytes(), ctype, p.name)
+        # Files written by a Lab job are untrusted. Only plain images and text are
+        # shown inline; SVG and HTML can carry scripts, so they (and anything else)
+        # download instead of rendering on the dashboard's origin.
+        inline = ctype.startswith("text/plain") or ctype in SAFE_INLINE
+        return RawResponse(p.read_bytes(), ctype, p.name, inline=inline, sandbox=True)
 
     def lab_delete(self, rid, query, body):
         run = self._lab_run(rid)
@@ -1420,9 +1464,27 @@ class Api:
         return {"deleted": int(rid)}
 
 
-def make_handler(api: Api):
+def _loopback_peer(addr: str) -> bool:
+    import ipaddress
+
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped:  # ::ffff:127.0.0.1
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
+def make_handler(api: Api, local_only: bool = False):
     class Handler(BaseHTTPRequestHandler):
         server_version = f"deep-research-dashboard/{__version__}"
+
+        def handle_one_request(self) -> None:
+            try:
+                super().handle_one_request()
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True  # the browser went away; nothing to do
 
         def log_message(self, format: str, *args: Any) -> None:
             if os.getenv("DR_DASHBOARD_ACCESS_LOG"):
@@ -1447,6 +1509,12 @@ def make_handler(api: Api):
 
         def _handle(self, method: str) -> None:
             url = urlparse(self.path)
+            if local_only and not _loopback_peer(self.client_address[0]):
+                # Belt and braces for the loopback-only default: even if the socket
+                # is reachable (a proxy, a mis-set --host), refuse other machines.
+                return self._json(
+                    403, {"error": "This dashboard only accepts this machine."}
+                )
             if not host_allowed(self.headers.get("Host", "")):
                 # DNS rebinding: a public site pointing its name at this machine.
                 return self._json(
@@ -1519,10 +1587,20 @@ def make_handler(api: Api):
             if status == 206:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
             if obj.filename:
-                disp = "attachment" if "download=1" in self.path else "inline"
-                self.send_header(
-                    "Content-Disposition", f'{disp}; filename="{obj.filename}"'
+                disp = (
+                    "attachment"
+                    if "download=1" in self.path or not obj.inline
+                    else "inline"
                 )
+                safe_name = re.sub(r"[^\w.\- ]", "_", obj.filename)
+                self.send_header(
+                    "Content-Disposition", f'{disp}; filename="{safe_name}"'
+                )
+            if obj.sandbox:
+                self.send_header(
+                    "Content-Security-Policy", "sandbox; default-src 'none'"
+                )
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(chunk)
@@ -1560,7 +1638,9 @@ def make_handler(api: Api):
     return Handler
 
 
-def serve(host: str, port: int, db_path: str = user_db_path) -> None:
+def serve(
+    host: str, port: int, db_path: str = user_db_path, local_only: bool = True
+) -> None:
     # Also covers `dashboard --foreground` run from a folder with an old .env:
     # the user settings file wins for everything this process and its runs do.
     from deepresearch.core.config import service_env
@@ -1568,7 +1648,7 @@ def serve(host: str, port: int, db_path: str = user_db_path) -> None:
     os.environ.update(service_env())
     api = Api(db_path)
     api.lab.ensure_watcher()  # pick up lab runs still active from before a restart
-    httpd = ThreadingHTTPServer((host, port), make_handler(api))
+    httpd = ThreadingHTTPServer((host, port), make_handler(api, local_only=local_only))
     httpd.daemon_threads = True
     print(f"[INFO] Deep Research dashboard {__version__} on http://{host}:{port}")
     try:

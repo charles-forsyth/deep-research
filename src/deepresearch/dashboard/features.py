@@ -161,8 +161,14 @@ class Features:
                 err = "not available from Google (interaction expired)"
             elif "API key not valid" in msg or "401" in msg or "403" in msg:
                 err = "unavailable (API key rejected)"
+            elif (
+                "api_key" in msg or "GEMINI_API_KEY" in msg or "validation error" in msg
+            ):
+                err = "unavailable (no API key)"
+            elif "timed out" in msg.lower() or "connect" in msg.lower():
+                err = "unavailable (could not reach Google)"
             else:
-                err = "unavailable (" + msg.split(" - ")[0][:80] + ")"
+                err = "unavailable"
         definitive = u is not None or (err or "").startswith("not available")
         if status != "running" and definitive:
             with self._conn() as conn:

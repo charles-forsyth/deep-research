@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.27.0 (package `deepresearch`) |
-| Status | Living document. Describes the system as built, verified against the source on 2026-09-26 |
+| Applies to | deep-research v0.28.0 (package `deepresearch`) |
+| Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
 This document is normative for behaviour: if the code and this document
@@ -137,7 +137,7 @@ External actors:
 | Actor | Interface | Direction |
 |---|---|---|
 | User (terminal) | `deep-research` CLI, stdout/stderr, exit codes | in/out |
-| User (browser) | HTTP on `0.0.0.0:7420` by default; single-page app | in/out |
+| User (browser) | HTTP on `127.0.0.1:7420` by default (this machine only); single-page app | in/out |
 | Google Gemini API | HTTPS via `google-genai` SDK and one raw `urllib` health probe | out |
 | ffmpeg (optional) | subprocess, WAV to MP3 conversion | out |
 | Local filesystem | state dir (section 12) | in/out |
@@ -195,7 +195,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | ID | Requirement | Verified by |
 |---|---|---|
 | REQ-DASH-1 | `deep-research dashboard --start` shall start the server detached, write a pid file, and print every URL it is reachable on. `--stop`, `--restart`, `--status` shall act on that pid. `--status` exits 0 healthy, 1 not answering, 3 not running. | `test_start_status_restart_stop`, `test_stale_pid_file_is_ignored`, `test_flags_are_mutually_exclusive` |
-| REQ-DASH-2 | The server shall bind `0.0.0.0:7420` by default and serve the whole UI from packaged static files with no build step and no CDN. | `test_index_and_static_served` |
+| REQ-DASH-2 | The server shall bind `127.0.0.1:7420` by default, refuse a non-loopback `--host` unless `--allow-remote` is given, reject requests from other machines while loopback-only, and serve the whole UI from packaged static files with no build step and no CDN. | `test_index_and_static_served`, `test_local_only_handler_refuses_other_machines`, `test_start_refuses_non_loopback_without_allow_remote` |
 | REQ-DASH-3 | The dashboard and every process it spawns shall use the user settings file for the API key even when started from a folder containing another `.env`. Variables exported in the real shell still win. | `test_service_env_*`, `test_children_and_server_do_not_run_in_callers_cwd` |
 | REQ-DASH-4 | `/api/health?check=1` shall report whether Google accepts the key (cached 10 minutes; `null` when it cannot check). The UI shall block launching research when the key is missing or rejected. | `test_health_reports_invalid_key` |
 | REQ-DASH-5 | Cancelling a run shall cancel the Google interaction (when one exists), terminate the worker's process group, and mark the row `cancelled`. | `test_cancel_only_running` (state check only) |
@@ -914,11 +914,13 @@ summary. Cost after generation is recomputed from the real audio length.
 
 ### 14.1 Trust boundary
 
-The dashboard is a single-user tool for a trusted network. It has **no
-authentication**, binds `0.0.0.0` by default and says so in its help text. Anyone who
-can reach the port can read all research, start paid runs, cancel and delete.
-`--host 127.0.0.1` keeps it local. An optional login is on the roadmap; until then the
-network is the boundary.
+The dashboard is a single-user tool. It has **no authentication**, so since v0.28.0 it
+listens on `127.0.0.1` only (this machine) and says so in its help text. A non-loopback
+`--host` is refused unless `--allow-remote` is given; while loopback-only, the handler
+also answers any request from another address with 403. A dashboard started by an older
+version on `0.0.0.0` comes back on `127.0.0.1` at `--restart`. Anyone who can reach the
+port can read all research, start paid runs, cancel and delete, so `--allow-remote` is
+for a network you trust. An optional login is on the roadmap.
 
 ### 14.2 Controls in place
 
@@ -1501,8 +1503,8 @@ fingerprint; a changed source changes it.
 
 ### 21.10 Known gaps
 - Read-only: nothing is written back to buckets.
-- The dashboard has no login; anyone who can reach it can browse sources under the
-  allowed roots (see section 14).
+- The dashboard has no login; it listens on this machine only (see section 14).
+  Previews never show hidden files or follow links, matching the listing.
 
 ---
 
@@ -1532,3 +1534,4 @@ fingerprint; a changed source changes it.
 | 2026-09-28 | v0.25.1 | `GET /api/lab/runs` returns a summary per run. |
 | 2026-09-28 | v0.26.0 | Saved per-source indexes (21.7), open dataset discovery (21.8), provenance fingerprints (21.9); plan review sections and AI fix diff (`plan.fix_diff`, 20.4). |
 | 2026-09-28 | v0.27.0 | Free public cloud data: `public_bucket` kind (anonymous AWS S3 and GCS), AWS Open Data, Google Cloud and Earth Engine discovery (21.8a). |
+| 2026-09-28 | v0.28.0 | Review fixes: loopback-only dashboard (REQ-DASH-2, 14.1); atomic Lab submit, recovery of runs stuck in submitting, guarded edit/fix, finish runs Slurm forgot (20); source safety and correctness (safe paths, hidden-file preview, filters on fetch, relay re-list and size check, stable hashes, name-first lookup, provenance snapshot, 21); UI: dialogs, drafts, failed-report view, find, notes page, source edit, accessibility. |

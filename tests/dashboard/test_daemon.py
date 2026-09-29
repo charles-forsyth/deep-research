@@ -69,3 +69,30 @@ def test_start_from_dir_with_shadow_package(isolated, tmp_path, monkeypatch):
     port = _free_port()
     assert daemon.start("127.0.0.1", port) == 0
     assert daemon._probe("127.0.0.1", port)["ok"] is True
+
+
+def test_start_refuses_non_loopback_without_allow_remote(isolated, capsys):
+    assert daemon.start("0.0.0.0", _free_port()) == 2
+    assert daemon.read_state() is None
+    assert "--allow-remote" in capsys.readouterr().out
+    assert daemon.is_loopback("127.0.0.1") and daemon.is_loopback("::1")
+    assert daemon.is_loopback("localhost") and not daemon.is_loopback("192.168.1.35")
+
+
+def test_restart_brings_an_old_remote_dashboard_back_local(
+    isolated, monkeypatch, capsys
+):
+    calls = []
+    monkeypatch.setattr(
+        daemon, "read_state", lambda: {"pid": 1, "host": "0.0.0.0", "port": 7420}
+    )
+    monkeypatch.setattr(daemon, "stop", lambda: 0)
+    monkeypatch.setattr(
+        daemon, "start", lambda h, p, r=False: calls.append((h, p, r)) or 0
+    )
+    assert daemon.restart() == 0
+    assert calls == [("127.0.0.1", 7420, False)]
+    assert "restarting on 127.0.0.1" in capsys.readouterr().out
+    calls.clear()
+    assert daemon.restart("0.0.0.0", None, True) == 0
+    assert calls == [("0.0.0.0", 7420, True)]

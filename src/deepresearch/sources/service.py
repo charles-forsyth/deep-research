@@ -21,6 +21,10 @@ def check(reg: SourceRegistry, s: DataSource, full: bool = True) -> DataSource:
         s.status, s.last_error = "ok", ""
     except SourceError as e:
         s.status, s.last_error = "unreachable", str(e)
+    except (
+        Exception
+    ) as e:  # a bad reply (not XML/JSON), a bug: never a half-added source
+        s.status, s.last_error = "unreachable", f"{type(e).__name__}: {e}"[:300]
     if s.id is not None:
-        reg.update(s)
+        reg.save_check(s)
     return s

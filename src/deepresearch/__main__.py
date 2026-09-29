@@ -292,9 +292,10 @@ def build_parser() -> argparse.ArgumentParser:
             "Start, stop or restart the web dashboard: a browser workstation "
             "for launching research, watching live logs, reading and annotating "
             "reports, a notebook for collecting and editing findings, semantic "
-            "search, follow-ups, and export. It has no login: it binds "
-            "0.0.0.0 by default, so anyone who can reach the port can use it "
-            "and spend your API credits. Use --host 127.0.0.1 to keep it local."
+            "search, follow-ups, and export. It has no login, so it listens on "
+            "127.0.0.1 (this machine only) by default. Anyone who can reach the "
+            "port can read your research and files and spend your API credits; "
+            "--host 0.0.0.0 --allow-remote shares it on a network you trust."
         ),
     )
     action = parser_dash.add_mutually_exclusive_group()
@@ -316,7 +317,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run in this terminal instead of detaching (Ctrl-C to stop)",
     )
     parser_dash.add_argument(
-        "--host", default=None, help="Bind address (default: 0.0.0.0)"
+        "--host", default=None, help="Bind address (default: 127.0.0.1)"
+    )
+    parser_dash.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="Allow a non-loopback --host (no login: anyone who can reach it can "
+        "use it)",
     )
     parser_dash.add_argument(
         "--port", type=int, default=None, help="Port (default: 7420)"
@@ -334,16 +341,24 @@ def handle_dashboard(args) -> int:
 
     if args.stop:
         return daemon.stop()
+    remote = getattr(args, "allow_remote", False)
     if args.restart:
-        return daemon.restart(args.host, args.port)
+        return daemon.restart(args.host, args.port, remote)
     if args.foreground:
         from deepresearch.dashboard.server import serve
 
-        serve(args.host or daemon.DEFAULT_HOST, args.port or daemon.DEFAULT_PORT)
+        host = args.host or daemon.DEFAULT_HOST
+        if not daemon.is_loopback(host) and not remote:
+            print(
+                f"[ERROR] Refusing to listen on {host} without --allow-remote "
+                "(the dashboard has no login)."
+            )
+            return 2
+        serve(host, args.port or daemon.DEFAULT_PORT, local_only=not remote)
         return 0
     if args.start:
         return daemon.start(
-            args.host or daemon.DEFAULT_HOST, args.port or daemon.DEFAULT_PORT
+            args.host or daemon.DEFAULT_HOST, args.port or daemon.DEFAULT_PORT, remote
         )
     return daemon.status()
 

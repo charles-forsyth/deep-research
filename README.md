@@ -118,11 +118,11 @@ A bare prompt runs `research`. `deep-research <command> --help` documents every 
 ## Web dashboard
 
 ```bash
-deep-research dashboard --start                       # background on 0.0.0.0:7420
+deep-research dashboard --start                       # background on 127.0.0.1:7420
 deep-research dashboard --status                      # PID and URLs
 deep-research dashboard --restart
 deep-research dashboard --stop
-deep-research dashboard --start --host 127.0.0.1      # this machine only
+deep-research dashboard --start --host 0.0.0.0 --allow-remote   # share on a trusted network
 deep-research dashboard --foreground --port 8080      # run in the terminal
 ```
 
@@ -130,8 +130,9 @@ Runs launched from the dashboard are ordinary background sessions: they appear i
 `deep-research list` and keep going if the dashboard restarts.
 
 > **Security:** the dashboard has no login. Anyone who can reach the port can read your research
-> and start runs on your API key. It binds `0.0.0.0` by default so it is reachable on a trusted
-> home or lab network or over Tailscale; use `--host 127.0.0.1` anywhere else.
+> and start runs on your API key, so it listens on `127.0.0.1` (this machine only) by default.
+> To reach it from another machine on a network you trust, pass `--host 0.0.0.0 --allow-remote`
+> (or use an SSH tunnel: `ssh -L 7420:127.0.0.1:7420 host`).
 
 | Mobile | Launch with cost estimate |
 |---|---|
