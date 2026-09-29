@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.28.1 (package `deepresearch`) |
+| Applies to | deep-research v0.28.2 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1637,3 +1637,4 @@ drops the other's result.
 | 2026-09-28 | v0.28.0 | Review fixes: loopback-only dashboard (REQ-DASH-2, 14.1); atomic Lab submit, recovery of runs stuck in submitting, guarded edit/fix, finish runs Slurm forgot (20); source safety and correctness (safe paths, hidden-file preview, filters on fetch, relay re-list and size check, stable hashes, name-first lookup, provenance snapshot, 21); UI: dialogs, drafts, failed-report view, find, notes page, source edit, accessibility. |
 | 2026-09-28 | v0.28.0 (docs) | Whole document brought up to date with v0.28.0: module map (5.1), tables (8.2), CLI (9.4), client (11), settings and files (12), controls (14.2), errors (15), test suite (16.1), K13, operations (18.3), Lab reliability (20.6), data sources (21). |
 | 2026-09-29 | v0.28.1 | Lab submit: expired gcloud sign-in named plainly; a submit that never reached the cluster keeps the run as a draft (20.6). |
+| 2026-09-29 | v0.28.2 | Lab: OR-Tools plans on a Python module get an isolated venv (CP-SAT segfaulted on top of python-sci). |

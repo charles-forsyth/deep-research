@@ -7,6 +7,12 @@ releases.
 
 ## [Unreleased]
 
+## [0.28.2] - 2026-09-29
+
+### Fixed
+
+- Lab runs that pip-install OR-Tools on top of the `python-sci` module crashed at the first CP-SAT solve (segmentation fault, exit 139; run #38). OR-Tools bundles its own abseil/protobuf, which clash with the module's libraries. Such plans now get an isolated venv on the module's Python, with numpy, pandas, matplotlib and scipy installed alongside. Verified on Ursa Major: OR-Tools 9.12, 9.14 and 9.15 all crash layered on the module and all solve isolated.
+
 ## [0.28.1] - 2026-09-29
 
 ### Fixed
