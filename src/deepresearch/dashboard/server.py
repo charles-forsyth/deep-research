@@ -926,6 +926,14 @@ class Api:
         )
         data = s.model_dump()
         data.update({k: v for k, v in (body or {}).items() if k in editable})
+        if isinstance(data.get("options"), dict):
+            # the saved index is managed by index/unindex, never by an edit form
+            fresh = self._source(sid).options
+            for k in ("store", "store_hash"):
+                if k in fresh:
+                    data["options"][k] = fresh[k]
+                else:
+                    data["options"].pop(k, None)
         try:
             from deepresearch.sources import DataSource
 

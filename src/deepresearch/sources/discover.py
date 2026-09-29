@@ -56,7 +56,7 @@ def search_datagov(q: str, limit: int = 8) -> list[dict[str, Any]]:
             {
                 "title": d.get("title") or d.get("format") or "",
                 "url": d.get("downloadURL"),
-                "format": (d.get("mediaType") or d.get("format") or "").split("/")[-1],
+                "format": _fmt(d.get("format"), d.get("mediaType")),
             }
             for d in dcat.get("distribution") or []
             if d.get("downloadURL")
@@ -189,6 +189,32 @@ SEARCHERS = {
     "gcp": _cloud("gcp"),
     "earthengine": _cloud("earthengine"),
 }
+
+
+_MIME_NAMES = {
+    "vnd.ms-excel": "Excel",
+    "vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Excel",
+    "plain": "Text",
+    "octet-stream": "Binary",
+    "geo+json": "GeoJSON",
+    "geopackage+sqlite3": "GeoPackage",
+    "vnd.google-earth.kml+xml": "KML",
+    "x-netcdf": "NetCDF",
+    "netcdf": "NetCDF",
+    "zip": "ZIP",
+}
+
+
+def _fmt(fmt: Any, media_type: Any) -> str:
+    """A short format label: the catalog's own name if it has one ("Excel"), else a
+    readable name for the MIME type ("vnd.ms-excel" -> "Excel", "text/csv" -> "CSV")."""
+    name = str(fmt or "").strip()
+    if name and "/" not in name:
+        return name
+    sub = str(media_type or name or "").split(";")[0].split("/")[-1].strip().lower()
+    if not sub:
+        return ""
+    return _MIME_NAMES.get(sub) or sub.replace("x-", "").split("+")[0].upper()
 
 
 def discover(

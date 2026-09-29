@@ -40,7 +40,8 @@ const LAB = {
     if (S.scrollToLab) {  // arrived from the Lab runs page: show that run
       const card = body.querySelector(`.lab-run[data-run="${S.scrollToLab}"]`);
       S.scrollToLab = null;
-      if (card) setTimeout(() => { card.scrollIntoView({ behavior: "smooth", block: "center" }); card.classList.add("flash"); }, 150);
+      // top of the card (title and status) under the toolbar, not the middle of a tall card
+      if (card) setTimeout(() => { card.style.scrollMarginTop = "12px"; card.scrollIntoView({ behavior: "smooth", block: "start" }); card.classList.add("flash"); card.tabIndex = -1; card.focus({ preventScroll: true }); }, 150);
     }
     body.querySelector('[data-l="doc"]').onclick = () => this.startDialog(s, { scope: "document" });
     this.catalogLine(body.querySelector(".lab-cat"));
@@ -105,7 +106,8 @@ const LAB = {
     const p = r.plan || {};
     const live = ["planning", "submitting", "queued", "running", "fetching", "analyzing"].includes(r.status);
     const badge = { draft: "review", plan_failed: "failed", planning: "planning", submitting: "running", queued: "queued", running: "running", fetching: "running", analyzing: "running" }[r.status] || r.status;
-    const images = (r.files || []).filter((f) => !f.skipped && /\.(png|jpe?g|svg|gif)$/i.test(f.path));
+    // SVG can carry scripts, so it is listed as a download, never shown inline
+    const images = (r.files || []).filter((f) => !f.skipped && /\.(png|jpe?g|gif|webp)$/i.test(f.path));
     const others = (r.files || []).filter((f) => !images.includes(f));
     return `
     <div class="lab-run ${esc(r.status)}" data-run="${r.id}">
@@ -126,7 +128,7 @@ const LAB = {
       ${images.length ? `<div class="lab-imgs">${images.map((f) => `<a href="${this.fileUrl(r.id, f.path)}" target="_blank" rel="noopener"><img src="${this.fileUrl(r.id, f.path)}" alt="${esc(f.path)}" loading="lazy"></a>`).join("")}</div>` : ""}
       ${others.length ? `<div class="lab-files">${others.map((f) => f.skipped
         ? `<span class="mono dim" title="left on the cluster (too large)">${esc(f.path)} (${this.size(f.size)}, not copied)</span>`
-        : `<a class="mono" href="${this.fileUrl(r.id, f.path)}" target="_blank" rel="noopener">${esc(f.path)} <span class="dim">${this.size(f.size)}</span></a>`).join("")}</div>` : ""}
+        : `<a class="mono" href="${this.fileUrl(r.id, f.path)}${/\.(svg|html?)$/i.test(f.path) ? "&download=1" : ""}" target="_blank" rel="noopener noreferrer">${esc(f.path)} <span class="dim">${this.size(f.size)}</span></a>`).join("")}</div>` : ""}
       <div class="lab-foot">
         ${r.status === "draft" ? `<button class="btn small primary" data-la="review">Review and submit</button>` : ""}
         ${r.status === "plan_failed" && !p.why_not ? `<button class="btn small primary" data-la="replan">\u21BB Retry plan</button>` : ""}
@@ -137,7 +139,7 @@ const LAB = {
         ${r.result_md ? `<button class="btn small" data-la="nb">\u2192 Notebook</button>` : ""}
         <span class="grow"></span>
         <span class="mono dim" style="font-size:10.5px">${r.estimate_usd != null ? `compute est $${(+r.estimate_usd).toFixed(2)}` : ""}${r.ai_cost_usd ? ` \u00b7 AI $${(+r.ai_cost_usd).toFixed(2)}` : ""}${r.rerun_of ? ` \u00b7 re-run of #${r.rerun_of}` : ""}</span>
-        ${live ? `<button class="btn small danger" data-la="cancel">Cancel</button>` : `<button class="btn small danger" data-la="del" title="Delete this lab run and its local results">Delete</button>`}
+        ${live ? `<button class="btn small danger" data-la="cancel">Stop run</button>` : `<button class="btn small danger" data-la="del" title="Delete this lab run and its local results">Delete</button>`}
       </div>
       <div class="log lab-log" hidden></div>
     </div>`;
@@ -150,7 +152,15 @@ const LAB = {
     const names = ["Plan", "Review", "Queued", "Running", "Fetch", "Write-up", "Done"];
     const at = { submitting: 2, plan_failed: 0 }[r.status] ?? order.indexOf(r.status);
     if (at < 0 && !["failed", "cancelled"].includes(r.status)) return "";
-    const failAt = ["failed", "cancelled"].includes(r.status) ? (r.result_md ? 6 : r.job_id ? 3 : 1) : -1;
+    // Where it stopped: before submit (1), in the job (3 = Running: the job itself
+    // failed or was cancelled, even when a write-up of the failure exists), fetching
+    // (4) or writing up (5). "Done" is never the red step.
+    const stage = (r.stage || "").toLowerCase();
+    const failAt = !["failed", "cancelled"].includes(r.status) ? -1
+      : !r.job_id ? 1
+      : /fetch/.test(stage) ? 4
+      : /write-up|writing up|analy/.test(stage) && /(^|\b)(could not|failed)/.test(stage) ? 5
+      : 3;
     return `<div class="lab-steps">${names.map((n, i) => {
       const cls = failAt >= 0 ? (i < failAt ? "done" : i === failAt ? "bad" : "") : (i < at ? "done" : i === at ? (r.status === "completed" ? "done" : "now") : "");
       return `<span class="${cls}">${n}</span>`;
@@ -172,33 +182,25 @@ const LAB = {
     act("review")?.addEventListener("click", () => this.review(el, s, r));
     act("plan")?.addEventListener("click", () => this.review(el, s, r, true));
     act("log")?.addEventListener("click", () => this.toggleLog(card, r));
-    act("rerun")?.addEventListener("click", async () => {
-      try { const n = await api(`/api/lab/${r.id}/rerun`, { method: "POST" }); await this.refresh(el, s); this.review(el, s, n); }
-      catch (e) { toast(e.message, "err"); }
+    // Every action runs once at a time (busy() disables the button until it ends).
+    const on = (a, fn) => { const b = act(a); if (b) b.addEventListener("click", () => busy(b, fn)); };
+    on("rerun", async () => { const n = await api(`/api/lab/${r.id}/rerun`, { method: "POST" }); await this.refresh(el, s); this.review(el, s, n); });
+    on("fixfailed", async () => {
+      const b = act("fixfailed"); b.innerHTML = '<span class="spinner"></span> Reading the log';
+      const n = await api(`/api/lab/${r.id}/fix-failed`, { method: "POST" });
+      const f = n.fix || {};
+      toast(`New draft #${n.id}: ${(f.changes || []).length} change(s)${(f.remaining || []).length ? `, ${f.remaining.length} warning(s)` : ""}`, (f.remaining || []).length ? "err" : "ok");
+      await this.refresh(el, s); this.review(el, s, n);
     });
-    act("fixfailed")?.addEventListener("click", async (ev) => {
-      const b = ev.currentTarget; b.disabled = true; b.innerHTML = '<span class="spinner"></span> Reading the log';
-      try {
-        const n = await api(`/api/lab/${r.id}/fix-failed`, { method: "POST" });
-        const f = n.fix || {};
-        toast(`New draft #${n.id}: ${(f.changes || []).length} change(s)${(f.remaining || []).length ? `, ${f.remaining.length} warning(s)` : ""}`, (f.remaining || []).length ? "err" : "ok");
-        await this.refresh(el, s); this.review(el, s, n);
-      } catch (e) { toast(e.message, "err"); b.disabled = false; b.textContent = "Fix with AI"; }
+    on("replan", async () => { try { await api(`/api/lab/${r.id}/replan`, { method: "POST" }); } finally { this.refresh(el, s); } });
+    on("nb", () => NB.append(`## Lab run #${r.id}: ${r.plan?.title || ""}\n\n**Question:** ${r.plan?.question || ""}\n\n${r.result_md}\n\n*Source: Session #${s.id}, lab run #${r.id} (job ${r.job_id || "-"})*\n`));
+    on("cancel", async () => {
+      if (!(await confirmBox(`Stop lab run #${r.id}?`, r.job_id ? `Slurm job ${r.job_id} will be cancelled on the cluster.` : "The plan will be discarded.", "Stop run", "Keep running"))) return;
+      try { await api(`/api/lab/${r.id}/cancel`, { method: "POST" }); } finally { this.refresh(el, s); }
     });
-    act("replan")?.addEventListener("click", async () => {
-      try { await api(`/api/lab/${r.id}/replan`, { method: "POST" }); } catch (e) { toast(e.message, "err"); }
-      this.refresh(el, s);
-    });
-    act("nb")?.addEventListener("click", () => NB.append(`## Lab run #${r.id}: ${r.plan?.title || ""}\n\n**Question:** ${r.plan?.question || ""}\n\n${r.result_md}\n\n*Source: Session #${s.id}, lab run #${r.id} (job ${r.job_id || "-"})*\n`));
-    act("cancel")?.addEventListener("click", async () => {
-      if (!(await confirmBox(`Cancel lab run #${r.id}?`, r.job_id ? `Slurm job ${r.job_id} will be cancelled on the cluster.` : "The plan will be discarded.", "Cancel run"))) return;
-      try { await api(`/api/lab/${r.id}/cancel`, { method: "POST" }); } catch (e) { toast(e.message, "err"); }
-      this.refresh(el, s);
-    });
-    act("del")?.addEventListener("click", async () => {
+    on("del", async () => {
       if (!(await confirmBox(`Delete lab run #${r.id}?`, "Removes the run and its downloaded results from this computer. Files on the cluster are kept.", "Delete"))) return;
-      try { await api(`/api/lab/${r.id}`, { method: "DELETE" }); } catch (e) { toast(e.message, "err"); }
-      this.refresh(el, s);
+      try { await api(`/api/lab/${r.id}`, { method: "DELETE" }); } finally { this.refresh(el, s); }
     });
     const live = ["planning", "submitting", "queued", "running", "fetching", "analyzing"].includes(r.status);
     if (live) this.poll(el, s, r);
@@ -264,7 +266,7 @@ const LAB = {
     const scope = opts.scope;
     const what = scope === "selection" ? `the highlighted passage (${fmtN(opts.selection.length)} characters)`
       : scope === "suggestion" ? "a suggested computation" : "the whole report";
-    $("#modal").innerHTML = `
+    MODAL.open(`
       <h3>\u2697 New lab run</h3>
       <div class="dim">Gemini reads ${what}, searches the web for the right software and method, and writes a job plan for <b>${esc(this.targetLabel || "the cluster")}</b>. Nothing runs until you review and submit it.</div>
       ${scope === "selection" ? `<blockquote class="lab-quote">${esc(clip(opts.selection, 700))}</blockquote>` : ""}
@@ -273,22 +275,20 @@ const LAB = {
       <div class="field"><label>Data to include <span class="dim">(optional; staged read-only on the cluster, the plan reads it from $DS_NAME)</span></label>
         <div id="lab-ds"></div></div>
       <div class="estimate"><span>PLANNING <b>~$0.10\u20130.30</b></span><span class="dim">Gemini Flash + Google Search ($14 per 1,000 searches), 1-2 min</span></div>
-      <div class="acts"><button class="btn" data-x="0">Cancel</button><button class="btn primary" data-x="1">Write the plan</button></div>`;
-    $("#modal-back").hidden = false;
+      <div class="acts"><button class="btn" data-x="0">Cancel</button><button class="btn primary" data-x="1">Write the plan</button></div>`,
+      { dirty: () => ($("#lab-req")?.value || "").trim() !== (opts.request || "").trim() });
     const pickedSources = typeof SRC !== "undefined" ? SRC.picker($("#lab-ds"), opts.data_sources || []) : () => [];
-    const close = () => ($("#modal-back").hidden = true);
-    $('#modal [data-x="0"]').onclick = close;
-    $("#modal-back").onclick = (e) => { if (e.target.id === "modal-back") close(); };
-    $('#modal [data-x="1"]').onclick = async () => {
-      const btn = $('#modal [data-x="1"]'); btn.disabled = true;
-      try {
-        await api(`/api/sessions/${s.id}/lab`, { method: "POST", body: { scope, selection: opts.selection || "", request: $("#lab-req").value, data_sources: pickedSources() } });
-        close();
-        toast("Planning started. Watch the Lab runs section at the end of the report.", "ok");
-        const el = document.querySelector("#lab-panel");
-        if (el) { await this.refresh(el, s); el.scrollIntoView({ behavior: "smooth", block: "start" }); }
-      } catch (e) { toast(e.message, "err"); btn.disabled = false; }
-    };
+    const close = () => MODAL.close();
+    $('#modal [data-x="0"]').onclick = () => MODAL.requestClose();
+    $("#lab-req").focus();
+    const go = $('#modal [data-x="1"]');
+    go.onclick = () => busy(go, async () => {
+      await api(`/api/sessions/${s.id}/lab`, { method: "POST", body: { scope, selection: opts.selection || "", request: $("#lab-req").value, data_sources: pickedSources() } });
+      close();
+      toast("Planning started. Watch the Lab runs section at the end of the report.", "ok");
+      const el = document.querySelector("#lab-panel");
+      if (el) { await this.refresh(el, s); el.scrollIntoView({ behavior: "smooth", block: "start" }); }
+    });
   },
 
   // ------------------------------------------------------------------ review
@@ -321,9 +321,10 @@ const LAB = {
     const params = p.parameters || {};
     const parts = this.partitions || {};
     const inst = p.install || {};
-    $("#modal").innerHTML = `
+    let snapshot = null; // form state at open; closing with changes asks first
+    MODAL.open(`
       <div class="lab-review">
-      <h3>${editable ? "Review lab run" : "Lab run"} #${r.id}: ${esc(p.title || "")}</h3>
+      <div class="modal-head"><h3>${editable ? "Review lab run" : "Lab run"} #${r.id}: ${esc(p.title || "")}</h3><button class="icon-btn modal-x" data-x="0" aria-label="Close">\u2715</button></div>
       <nav class="lab-toc">${["What and why", "Software and data", "Settings", "Result check", "Script"].map((t, i) => `<a href="#" data-sec="${i + 1}">${i + 1}. ${t}</a>`).join("")}</nav>
       <div class="lab-q"><span class="label">Question</span> ${esc(p.question || "")}</div>
       ${(p.warnings || []).length ? `<div class="lab-warn"><span class="label">Checked against the cluster: ${p.warnings.length} problem${p.warnings.length > 1 ? "s" : ""}</span><ul>${p.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul><div class="lab-fix-row">${editable ? `<button class="btn" data-x="fix" title="The AI fixes only what is flagged, then the plan is checked again. Nothing is submitted.">Fix with AI</button>` : ""}<span class="dim" style="font-size:11px">${editable ? "or edit the plan (modules, partition, GPUs) yourself, or submit anyway." : ""}</span></div></div>` : ""}
@@ -353,21 +354,19 @@ const LAB = {
       <div class="lab-sec"><span class="label">Success criteria</span><div class="dim" style="font-size:12px">${esc(p.success_criteria || "")}</div></div>
       ${p.caveats ? `<div class="lab-sec"><span class="label">Caveats</span><div class="dim" style="font-size:12px">${esc(p.caveats)}</div></div>` : ""}
       <h4 class="lab-h" id="lr-sec-5">5. Script</h4>
-      <details class="lab-sec" ${editable ? "" : "open"}><summary class="label">Run script (edit to change what runs)</summary>
+      <details class="lab-sec" open><summary class="label">Run script ${editable ? "(edit to change what runs)" : ""} <span class="dim">\u2014 click to fold</span></summary>
         <textarea id="lr-script" class="lab-script" spellcheck="false" ${editable ? "" : "readonly"}>${esc(p.script || "")}</textarea></details>
-      <details class="lab-sec"><summary class="label">Generated Slurm batch file</summary><pre class="lab-script">${esc(r.script || "")}</pre></details>
+      <details class="lab-sec"><summary class="label">Generated Slurm batch file <span class="dim">\u2014 click to show</span></summary><pre class="lab-script">${esc(r.script || "")}</pre></details>
       <div class="estimate"><span>COMPUTE, WORST CASE <b id="lr-est">${r.estimate_usd != null ? "$" + (+r.estimate_usd).toFixed(2) : "?"}</b></span><span class="dim">nodes x time limit x list price; real jobs usually stop earlier</span>${r.ai_cost_usd ? `<span>AI so far <b>$${(+r.ai_cost_usd).toFixed(2)}</b></span>` : ""}</div>
       <div class="acts">
-        <button class="btn" data-x="0">${editable ? "Close" : "Close"}</button>
-        ${editable ? `<button class="btn" data-x="save">Save changes</button><button class="btn primary" data-x="submit">Submit to ${esc(r.target_label || "cluster")}</button>` : ""}
+        <button class="btn" data-x="0">Close</button>
+        ${editable ? `<button class="btn" data-x="save">Save draft</button><span class="grow"></span><button class="btn primary" data-x="submit">Submit to ${esc(r.target_label || "cluster")}\u2026</button>` : ""}
       </div>
-      </div>`;
-    $("#modal").classList.add("wide");
-    $("#modal-back").hidden = false;
+      </div>`, { cls: "wide", dirty: () => editable && snapshot !== null && snapshot !== formState() });
     $$("#modal .lab-toc a").forEach((a) => (a.onclick = (e) => { e.preventDefault(); $("#lr-sec-" + a.dataset.sec)?.scrollIntoView({ behavior: "smooth", block: "start" }); }));
-    const close = () => { $("#modal-back").hidden = true; $("#modal").classList.remove("wide"); };
-    $('#modal [data-x="0"]').onclick = close;
-    $("#modal-back").onclick = (e) => { if (e.target.id === "modal-back") close(); };
+    const close = () => MODAL.close();
+    $$('#modal [data-x="0"]').forEach((b) => (b.onclick = () => MODAL.requestClose()));
+    const formState = () => JSON.stringify([...document.querySelectorAll("#modal input, #modal select, #modal textarea")].map((i) => i.value));
     if (!editable) return;
     const pickedDs = typeof SRC !== "undefined" ? SRC.picker($("#lr-ds"), p.data_sources || []) : () => p.data_sources || [];
     const collect = () => {
@@ -389,42 +388,58 @@ const LAB = {
     };
     const save = async () => {
       const n = await api(`/api/lab/${r.id}/plan`, { method: "PUT", body: { plan: collect() } });
+      snapshot = formState();
       $("#lr-est").textContent = n.estimate_usd != null ? "$" + (+n.estimate_usd).toFixed(2) : "?";
       const w = (n.plan && n.plan.warnings) || [];
       if (w.length) toast(`Saved. ${w.length} cluster check warning${w.length > 1 ? "s" : ""}: ${w[0]}`, "err");
       return n;
     };
+    snapshot = formState();
     const fixBtn = $('#modal [data-x="fix"]');
-    if (fixBtn) fixBtn.onclick = async () => {
-      fixBtn.disabled = true; fixBtn.innerHTML = '<span class="spinner"></span> Fixing';
-      try {
-        const n = await api(`/api/lab/${r.id}/fix`, { method: "POST" });
-        const f = n.fix || {};
-        toast((f.remaining || []).length ? `Plan fixed; ${f.remaining.length} warning(s) left` : (f.rounds ? "Plan fixed; checks pass" : (f.notes || "No problems found")), (f.remaining || []).length ? "err" : "ok");
-        this.review(el, s, n);
-        this.refresh(document.querySelector("#lab-panel"), s);
-      } catch (e) { toast(e.message, "err"); fixBtn.disabled = false; fixBtn.textContent = "Fix with AI"; }
-    };
+    if (fixBtn) fixBtn.onclick = () => busy(fixBtn, async () => {
+      fixBtn.innerHTML = '<span class="spinner"></span> Fixing';
+      const n = await api(`/api/lab/${r.id}/fix`, { method: "POST" });
+      const f = n.fix || {};
+      toast((f.remaining || []).length ? `Plan fixed; ${f.remaining.length} warning(s) left` : (f.rounds ? "Plan fixed; checks pass" : (f.notes || "No problems found")), (f.remaining || []).length ? "err" : "ok");
+      snapshot = formState(); // the old form is replaced; nothing to discard
+      this.review(el, s, n);
+      this.refresh(document.querySelector("#lab-panel"), s);
+    });
     const undoBtn = $('#modal [data-x="undofix"]');
-    if (undoBtn) undoBtn.onclick = async () => {
-      try {
-        const n = await api(`/api/lab/${r.id}/undo-fix`, { method: "POST" });
-        toast("Restored the plan from before the AI fix", "ok");
-        this.review(el, s, n);
-        this.refresh(document.querySelector("#lab-panel"), s);
-      } catch (e) { toast(e.message, "err"); }
-    };
-    $('#modal [data-x="save"]').onclick = async () => { try { await save(); toast("Plan saved", "ok"); this.refresh(document.querySelector("#lab-panel"), s); } catch (e) { toast(e.message, "err"); } };
-    $('#modal [data-x="submit"]').onclick = async () => {
-      const b = $('#modal [data-x="submit"]'); b.disabled = true; b.innerHTML = '<span class="spinner"></span> Submitting';
+    if (undoBtn) undoBtn.onclick = () => busy(undoBtn, async () => {
+      const n = await api(`/api/lab/${r.id}/undo-fix`, { method: "POST" });
+      toast("Restored the plan from before the AI fix", "ok");
+      snapshot = formState();
+      this.review(el, s, n);
+      this.refresh(document.querySelector("#lab-panel"), s);
+    });
+    const saveBtn = $('#modal [data-x="save"]');
+    saveBtn.onclick = () => busy(saveBtn, async () => { await save(); toast("Draft saved", "ok"); this.refresh(document.querySelector("#lab-panel"), s); });
+    const subBtn = $('#modal [data-x="submit"]');
+    subBtn.onclick = () => busy(subBtn, async () => {
+      // A paid action: say what it costs and where it goes, and make it a second click.
+      const est = $("#lr-est").textContent;
+      if (!subBtn.dataset.armed) {
+        subBtn.dataset.armed = "1"; subBtn.dataset.keepLabel = "1";
+        subBtn.innerHTML = `Confirm: submit (worst case ${esc(est)})`;
+        subBtn.classList.add("armed");
+        setTimeout(() => { if (subBtn.isConnected && subBtn.dataset.armed) { delete subBtn.dataset.armed; delete subBtn.dataset.keepLabel; subBtn.classList.remove("armed"); subBtn.innerHTML = `Submit to ${esc(r.target_label || "cluster")}\u2026`; } }, 6000);
+        return;
+      }
+      delete subBtn.dataset.armed; subBtn.classList.remove("armed");
+      subBtn.innerHTML = '<span class="spinner"></span> Submitting';
       try {
         await save();
         const n = await api(`/api/lab/${r.id}/submit`, { method: "POST" });
-        close(); toast(`Submitted: Slurm job ${n.job_id}`, "ok");
+        snapshot = formState(); close(); toast(`Submitted: Slurm job ${n.job_id}`, "ok");
         NOTIFY.ask();
         this.refresh(document.querySelector("#lab-panel"), s);
-      } catch (e) { toast(e.message, "err"); b.disabled = false; b.textContent = "Submit"; }
-    };
+      } catch (e) {
+        delete subBtn.dataset.keepLabel;
+        subBtn.innerHTML = `Submit to ${esc(r.target_label || "cluster")}\u2026`;
+        throw e;
+      }
+    });
   },
 
   async loadTargets() {
@@ -438,7 +453,7 @@ const LAB = {
   // ------------------------------------------------------------------ all runs page
   async renderAll(v) {
     v.innerHTML = `<div class="runs-view"><div class="runs-head"><h2>Lab runs</h2>
-      <select id="runs-filter"><option value="">All</option><option value="live">Running or queued</option><option value="draft">Waiting for review</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select>
+      <select id="runs-filter" aria-label="Filter lab runs"><option value="">All</option><option value="live">Running or queued</option><option value="draft">Waiting for review</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select>
       <span class="grow"></span><span class="dim" id="runs-count"></span></div>
       <div id="runs-body"><span class="spinner"></span></div></div>`;
     const live = ["planning", "submitting", "queued", "running", "fetching", "analyzing"];
@@ -453,13 +468,23 @@ const LAB = {
         return `<tr data-sid="${r.session_id}" data-rid="${r.id}">
           <td class="mono">${r.id}</td>
           <td><span class="status-badge ${esc(badge)}">${esc(badge)}</span></td>
-          <td><div class="runs-title">${esc(p.title || (r.scope === "selection" ? "Selected passage" : "Whole report"))}</div><div class="dim runs-stage">${esc(r.error ? clip(r.error, 140) : (r.stage || ""))}</div></td>
-          <td class="runs-report" title="${esc(r.session_title || "")}">#${r.session_id} ${esc(clip(r.session_title || "", 60))}</td>
+          <td><div class="runs-title">${esc(p.title || (r.scope === "selection" ? "Selected passage" : "Whole report"))}</div>${(() => {
+            // the badge already says the status; only show a stage line that adds something
+            const line = r.error ? clip(r.error, 140) : (r.stage || "");
+            const redundant = !r.error && (/^(ended|done|completed|cancelled|failed)\b/i.test(line) || line.toLowerCase() === badge);
+            return line && !redundant ? `<div class="dim runs-stage">${esc(line)}</div>` : "";
+          })()}</td>
+          <td class="runs-report" title="${esc(r.session_title || "")}">#${r.session_id} ${esc(clip(oneLine(r.session_title || ""), 80))}</td>
           <td class="mono dim">${esc((p.resources || {}).partition || "")}${r.job_id ? `<div>job ${esc(r.job_id)}</div>` : ""}</td>
           <td class="mono dim">${esc(cost)}</td>
           <td class="dim">${esc(ago(r.updated_at))}</td></tr>`;
       }).join("")}</tbody></table>` : `<div class="dim" style="padding:20px">No lab runs${f ? " match this filter" : " yet. Start one from any report"}.</div>`;
-      $$("#runs-body tr[data-sid]").forEach((tr) => (tr.onclick = () => { S.scrollToLab = +tr.dataset.rid; openSession(+tr.dataset.sid); }));
+      $$("#runs-body tr[data-sid]").forEach((tr) => {
+        const open = () => { S.scrollToLab = +tr.dataset.rid; openSession(+tr.dataset.sid); };
+        tr.tabIndex = 0; tr.setAttribute("role", "link");
+        tr.onclick = open;
+        tr.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
+      });
     };
     try {
       const { runs } = await api("/api/lab/runs");

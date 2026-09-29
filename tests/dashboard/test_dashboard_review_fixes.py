@@ -184,3 +184,31 @@ def test_foreground_stream_research_finds_its_session_despite_the_file_note(tmp_
     )
     assert sm.find_session_since("what is x", start) is not None
     assert sm.find_session_since("what is", start) is None
+
+
+def test_source_edit_keeps_the_saved_index(api, tmp_path, monkeypatch):
+    from deepresearch.sources import DataSource
+
+    reg = api.sources
+    s = reg.add(DataSource(name="w1", kind="web", uri="https://a"))
+    reg.set_options(s, store="fileSearchStores/abc", store_hash="h")
+    st = api.dispatch(
+        "PATCH",
+        f"/api/sources/{s.id}",
+        {},
+        {"title": "New", "options": {"include": ["*.csv"], "store": "hacked"}},
+    )
+    got = reg.get("w1")
+    assert got.title == "New" and got.options["include"] == ["*.csv"]
+    assert got.options["store"] == "fileSearchStores/abc"
+    assert st is not None
+
+
+def test_annotations_list_across_sessions(api):
+    a = api.sessions.create_session("i1", "p1")
+    b = api.sessions.create_session("i2", "p2")
+    api.store.create_annotation(a, "quote one", 0, "", "amber")
+    api.store.create_annotation(b, "quote two", 0, "note", "cyan")
+    out = api.dispatch("GET", "/api/annotations", {}, None)
+    body = out[1] if isinstance(out, tuple) else out
+    assert {x["session_id"] for x in body["annotations"]} == {a, b}
