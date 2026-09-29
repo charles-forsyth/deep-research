@@ -7,6 +7,13 @@ releases.
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-09-29
+
+### Fixed
+
+- Lab submit with an expired Google sign-in said only "gcloud could not build the SSH command: to select an already authenticated account to use." (the last line of gcloud's advice). It now says the sign-in expired and to run `gcloud auth login`.
+- A submit that never reached the cluster (expired sign-in, VPN or IAP tunnel down, ssh unable to connect) no longer marks the run failed. It stays a draft with a "Not submitted" note, so Submit works again once the connection is fixed; errors after the cluster was reached still fail the run.
+
 ## [0.28.0] - 2026-09-28
 
 A full code and usability review (backend bug hunt with reproducing tests, frontend code

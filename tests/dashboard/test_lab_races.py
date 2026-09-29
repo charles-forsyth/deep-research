@@ -251,3 +251,85 @@ def test_a_queued_job_with_an_empty_state_stays_queued(lab):
     for _ in range(10):
         lab.poll(lab.get(run["id"]))
     assert lab.get(run["id"])["status"] == "queued"
+
+
+# ---- a submit that never reached the cluster stays a draft (2026-09-29) ----------
+
+
+def test_gcloud_reauth_error_names_the_fix():
+    from deepresearch.dashboard.lab import GCLOUD_LOGIN_HINT, _gcloud_error
+
+    stderr = (
+        "ERROR: (gcloud.compute.ssh) There was a problem refreshing your current auth "
+        "tokens: Reauthentication failed. cannot prompt during non-interactive "
+        "execution.\nPlease run:\n\n  $ gcloud auth login\n\nto obtain new credentials."
+        "\n\nIf you have already logged in with a different account, run:\n\n  $ gcloud "
+        "config set account ACCOUNT\n\nto select an already authenticated account to use."
+    )
+    assert _gcloud_error(stderr) == GCLOUD_LOGIN_HINT
+    other = "ERROR: (gcloud.compute.ssh) Could not fetch resource: instance not found\n"
+    assert "instance not found" in _gcloud_error(other)
+
+
+def test_submit_that_never_reached_the_cluster_goes_back_to_draft(lab, api):
+    from deepresearch.dashboard.lab import NotSubmitted
+
+    def no_cluster(run_id, files):
+        raise NotSubmitted("Google sign-in has expired")
+
+    real = lab.tgt.submit
+    lab.tgt.submit = no_cluster
+    rid = lab.create(1, "document", "x", plan=dict(PLAN))["id"]
+    with pytest.raises(NotSubmitted):
+        lab.submit(rid)
+    run = lab.get(rid)
+    assert run["status"] == "draft"
+    assert run["stage"] == "Not submitted"
+    assert "sign-in" in run["error"]
+    assert not run["job_id"] and not run["submitted_at"]
+    # the API says why (502), and the run is still editable
+    lab.tgt.submit = no_cluster
+    st, msg = call(api, "POST", f"/api/lab/{rid}/submit")
+    assert st == 502 and "sign-in" in msg
+    assert lab.get(rid)["status"] == "draft"
+    # once the login is fixed, Submit works on the same run
+    lab.tgt.submit = real
+    assert lab.submit(rid)["job_id"]
+
+
+def test_a_real_submit_error_still_fails_the_run(lab):
+    from deepresearch.dashboard.lab import TargetError
+
+    def sbatch_refused(run_id, files):
+        raise TargetError("sbatch returned 'invalid partition'")
+
+    lab.tgt.submit = sbatch_refused
+    rid = lab.create(1, "document", "x", plan=dict(PLAN))["id"]
+    with pytest.raises(TargetError):
+        lab.submit(rid)
+    assert lab.get(rid)["status"] == "failed"
+
+
+def test_ssh_failure_before_the_command_runs_is_not_submitted(monkeypatch):
+    from deepresearch.dashboard import lab as L
+
+    t = L.SlurmSSHTarget.__new__(L.SlurmSSHTarget)
+    t._lock = threading.Lock()
+    t._argv = ["ssh"]
+    t._dest = "host"
+
+    class R:
+        returncode = 255
+        stderr = b"ssh: connect to host: Connection timed out"
+        stdout = b""
+
+    monkeypatch.setattr(L.subprocess, "run", lambda *a, **k: R())
+    with pytest.raises(L.NotSubmitted):
+        t.run("true")
+
+    def expired(self):
+        raise L.TargetError(L.GCLOUD_LOGIN_HINT)
+
+    monkeypatch.setattr(L.SlurmSSHTarget, "_base", expired)
+    with pytest.raises(L.NotSubmitted):
+        t.run("true")
