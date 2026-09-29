@@ -442,10 +442,7 @@ class Api:
                 alive = False
             except (PermissionError, ValueError, TypeError):
                 pass
-        try:
-            idle = (time.time() - log.stat().st_mtime) / 60 if log.exists() else None
-        except OSError:
-            idle = None
+        idle = self._log_idle_min(log)
         if not alive:
             return {"reason": "process", "minutes": round(idle or 0),
                     "message": "The research process is gone but the session was never "
@@ -455,6 +452,46 @@ class Api:
                     "message": f"No progress for {round(idle)} minutes. Deep Research "
                                "sometimes stalls at Google; stop it and re-run it."}  # fmt: skip
         return None
+
+    @staticmethod
+    def _log_idle_min(log) -> float | None:
+        """Minutes since the log last showed NEW progress.
+
+        File mtime is not enough: when Google's stream drops, the agent reconnects every
+        ~10 minutes and the resumed stream replays the same thoughts, so the file keeps
+        growing while nothing moves (#287: 13 identical replays). Progress = a [THOUGHT] or
+        output line not seen earlier in the log; reconnect notices don't count.
+        """
+        try:
+            if not log.exists():
+                return None
+            mtime = log.stat().st_mtime
+            text = log.read_text("utf-8", "replace")[-400_000:]
+        except OSError:
+            return None
+        stamp = re.compile(r"^\[(\d\d):(\d\d):(\d\d)\] (.*)$")
+        seen: set[str] = set()
+        last_new: str | None = None
+        for ln in text.splitlines():
+            m = stamp.match(ln)
+            if not m:
+                continue
+            body = m.group(4).strip()
+            if not body or "Connection lost" in body or "Resuming from" in body:
+                continue
+            if body not in seen:
+                seen.add(body)
+                last_new = ":".join(m.groups()[:3])
+        idle = (time.time() - mtime) / 60
+        if last_new:
+            # the newest new line's clock time, today (the log uses local HH:MM:SS)
+            now = time.localtime()
+            h, mi, se = (int(x) for x in last_new.split(":"))
+            t = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, h, mi, se, 0, 0, -1))
+            if t > time.time() + 60:
+                t -= 86400  # it was yesterday
+            idle = max(idle, (time.time() - t) / 60)
+        return idle
 
     def _run_meta(self, sid: int) -> dict | None:
         with sqlite3.connect(self.db_path, timeout=10) as conn:

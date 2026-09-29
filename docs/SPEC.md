@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.34.0 (package `deepresearch`) |
+| Applies to | deep-research v0.34.1 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1527,8 +1527,10 @@ Added in v0.34.0.
   two identifiers; removed imports; >30% of a 10+ line script changed; new fixed-text
   findings. Stored in `plan.fix_concerns`, appended to `fix_notes` as `REVIEW:`, shown as
   "Check before running".
-- **Stuck sessions.** `Api._stall(s)` for running sessions: process gone, or log unchanged
-  for `STALL_MIN` (45) minutes. `GET /api/sessions/{id}` returns `stall`
+- **Stuck sessions.** `Api._stall(s)` for running sessions: process gone, or no NEW log line
+  (`_log_idle_min`: replayed lines and reconnect notices don't count) for `STALL_MIN` (45)
+  minutes. The agent itself cancels a task after `STALL_RECONNECTS` (4) resumes in a row
+  with no new event id (status failed, result "Stalled: ..."). `GET /api/sessions/{id}` returns `stall`
   {reason, minutes, message}; `GET /api/sessions` adds `stalled` to such rows. The session
   page offers Stop and re-run (cancel + `POST /api/research` with `rerun_of`) or Just stop.
 - **Probes** `features` (`<prog> -h`, package sections first) and `conda`
@@ -1736,6 +1738,7 @@ drops the other's result.
 | 2026-09-29 | v0.28.1 | Lab submit: expired gcloud sign-in named plainly; a submit that never reached the cluster keeps the run as a draft (20.6). |
 | 2026-09-29 | v0.28.2 | Lab: OR-Tools plans on a Python module get an isolated venv (CP-SAT segfaulted on top of python-sci). |
 | 2026-09-29 | v0.29.0 | Lab: lessons (curated + learned) in plan/fix prompts, science guards, known-answer verdicts (20.10). |
+| 2026-09-29 | v0.34.1 | Stalled Google tasks cancelled after 4 empty reconnects; stuck detection ignores replayed log lines. |
 | 2026-09-29 | v0.34.0 | Lab failure classes, AI-fix review gate, stuck-session detection, features/conda probes, local containers in place (20.12). |
 | 2026-09-29 | v0.33.3 | Lab ladder: module rung first for module-only Python plans; verify imports installed in fallbacks; verify in env key. |
 | 2026-09-29 | v0.33.2 | Lab: warm workers scale out with the queue (max_workers, default 3). |
