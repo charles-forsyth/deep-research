@@ -683,6 +683,15 @@ jupyterlab""".split()
 # Site modules that are a whole Python stack. pip packages go into a venv on top of the
 # module (build_sbatch), so the module's packages stay importable.
 PYTHON_ENV_MODULES = ("python-sci", "python-ml")
+# pip packages whose compiled core crashes when layered on a Python environment module:
+# OR-Tools bundles its own abseil/protobuf, and python-sci/2026.09 puts conda's
+# libabsl_*.so (2605) on the same process; CP-SAT's Solve() segfaults (exit 139) on even a
+# one-variable model once the module's site-packages are visible. Verified on Ursa Major
+# 2026-09-29 (Lab run #38): ortools 9.12, 9.14 and 9.15 all crash on top of python-sci
+# and all solve in a plain venv. These get an isolated venv (no --system-site-packages),
+# with the module's Python and the plan's other pip packages installed alongside.
+ISOLATE_FROM_MODULE_PIP = ("ortools",)
+ISOLATED_BASE_PIP = ["numpy", "pandas", "matplotlib", "scipy"]
 # A script that builds its own venv puts another Python first on PATH and hides the
 # packages the harness installed (issue #113).
 _SCRIPT_VENV = re.compile(
@@ -1267,26 +1276,39 @@ stage "Installing software"
         # numpy/pandas/matplotlib stay importable and pip adds only what is missing. A
         # separate Pixi Python here hid the module's packages (issue #113, run #30).
         pkg_names = sorted(x for x in pips if not x.startswith(("--", "https:")))
+        isolate = any(
+            re.split(r"[<>=!~\[ ]", n, maxsplit=1)[0].lower() in ISOLATE_FROM_MODULE_PIP
+            for n in pkg_names
+        )
+        # An isolated venv can't see the module's packages, so it installs the usual
+        # scientific stack itself (pip picks wheels matching the module's Python).
+        extra = [p for p in ISOLATED_BASE_PIP if p not in pkg_names] if isolate else []
         digest = hashlib.sha256(
-            json.dumps([pymods[0], pkg_names, pips]).encode()
+            json.dumps([pymods[0], pkg_names, pips, isolate]).encode()
         ).hexdigest()[:12]
         env_key = f"{_slug(pymods[0] + '-' + '-'.join(pkg_names), 40)}-{digest}"
-        body += f"""ENVDIR=$HOME/deep-research-lab/envs/{env_key}
+        venv_flag = "" if isolate else " --system-site-packages"
+        note = (
+            "# OR-Tools crashes on top of the module's libraries: isolated venv.\n"
+            if isolate
+            else ""
+        )
+        body += f"""{note}ENVDIR=$HOME/deep-research-lab/envs/{env_key}
 mkdir -p "$(dirname "$ENVDIR")"
 # Two jobs needing the same environment build it once: the second waits here.
 exec 9>"$ENVDIR.lock"
 flock 9
 if [ ! -f "$ENVDIR/.ready" ]; then
   rm -rf "$ENVDIR"
-  python3 -m venv --system-site-packages "$ENVDIR"
-  "$ENVDIR/bin/python" -m pip install --progress-bar off {" ".join(shlex.quote(p) for p in pips)}
+  python3 -m venv{venv_flag} "$ENVDIR"
+  "$ENVDIR/bin/python" -m pip install --progress-bar off {" ".join(shlex.quote(p) for p in extra + pips)}
   touch "$ENVDIR/.ready"
 else
   echo "[INFO] reusing cached environment $ENVDIR"
 fi
 flock -u 9
 . "$ENVDIR/bin/activate"
-echo "[INFO] python $(command -v python) on top of {pymods[0]}"
+echo "[INFO] python $(command -v python) {"isolated from" if isolate else "on top of"} {pymods[0]}"
 """
     elif conda or pips:
         # Readable prefix plus a hash of everything that shapes the environment: a
