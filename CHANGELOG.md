@@ -7,6 +7,12 @@ releases.
 
 ## [Unreleased]
 
+## [0.35.5] - 2026-09-29
+
+### Fixed
+
+- An AI smoke fix is checked statically before it goes back to the cluster: unset `$VARS` in unquoted heredocs are escaped automatically, and syntax errors or undefined names go back to the AI once with the exact problem; a fix that still fails is stopped instead of burning a smoke round (run #86 lost two rounds to a `$C_D` in a plot label).
+
 ## [0.35.4] - 2026-09-29
 
 ### Fixed

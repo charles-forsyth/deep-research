@@ -524,6 +524,41 @@ def heredoc_unset_vars(script: str) -> list[str]:
     return hits[:5]
 
 
+def escape_heredoc_unset_vars(script: str) -> tuple[str, list[str]]:
+    """Escape $VARs in unquoted heredocs that the script never sets (a `$C_D` in a
+    matplotlib label). Under `set -u` they would stop the job; escaped, Python sees the
+    literal text the author meant. Returns (new script, names escaped)."""
+    s = script or ""
+    known = set(_SH_ASSIGN.findall(s)) | set(_SH_LOOPVAR.findall(s)) | _SH_ENV
+    fixed: list[str] = []
+
+    def fix_body(body: str) -> str:
+        def sub(v: re.Match) -> str:
+            name = v.group(1) or v.group(3)
+            if v.group(1) and v.group(2)[:1] in (":", "-", "=", "?", "+"):
+                return v.group(0)
+            if (
+                name.startswith(("SLURM_", "LADDER_", "PIXI_", "CONDA_", "PARAM_"))
+                or name in known
+            ):
+                return v.group(0)
+            if name not in fixed:
+                fixed.append(name)
+            return "\\" + v.group(0)
+
+        return re.sub(
+            r"(?<!\\)\$(?:\{([A-Za-z_]\w*)([^}]*)\}|([A-Za-z_]\w*))", sub, body
+        )
+
+    out, pos = [], 0
+    for m in _UNQ_HEREDOC.finditer(s):
+        out.append(s[pos : m.start(2)])
+        out.append(fix_body(m.group(2)))
+        pos = m.end(2)
+    out.append(s[pos:])
+    return "".join(out), fixed
+
+
 def _literal_str(node: ast.AST) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value

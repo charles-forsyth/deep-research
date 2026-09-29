@@ -172,3 +172,14 @@ def test_undefined_names_and_heredoc_unset_vars():
     assert labguard.heredoc_unset_vars(s2.replace("<< EOF", "<< 'EOF'")) == []
     w = labguard.science_warnings({"script": s2})
     assert any("unquoted heredoc" in x for x in w)
+
+
+def test_escape_heredoc_unset_vars():
+    from deepresearch.dashboard import labguard
+
+    s = "X=1\npython3 - << EOF\nx=$X\nlabel='$C_D'\ny='${LAB_SMOKE:-0}'\nEOF\n"
+    new, esc = labguard.escape_heredoc_unset_vars(s)
+    assert esc == ["C_D"] and "'\\$C_D'" in new and "x=$X" in new
+    assert labguard.heredoc_unset_vars(new) == []
+    quoted = s.replace("<< EOF", "<< 'EOF'")
+    assert labguard.escape_heredoc_unset_vars(quoted) == (quoted, [])
