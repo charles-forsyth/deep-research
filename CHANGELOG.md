@@ -61,6 +61,10 @@ that failed before it.
   higher contrast for small text, and phone layout fixes. "Intel" is now "Details";
   report links are "Citations"; the Failed filter and counter agree.
 
+### Documentation
+
+- `docs/SPEC.md` brought fully up to date (module map, tables, CLI, client, settings, controls, errors, test suite, operations, Lab and data sources); README features, settings, data locations and screenshots refreshed; `ARCHITECTURE.md` and `docs/DASHBOARD_DESIGN.md` updated for Lab runs, data sources and localhost.
+
 ## [0.27.0] - 2026-09-28
 
 ### Added

@@ -2,7 +2,8 @@
 
 **A command-line tool and self-hosted web workstation for Google's Gemini Deep Research agent.**
 Launch autonomous research, watch it think, then read, annotate, search, compare and listen to
-the cited reports it produces. Everything lives in a local SQLite history on your own machine.
+the cited reports it produces, bring in your own and public data, and test a report's claims with
+real computations on an HPC cluster. Everything lives in a local SQLite history on your own machine.
 
 [![CI](https://github.com/charles-forsyth/deep-research/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/charles-forsyth/deep-research/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/charles-forsyth/deep-research)](https://github.com/charles-forsyth/deep-research/releases)
@@ -53,20 +54,43 @@ the cited reports it produces. Everything lives in a local SQLite history on you
   Gemini voice, either the full text or an AI-written 2-3 minute spoken summary.
 - **Annotate and collect**: highlights, notes and Markdown notebooks with cited quotes.
 - **Brief builder**: turn a report or notebook into an executive brief, slide outline or email.
+- **Notes page**: every highlight and note across all reports in one filterable list; click one
+  to jump to it in its report.
 - **Research map**: every report placed by topic similarity, clustered and clickable.
 - **Re-run and compare**: repeat a question later and see what changed, source by source.
+- **Readable math**: LaTeX in reports (`$\frac{a}{b}$`, `y^+`, `\kappa`) is shown as plain text
+  (`a/b`, `y⁺`, `κ`), with no math library to download.
+- **Lab runs**: turn a claim in a report into a real computation on a Slurm cluster. Gemini
+  suggests computations, writes a plan and a job script against the cluster's own catalog of
+  modules and containers, and you always review and edit it (with a worst-case cost) before
+  anything is submitted. The dashboard watches the job, fetches the outputs and figures, and
+  writes a short results note on the report. A Lab runs page lists every run.
 - **Data sources**: register web datasets, GCS buckets, S3/CephRDS buckets and folders in your
-  home directory once, browse and preview them, and include them in research runs, follow-up
-  questions and Lab runs. Data the cluster
-  cannot reach (CephRDS behind the campus VPN, local files) is uploaded from your machine; web
-  and GCS data is downloaded on the node. Jobs read it read-only from `$DS_<NAME>`.
-- Works on phones and tablets; `Ctrl+K` command palette on desktop.
+  home directory once, browse and preview them, edit their filters later, and include them in
+  research runs, follow-up questions and Lab runs. Data the cluster cannot reach (CephRDS behind
+  the campus VPN, local files) is uploaded from your machine; web and GCS data is downloaded on
+  the node. Jobs read it read-only from `$DS_<NAME>`, and every report and run records exactly
+  which data it used (a fingerprint that survives deleting the source).
+- **Free open data**: "Find open datasets" searches Data.gov, Zenodo, Hugging Face, AWS Open
+  Data, Google Cloud public datasets and the Earth Engine catalog. Only free sources are
+  offered; public buckets are read anonymously and requester-pays buckets are refused.
+- **Safe by default**: listens on this machine only; dialogs never confirm on a stray Enter, and
+  Escape closes them; a double-click can't start two cluster jobs; drafts, uploads and search
+  answers survive switching tabs.
+- Works on phones and tablets, and from the keyboard (tabs, rows and dialogs, visible focus);
+  `Ctrl+K` command palette on desktop.
 
-| Reader with citation cards | Research map |
+| Reader with citations and highlights | Math shown as readable text |
 |---|---|
-| ![Reader](docs/images/reader-citations.png) | ![Map](docs/images/research-map.png) |
-| **Compare two runs** | **Read aloud** |
-| ![Compare](docs/images/compare.png) | ![Read aloud](docs/images/read-aloud.png) |
+| ![Reader](docs/images/reader-citations.png) | ![Math](docs/images/reader-math.png) |
+| **Lab run results on a report** | **Every Lab run** |
+| ![Lab run card](docs/images/lab-card.png) | ![Lab runs](docs/images/lab-runs.png) |
+| **Data sources** | **Find free open datasets** |
+| ![Data sources](docs/images/sources.png) | ![Discover](docs/images/discover.png) |
+| **All notes** | **Compare two runs** |
+| ![Notes](docs/images/notes.png) | ![Compare](docs/images/compare.png) |
+| **Research map** | |
+| ![Map](docs/images/research-map.png) | |
 
 ## Quick start
 
@@ -148,6 +172,9 @@ Settings come from environment variables or `~/.config/deepresearch/.env` (a loc
 | `GEMINI_AGENT_NAME` | `deep-research-preview-04-2026` | Research agent; `deep-research-max-preview-04-2026` for maximum depth |
 | `GEMINI_FOLLOWUP_MODEL` | `gemini-3.8-flash` | Model for follow-ups, gap analysis, synthesis and search answers |
 | `DR_DASHBOARD_ACCESS_LOG` | unset | Set to log every dashboard HTTP request |
+| `DR_ALLOWED_HOSTS` | unset | Extra host names the dashboard accepts (comma-separated) |
+| `DR_LOCAL_ROOTS` | your home folder | Folders local data sources may use |
+| `DATA_GOV_API_KEY` | `DEMO_KEY` | Data.gov searches in "Find open datasets" |
 
 Data locations (all local):
 
@@ -156,6 +183,9 @@ Data locations (all local):
 | `~/.config/deepresearch/history.db` | Sessions, reports, embeddings, notebooks, annotations |
 | `~/.config/deepresearch/logs/` | Per-session run logs and the dashboard log |
 | `~/.config/deepresearch/audio/` | Exported audio files |
+| `~/.config/deepresearch/lab/run_<N>/` | Fetched Lab run outputs, log, plan and results note |
+| `~/.config/deepresearch/lab_targets.json` | Your cluster targets for Lab runs (not in the repo) |
+| `~/.cache/deepresearch/` | Open-data catalog caches |
 
 ## Costs
 
@@ -166,7 +196,8 @@ multiply that by the number of agents (`1 + breadth + breadth^2 ...`), so run `d
 first. The dashboard shows the estimate before launch and the actual cost afterwards (from Google's
 usage record, available for about a day after a run).
 
-Audio export uses Gemini 3.8 Flash TTS: about $0.25 to read a long report word for word, a few cents
+Lab runs show a worst-case cluster cost (resources times the partition's hourly rate) before
+you submit; planning and the results note use Gemini 3.8 Flash. Audio export uses Gemini 3.8 Flash TTS: about $0.25 to read a long report word for word, a few cents
 for a spoken summary. Briefs and comparisons use Gemini 3.8 Flash and usually cost under a cent.
 Prices change; check [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing).
 
@@ -181,6 +212,8 @@ flowchart LR
     Agent --> DB[(SQLite history)]
     Dash --> DB
     Dash -->|TTS, briefs, embeddings| Flash[Gemini Flash / TTS]
+    Dash -->|Lab runs: ssh, sbatch| HPC[Slurm cluster]
+    Dash -->|data sources| Data[(Web, buckets, folders)]
 ```
 
 The dashboard adds no Python dependencies: it is a standard-library `ThreadingHTTPServer` serving
@@ -195,7 +228,7 @@ git clone https://github.com/charles-forsyth/deep-research.git
 cd deep-research
 uv sync                         # creates .venv with dev tools
 uv run pre-commit install       # ruff, formatting and hygiene checks on commit
-uv run pytest                   # 110+ tests (about 75% coverage), no network needed
+uv run pytest                   # 326 tests (about 80% coverage), no network or API key needed
 uv run ruff check . && uv run ruff format --check . && uv run mypy src/
 ```
 

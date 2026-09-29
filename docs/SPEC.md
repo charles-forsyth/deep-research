@@ -226,25 +226,28 @@ exists; "manual" means covered by the release checklist in section 16.4.
 
 | Module | Lines | Responsibility |
 |---|---|---|
-| `deepresearch/__init__.py` | 29 | Entry point `main`, version lookup, source-checkout venv re-exec (see K18), silences SDK warnings. |
-| `deepresearch/__main__.py` | 397 | argparse parser, bare-prompt shortcut, command dispatch, top-level error catch. |
-| `cli/base.py` | 39 | `ResearchRequest` and `FollowUpRequest` (Pydantic): final prompt assembly and File Search tool config. |
-| `cli/commands.py` | 540 | One handler per CLI command; `detach_process` for `start`; the CLI cost estimator. |
-| `core/config.py` | 62 | Paths, `.env` loading, `DeepResearchConfig`, `service_env()` for background processes. |
-| `core/agent.py` | 574 | `DeepResearchAgent`: stream and poll runs, follow-up, gap analysis, synthesis, recursion. |
-| `core/session.py` | 221 | `SessionManager`: all reads and writes of the `sessions` table, liveness rules. |
-| `storage/database.py` | 40 | Creates `sessions`, enables WAL, additive column migrations. |
-| `storage/files.py` | 121 | `FileManager`: temporary File Search Stores, upload, cleanup. |
+| `deepresearch/__init__.py` | 30 | Entry point `main`, version lookup, source-checkout venv re-exec (see K18), silences SDK warnings. |
+| `deepresearch/__main__.py` | 445 | argparse parser, bare-prompt shortcut, command dispatch, top-level error catch. |
+| `cli/base.py` | 43 | `ResearchRequest` and `FollowUpRequest` (Pydantic): final prompt assembly and File Search tool config. |
+| `cli/commands.py` | 662 | One handler per CLI command; `detach_process` for `start`; the CLI cost estimator; `--source` handling. |
+| `cli/sources.py` | 366 | `deep-research sources ...` (section 21); `guess_kind`, `local_uri` validation. |
+| `core/config.py` | 78 | Paths, `.env` loading, `DeepResearchConfig`, `service_env()` for background processes. |
+| `core/agent.py` | 674 | `DeepResearchAgent`: stream and poll runs, follow-up, gap analysis, synthesis, recursion. |
+| `core/session.py` | 233 | `SessionManager`: all reads and writes of the `sessions` table, liveness rules. |
+| `storage/database.py` | 35 | Creates `sessions`, enables WAL, additive column migrations. |
+| `storage/files.py` | 151 | `FileManager`: temporary File Search Stores, upload, cleanup rules (`is_disposable_store`). |
 | `utils/exporters.py` | 49 | Code-block extraction and `.json` / `.csv` / text export. |
 | `utils/retry.py` | 36 | `with_retry` (network) and `db_retry` (SQLite locks) tenacity decorators. |
 | `utils/logger.py` | 59 | Rich console logging with `[INFO]`/`[THOUGHT]`/`[WARN]`/`[ERROR]`/`[DB]` tags and optional timestamps. |
-| `dashboard/daemon.py` | 189 | `--start/--stop/--restart/--status`, pid file, health probe, URL listing. |
-| `dashboard/server.py` | 963 | `Api` route table and handlers, `ThreadingHTTPServer` plumbing, static files, Range support. |
+| `dashboard/daemon.py` | 225 | `--start/--stop/--restart/--status`, pid file, loopback check, health probe, URL listing. |
+| `dashboard/server.py` | 1,659 | `Api` route table and handlers, `ThreadingHTTPServer` plumbing, loopback-only guard, static files, Range support. |
 | `dashboard/store.py` | 287 | `DashboardStore`: notebooks, annotations, session meta (stars, tags), dashboard session queries. |
-| `dashboard/features.py` | 546 | Actual cost, research map, compare, briefs, text-to-speech audio. |
-| `dashboard/static/` | 2,223 | `index.html`, `app.css`, `app.js`, `features.js`, vendored `marked` and `DOMPurify`. |
+| `dashboard/features.py` | 563 | Actual cost, research map, compare, briefs, text-to-speech audio. |
+| `dashboard/lab.py` | 2,584 | Lab runs (section 20): Slurm target, cluster catalog, planner, pre-flight, job harness, watcher. |
+| `sources/` | 1,941 | Data sources (section 21): `model`, `registry`, `adapters`, `public` (anonymous buckets), `staging`, `usage`, `index`, `discover`, `cloud_catalogs`, `provenance`, `service`. |
+| `dashboard/static/` | 3,736 | `index.html`, `app.css`, `app.js` (core), `features.js`, `lab.js`, `sources.js`, vendored `marked` and `DOMPurify`. |
 
-Total Python: about 4,150 lines. Total client: about 2,200 lines plus vendored libraries.
+Total Python: about 10,500 lines. Total client: about 3,700 lines plus vendored libraries.
 
 ### 5.2 Process model
 
@@ -549,8 +552,10 @@ strings (K16).
 | `run_meta` | server | `session_id` PK, `depth`, `breadth`, `estimate_usd`, `rerun_of`, `launched_at` | Launch parameters and estimate for dashboard runs; re-run links. |
 | `session_usage` | features | `session_id` PK, `usage` (JSON), `fetched_at`, `error` | Cached usage block or definitive "not available" (REQ-COST-3). |
 | `audio_exports` | features | `id`, `kind` (`session`/`notebook`), `ref_id`, `mode` (`full`/`summary`), `voice`, `path`, `seconds`, `cost_usd`, `script`, `created_at` | One row per generated audio file. |
-| `lab_runs` | lab | `id`, `session_id`, `scope` (`selection`/`document`), `selection`, `request`, `target`, `status`, `stage`, `plan` (JSON), `script`, `job_id`, `slurm_state`, `node`, `elapsed`, `exit_code`, `error`, `result_md`, `files` (JSON), `estimate_usd`, `ai_cost_usd`, `rerun_of`, timestamps | One row per lab run (section 20). A cache of the cluster's job folder. |
+| `lab_runs` | lab | `id`, `session_id`, `scope` (`selection`/`document`), `selection`, `request`, `target`, `status`, `stage`, `plan` (JSON), `script`, `job_id`, `slurm_state`, `node`, `elapsed`, `exit_code`, `error`, `result_md`, `files` (JSON), `estimate_usd`, `ai_cost_usd`, `rerun_of`, `data_sources` (JSON names picked at launch), `created_at`, `updated_at`, `submitted_at`, `finished_at` | One row per lab run (section 20). A cache of the cluster's job folder. |
 | `lab_suggestions` | lab | `session_id` PK, `data` (JSON), `cost_usd`, `created_at` | Cached pre-run suggestions for a report. |
+| `data_sources` | sources | `id`, `name` (unique), `title`, `description`, `tags` (JSON), `kind`, `uri`, `options` (JSON: `include`, `exclude`, `region`, `max_relay_bytes`, `store`, `store_hash`), `auth_ref`, `protection_level`, `staging`, `temporary`, `status`, `last_checked`, `last_error`, `manifest` (JSON), timestamps | The data source registry (21.1). Credential references only, never secrets. |
+| `data_source_uses` | sources | `id`, `source_id`, `manifest_hash`, `used_by_kind` (`session`/`lab_run`), `used_by_id`, `role`, `created_at`, `source_name`, `source_kind`, `source_uri` | Which data each report and Lab run used, with a snapshot of the source so deleting it keeps the record (21.9). |
 
 The CLI never reads the dashboard tables. Runs started from the CLI therefore have no
 `run_meta` row: no estimate is shown next to their actual cost and they cannot appear as
@@ -618,8 +623,11 @@ Shared options for `research` and `start`:
 ### 9.4 Dashboard
 
 `dashboard [--start | --stop | --restart | --status | --foreground] [--host H]
-[--port P]`. No flag means `--status`. `--restart` keeps the previous host and port
-unless given. Exit codes: see REQ-DASH-1.
+[--port P] [--allow-remote]`. No flag means `--status`. The default host is `127.0.0.1`;
+a non-loopback `--host` exits 2 unless `--allow-remote` is given (14.1). `--restart`
+keeps the previous host and port unless given, except that a dashboard started on
+`0.0.0.0` by an older version without `--allow-remote` comes back on `127.0.0.1`. Exit
+codes: see REQ-DASH-1.
 
 ### 9.5 Exit codes and errors
 
@@ -716,23 +724,33 @@ errors (for example a missing key) print `[CONFIG ERROR]`, anything else prints
 
 ### 11.1 Stack and layout
 
-- `index.html` shell, `app.css`, `app.js` (core), `features.js` (v0.17 features).
+- `index.html` shell, `app.css`, `app.js` (core, dialogs, tabs, reader, notes), `features.js`
+  (cost, map, compare, audio, briefs), `lab.js` (Lab runs), `sources.js` (data sources).
   Vanilla JavaScript in strict mode, no framework, no build step, no network calls
   except to the dashboard's own API.
 - Markdown is rendered with vendored `marked` (GFM) and always passed through vendored
   `DOMPurify` before insertion. External links open in a new tab with
   `noopener noreferrer`.
 - Three panes: **archive** (left: session list, filter, stars, tags), **stage** (centre:
-  tabs), **inspector** (right: Intel, Live log, Notes, Outline). Below 1200 px the inspector becomes a slide-out drawer; below 820 px the archive does
+  tabs), **inspector** (right: Details, Notes, Outline, Live log). Below 1200 px the inspector becomes a slide-out drawer; below 820 px the archive does
   too, and split views (notebook, compare) stack vertically.
 - Top bar: brand, version, live telemetry counters (running, completed, failed, corpus
-  size, key health) and the command palette button.
+  size, key health), Lab runs, Notes, Data sources, the command palette button and New
+  research. On phones those pages move into the archive drawer's menu. The FAILED counter
+  counts failed, crashed and cancelled sessions, the same set as the Failed filter.
 
 ### 11.2 Tabs
 
 Tab kinds: `home` (Mission control, always present), `session`, `notebook`, `launch`,
-`search`, `tree`, `map`, `compare`. Open tabs and the active tab persist in
-`localStorage` (`dr.tabs.v1`); launch tabs are not persisted.
+`search`, `tree`, `map`, `compare`, `sources`, `source`, `labruns`, `notes`. Open tabs and
+the active tab persist in `localStorage` (`dr.tabs.v1`); launch tabs are not persisted.
+
+Tabs are a keyboard tab list (arrow keys move, Enter opens, Delete closes) and the active
+tab is scrolled into view. Switching away from a tab keeps its state for the page's
+lifetime: scroll position and form fields (`VIEWSTATE`), the launcher's uploaded files
+and picked data sources, the last semantic search answer, and the Ask draft. Clicking the
+active tab does nothing, so the reading position is kept. Async renderers check a render
+generation after each request and stop if the user has moved on.
 
 ### 11.3 Refresh and polling
 
@@ -744,17 +762,22 @@ Tab kinds: `home` (Mission control, always present), `session`, `notebook`, `lau
 | Notebook preview | 250 ms debounce | |
 | Actual cost | once when a finished session opens | |
 
-When the open session leaves `running`, the reader reloads it, shows a toast and, if the
-page is hidden and permission was granted, a browser notification.
+When the open session leaves `running`, the reader reloads it (whichever inspector tab
+is showing), shows a toast and, if the page is hidden and permission was granted, a
+browser notification. The archive filter box keeps the full session list for counters,
+notifications and completion checks and shows search results separately; a reply to an
+older keystroke is dropped.
 
 ### 11.4 Features
 
 | Feature | Behaviour |
 |---|---|
 | Launch | Prompt, six templates (market scan, literature review, tech deep dive, due diligence, policy brief, compare), depth and breadth, uploads (base64 through `/api/uploads`), existing stores, format. Live estimate; the launch button is disabled when the key is missing or rejected. |
-| Reader | Rendered report, outline, find in page (Ctrl F), sources grouped by domain, star, tags, re-run (estimate first), export, cancel, delete (recursive when the session has children), follow-up box (disabled while running). |
+| Reader | Rendered report, outline, find in page (Ctrl F: Enter / Shift+Enter step through matches, "3 of 471", Escape closes), citations grouped by domain, star, tags, re-run (estimate first), export, stop, delete (recursive when the session has children), follow-up box (disabled while running). LaTeX (`$...$`, `$$...$$`, `\(...\)`) is shown as plain Unicode (`X_r/h ≈ 6.26`, `y⁺`, `1/κ ln y⁺ + B`); money such as `$5 to $10` and code are left alone. |
+| Failed report | A failed, crashed or cancelled session shows its error in a red box with Re-run; Listen, Export, the Lab panel and the Ask box are hidden because there is no report. |
 | Citation cards | `[cite: N, M]` markers become chips; hover or tap shows the claim and the numbered source. Paragraphs of 25+ words that contain a digit or a capitalised word pair but no citation get an amber "uncited" edge. |
-| Annotations | Select text, pick one of four colours; stored by quote and occurrence; notes edited in the inspector. |
+| Annotations | Select text (mouse, touch or long-press; on phones the toolbar docks at the bottom), pick one of four colours; stored by quote and occurrence, matched against the text the reader sees (citations are decorated first); notes edited in the inspector with a saved / not saved state. |
+| Notes page | Every highlight and note across all reports, newest first, with a filter; clicking one opens its report at that highlight (`GET /api/annotations`). |
 | Notebooks | Markdown with Edit, Split and Read modes (`dr.nbmode`); "send to notebook" inserts a cited quote. |
 | Search | Semantic search with optional synthesized answer. |
 | Tree and timeline | Tree of child tasks; timeline with lanes per node, parsed thought and info events, elapsed time, estimate and actual cost. |
@@ -763,7 +786,11 @@ page is hidden and permission was granted, a browser notification.
 | Brief builder | Executive brief, slide outline or email, saved as a new notebook with a "Built from Session #N" footer. |
 | Read aloud | Browser `speechSynthesis`, free, paragraph highlighting, voice and rate saved as `dr.voice` and `dr.rate`. Reads `speakable()` text (REQ-DASH-9). |
 | Audio export | Full text or 2-3 minute summary in one of 8 Gemini voices (`dr.aivoice`); estimate first; plays in an inline player; listed on the report. |
-| Command palette | Ctrl/Cmd K: commands, notebooks and sessions, arrow keys and Enter. |
+| Command palette | Ctrl/Cmd K: commands, notebooks and sessions, arrow keys and Enter; the highlighted item stays in view (listbox semantics). |
+| Lab runs page | Every Lab run with status, report, partition, worst-case cost and age; rows open the report at that run's card (section 20). |
+| Data sources | Library, add form (checked before sending), source page with test, edit, index, folder browser and preview, "Find open datasets" with a per-catalog filter and an inline add form (section 21). |
+| Dialogs | One modal helper for every dialog: `role=dialog`, Escape and backdrop close, Tab stays inside, focus returns to where it was. Confirm dialogs never confirm on a document-wide Enter; destructive ones start on Cancel; a dialog replaced by another settles as cancelled. Closing the Lab plan review with unsaved edits asks first; Submit takes a second click that shows the worst-case cost. |
+| Accessibility | Session rows, tabs, table rows, tree nodes, folder items and the upload drop zone are focusable and work with Enter; a visible focus ring; labelled fields; small text meets 4.5:1 contrast; reduced motion respected. Buttons for paid or destructive actions are disabled while their request runs. |
 
 ### 11.5 Keyboard
 
@@ -773,7 +800,9 @@ page is hidden and permission was granted, a browser notification.
 | Ctrl/Cmd F | Find in the open report |
 | Ctrl/Cmd S | Save the open notebook |
 | Enter / Shift+Enter | Send follow-up / new line |
-| Escape | Close the selection bar, palette or dialog |
+| Escape | Close the dialog (asks first if a plan has unsaved edits), palette, find bar or selection bar |
+| Enter / Shift+Enter in Find | Next / previous match |
+| Arrow keys on tabs or archive rows | Move between them |
 | Middle click on a tab | Close it |
 
 ---
@@ -792,6 +821,9 @@ page is hidden and permission was granted, a browser notification.
 | `DR_DASHBOARD_ACCESS_LOG` | unset | Enable per-request access logging. |
 | `DR_TASK_TIMEOUT_MIN` | `180` | Safety limit per research task in minutes; 0 = no limit (6.4a). |
 | `DR_ALLOWED_HOSTS` | unset | Comma-separated extra host names the dashboard accepts (for example a custom DNS name for the machine). |
+| `DR_LOCAL_ROOTS` | your home folder | Folders local data sources may use (path-separator list, 21.2). |
+| `DATA_GOV_API_KEY` | `DEMO_KEY` | Data.gov catalog searches in discovery (21.8). |
+| `XDG_CACHE_HOME` | `~/.cache` | Discovery catalog caches under `deepresearch/` (21.8a). |
 
 `debug` is a field on `DeepResearchConfig` with no environment variable or flag.
 
@@ -816,7 +848,10 @@ environment, so it follows the CLI order.
 | `history.db` (+ `-wal`, `-shm`) | all tables (section 8) | everything |
 | `logs/session_<id>.log` | worker stdout and stderr | background workers |
 | `logs/dashboard.log` | server output and tracebacks | dashboard |
-| `dashboard.pid` | `{"pid", "host", "port"}` JSON | `dashboard --start` |
+| `dashboard.pid` | `{"pid", "host", "port", "allow_remote"}` JSON | `dashboard --start` |
+| `lab_targets.json` | cluster targets and partitions (not in the repo) | the user |
+| `catalog-<target>.json` | cached cluster catalog (20.9) | Lab |
+| `lab/run_<N>/` | fetched Lab job outputs, log, plan and write-up | Lab watcher |
 | `uploads/<hex>/<name>` | files uploaded through the dashboard | `POST /api/uploads` (never cleaned up, K10) |
 | `audio/<kind>_<id>_<mode>_<voice>.mp3` | audio exports (WAV if ffmpeg is missing) | `POST /api/audio` |
 
@@ -936,7 +971,11 @@ for a network you trust. An optional login is on the roadmap.
 | MIME sniffing, referrer leaks | `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`. |
 | API key exposure | The key is never sent to the browser (health returns booleans), never logged, never stored in the database or exports (REQ-NF-6). `auth login` reads it with hidden input. |
 | Stale key from a folder `.env` | The user `.env` wins over `./.env` for both the CLI and the dashboard (12.2). |
-| Accidental cloud deletion | `cleanup` confirms unless `--force` and warns that it removes every store on the key. |
+| Other machines | Loopback-only by default; a non-loopback bind needs `--allow-remote`; while loopback-only every request from another address gets 403 (14.1). |
+| Files from outside | Bucket keys are made plain relative paths or skipped (`safe_rel`), and every download is checked to land inside its folder (`safe_join`). Local previews refuse hidden files and symlinks, matching the listing. |
+| Active content from Lab jobs | Only plain images, PDF and audio/video render inline; SVG, HTML and unknown types are sent as attachments with `Content-Security-Policy: sandbox` and `nosniff`; text types are served as `text/plain`. Dataset links from catalogs are shown only when they are `http(s)`. |
+| Batch file injection | Partition, modules and time limit are validated before they go into `run.sbatch`; a bad value falls back to the default. |
+| Accidental cloud deletion | `cleanup` confirms unless `--force`, deletes only temporary stores by default (21.6), keeps a temporary store made in the last 36 hours (a running research may use it), and needs `--all` for everything. |
 
 ### 14.3 Data at rest
 
@@ -966,6 +1005,10 @@ mode the umask gives it (K15).
 | ffmpeg missing | Audio kept as WAV. |
 | Usage lookup failure | Transient errors are not cached and are retried next time; 404 is cached as "expired". |
 | Dashboard port taken | `--start` exits 1 with a message. |
+| Non-loopback `--host` without `--allow-remote` | `--start` and `--foreground` exit 2 with a message; nothing starts. |
+| Browser disconnects mid-response | Ignored quietly (no traceback in the log). |
+| Dashboard stops during a Lab submit | The run is failed by the watcher ("Submit interrupted"); cancel also works (20.6). |
+| Data source preparation fails for a dashboard research | The session is marked failed with the reason instead of staying running. |
 | Stale pid file | Ignored if that pid is not alive. |
 
 ---
@@ -974,24 +1017,35 @@ mode the umask gives it (K15).
 
 ### 16.1 Suite
 
-140 tests in 12 files, about 30 s, no network and no API key. Gemini is faked, and the
-dashboard tests run a real HTTP server on an ephemeral port against a temporary
-database.
+326 tests in 23 files, about 55 s, no network and no API key. Gemini, the cluster and
+bucket tools are faked; the dashboard tests run a real HTTP server on an ephemeral port
+against a temporary database.
 
 | File | Tests | Covers |
 |---|---|---|
-| `tests/cli/test_commands.py` | 12 | Command handlers, start, estimate, follow-up by id |
-| `tests/cli/test_help.py` | 9 | Help text and option consistency |
-| `tests/core/test_agent.py` | 15 | Stream processing, reconnect, uploads, recursion, adoption, failures, task limit |
-| `tests/core/test_config.py` | 10 | Key loading, `service_env` precedence |
-| `tests/core/test_session.py` | 10 | Session CRUD and liveness rules |
-| `tests/dashboard/test_cli.py` | 5 | Dashboard flags and working directory |
-| `tests/dashboard/test_daemon.py` | 5 | Start, status, restart, stop, stale pid |
+| `tests/cli/test_commands.py` | 13 | Command handlers, start, estimate, follow-up by id |
+| `tests/cli/test_help.py` | 13 | Help text and option consistency |
+| `tests/core/test_agent.py` | 18 | Stream processing, reconnect, uploads, recursion, adoption, failures, task limit |
+| `tests/core/test_config.py` | 12 | Key loading, `service_env` precedence |
+| `tests/core/test_session.py` | 9 | Session CRUD and liveness rules |
+| `tests/dashboard/test_cli.py` | 13 | Dashboard flags, loopback default, `--allow-remote`, working directory |
+| `tests/dashboard/test_daemon.py` | 7 | Start, status, restart, stop, stale pid, loopback refusal, restart back to local |
+| `tests/dashboard/test_dashboard_review_fixes.py` | 9 | Resource parsing, partition sanitising, SVG download, temp store grace, atomic cache, child failure, source edit, notes list |
 | `tests/dashboard/test_features.py` | 16 | Usage cost, speakable text, chunks, compare, audio, Range |
-| `tests/dashboard/test_server.py` | 26 (+10 parametrised) | Routes, validation, uploads, delete, health, estimate parity, cross-site and host checks |
-| `tests/storage/test_files.py` | 5 | Store creation, upload, cleanup |
+| `tests/dashboard/test_lab.py` | 72 | Script builder, estimate, plan-submit-watch-fetch-write-up loop, cancel races, catalog, pre-flight, AI fix |
+| `tests/dashboard/test_lab_races.py` | 10 | One job per submit, stuck submitting, edit/fix vs submit, Slurm forgetting a job |
+| `tests/dashboard/test_server.py` | 38 | Routes, validation, uploads, delete, health, estimate parity, cross-site and host checks, loopback guard, sources API |
+| `tests/sources/test_discover.py` | 6 | Catalog searches and parsing |
+| `tests/sources/test_index.py` | 4 | Saved indexes |
+| `tests/sources/test_lab_sources.py` | 9 | Relay and direct staging, pre-flight, provenance |
+| `tests/sources/test_provenance.py` | 5 | Fingerprints |
+| `tests/sources/test_public_buckets.py` | 13 | Anonymous S3/GCS listing, requester-pays refusal, direct staging |
+| `tests/sources/test_sources.py` | 17 | Registry, adapters, CLI |
+| `tests/sources/test_sources_review_fixes.py` | 18 | Safe paths, hidden files, filters on fetch, binary preview, name lookup, stable hashes, provenance on delete, relay re-list and cap |
+| `tests/sources/test_usage.py` | 8 | Research and Ask inclusion |
+| `tests/storage/test_files.py` | 6 | Store creation, upload, cleanup rules |
 | `tests/utils/test_exporters.py` | 6 | Code-block extraction, JSON and CSV export |
-| `tests/utils/test_retry.py` | 8 | Retry decorators |
+| `tests/utils/test_retry.py` | 4 | Retry decorators |
 
 ### 16.2 Gates
 
@@ -1020,7 +1074,7 @@ Before tagging a release that touches the affected area:
 3. **REQ-DASH-8:** load the dashboard at 390 px, tablet and desktop widths; no horizontal scroll, drawers open and close, browser console clean.
 4. **REQ-DASH-11:** type in a notebook, wait about a second, reload, confirm the text is saved; check Read and Split modes.
 5. Launch one real depth-1 run from the dashboard and confirm the live log, completion toast and actual cost.
-6. After install, `deep-research --version` matches the tag and `dashboard --restart` reports healthy.
+6. After install, `deep-research --version` matches the tag and `dashboard --restart` reports healthy and listens on `127.0.0.1` only (`ss -ltn`).
 
 ---
 
@@ -1043,7 +1097,7 @@ noted, confirmed by test; items fixed since are marked with the version. Each is
 | K10 | Cleanup | CLI `delete` removes one row and leaves children (orphaned), annotations, meta, run_meta, usage and audio. Dashboard delete removes annotations and meta but leaves `run_meta`, `session_usage`, `audio_exports` rows and audio files. Uploaded files are never removed. | Orphan rows and disk growth. |
 | K11 | CLI | Every command except `dashboard` exits 0, including on errors. | Scripts cannot detect failure. |
 | K12 | Cost | The estimate leaves out gap analysis, synthesis, follow-ups and search grounding. Actual cost covers the session's own interaction only (a recursive root's figure leaves out its children). The estimate formula is duplicated in two modules. | Shown costs understate recursive runs. |
-| K13 | Dashboard | No authentication (by design; 14.1). | Anyone on the network can use and spend. |
+| K13 | Dashboard | No authentication (by design; 14.1). Since v0.28.0 it listens on this machine only unless `--allow-remote` is given. | With `--allow-remote`, anyone on that network can use and spend. |
 | K14 | Cost | REQ-COST-4 is only met for audio. The brief dialog says "usually under a cent" without an estimate; the compare "What changed? (AI)" button, semantic search synthesis (which sends the full text of the top matches) and follow-ups show no cost before running. | Paid actions without a figure up front. |
 | K15 | Config | `auth login` overwrites the whole user `.env`, dropping any other variables in it, and does not set file permissions explicitly. | Lost settings; key file mode depends on umask. |
 | K16 | Data | Timestamps are naive local time. Usage times from Google are passed through as given. | Wrong elapsed times across time-zone or DST changes, and when mixing local and Google times. |
@@ -1083,7 +1137,9 @@ uv run deep-research dashboard --foreground --host 127.0.0.1 --port 7421
 | Why did a run fail? | `deep-research show ID` (error text in the result), then `logs/session_<id>.log`. |
 | Why did the dashboard fail? | `logs/dashboard.log` (tracebacks for every 500). |
 | Stuck "running" row | Listing sessions applies liveness (7.3); if the process really is alive, cancel it from the dashboard. |
-| Leftover cloud stores | `deep-research cleanup` (removes **all** stores on the key). |
+| Leftover cloud stores | `deep-research cleanup` removes temporary stores (not source indexes or named stores); `--all` removes every store on the key. |
+| Use the dashboard from another machine | SSH tunnel (`ssh -L 7420:127.0.0.1:7420 host`), or `dashboard --restart --host 0.0.0.0 --allow-remote` on a trusted network. |
+| A Lab run stuck in "submitting" | Stop run on its card, or let the watcher fail it; then check `squeue --me` on the cluster for a stray job. |
 | Back up history | `sqlite3 history.db ".backup backup.db"` (copying the file alone can miss the WAL). |
 | Change the key | `deep-research auth login`, then `dashboard --restart`. |
 
@@ -1238,6 +1294,23 @@ about $0.02.)
 - The cluster's job folder is the source of truth; `lab_runs` is a cache. A poll that
   fails (laptop asleep, network down) records the error and retries on the next round;
   it never resubmits.
+- Submit claims the draft atomically (`draft` to `submitting` in one conditional update),
+  so a double-click or a second tab sends one Slurm job; the second gets 409. Every later
+  write of the submit is conditional on the run still being `submitting`; if it was
+  cancelled while the upload or `sbatch` ran, the job id that comes back is cancelled on
+  the cluster.
+- A run left in `submitting` by a dashboard that stopped mid-submit can be cancelled, and
+  the watcher marks it failed ("Submit interrupted") when no submit for it is in flight in
+  this process.
+- Editing a plan and Fix with AI write only while the run is still a draft; if it was
+  submitted meanwhile they return 409 and the queued run is left alone.
+- If `squeue` and `sacct` both stop reporting a running job (accounting off, or the record
+  aged out while the laptop slept), the job's own stage markers decide: `Done` or
+  `Failed ...` moves it to fetching; after 8 empty polls (about 2 minutes) it is fetched
+  as failed. A queued job with no record yet stays queued.
+- Resource values are parsed leniently (`"2"`, `2.0`); values such as `auto` or `4h` fall
+  back to the defaults instead of failing. The card marks the step a failed run stopped
+  at (Running for a job that failed, Fetch or Write-up when those failed), never Done.
 - The watcher lives in the dashboard process. If the dashboard is stopped, jobs keep
   running on the cluster and are picked up when it starts again (checked on start).
 - Runs are fetched once; a run stuck in `fetching` or `analyzing` retries that step. A
@@ -1377,14 +1450,14 @@ plus `data_source_uses`).
 
 | Field | Meaning |
 |---|---|
-| `name` | Unique slug; the Lab job variable is `DS_<NAME>` (upper case, `-` to `_`). |
-| `kind` | `web`, `gcs`, `s3`, `local_folder`, `local_file`, `report`, `notebook`. |
+| `name` | Unique slug; the Lab job variable is `DS_<NAME>` (upper case, `-` to `_`). Lookups try the name first, so a source named `12` is found by name, not as id 12. |
+| `kind` | `web`, `gcs`, `s3`, `public_bucket` (21.8a), `local_folder`, `local_file`, `report`, `notebook`. |
 | `uri` | `https://...`, `gs://bucket/prefix`, `s3://bucket/prefix`, an absolute path, or a session/notebook id. |
-| `auth_ref` | How to reach it: `rclone:<remote>` for S3, `gcloud` for GCS, empty for public web and local. |
+| `auth_ref` | How to reach it: `rclone:<remote>` for S3, `gcloud` for GCS, empty for public web, public buckets and local. |
 | `protection` | P1-P4, shown for information. Nothing is blocked on it (decision 2026-09-28). |
 | `staging` | `auto`, `relay` or `direct` (21.3). `auto` = direct for web and GCS, relay otherwise. |
 | `status`, `last_error`, `last_tested` | Result of the last test. |
-| `manifest` | File count, total bytes, format counts, up to 5,000 entries, a content hash, `truncated`. |
+| `manifest` | File count, total bytes, format counts, up to 5,000 entries, a content hash, `truncated`. Report and notebook sources hash their text with SHA-256, so the hash is the same in every process. |
 
 ### 21.2 Adapters
 
@@ -1392,9 +1465,18 @@ Each kind has an adapter with `test()`, `list(path)`, `preview(path)` (first 64 
 `fetch(dest)` and, where the cluster can do it, `direct_snippet()`. Buckets use tools that
 are already installed on the laptop and the cluster (`gcloud storage`, `rclone`), so no new
 Python dependencies. Local sources must resolve (after symlinks) inside the allowed roots:
-`DR_LOCAL_ROOTS` (path-separator list) or the user's home directory. Path traversal in
-browse and preview is rejected. Browsing reuses the stored manifest when it is complete, so
-folder clicks do not re-list a bucket over the VPN.
+`DR_LOCAL_ROOTS` (path-separator list) or the user's home directory; a relative path means
+under the home folder, and other URL schemes (`ftp:`, `mailto:`) and paths outside the
+roots are refused when the source is added. Path traversal in browse and preview is
+rejected, and preview refuses hidden files and symlinks, exactly as the listing skips
+them. Previews return raw bytes, so binary files never cause errors. Browsing reuses the
+stored manifest when it is complete, so folder clicks do not re-list a bucket over the VPN.
+
+Fetches honour the source's `include` and `exclude` globs: rclone gets ordered `--filter`
+rules, and GCS with filters copies exactly the matching files instead of the whole
+prefix. A local folder fetch copies every file or fails (up to 50,000); it never stops
+silently at the listing cap. Every downloaded file name is checked to land inside the
+destination folder.
 
 ### 21.3 Lab staging
 
@@ -1402,10 +1484,15 @@ Selected sources are listed in `plan.data_sources`. On submit:
 
 - **relay**: the dashboard machine fetches the source (local files, CephRDS over the campus
   VPN, anything the cluster cannot reach), tars it and uploads it to
-  `<remote_root>/data/<name>-<manifest hash>/` before `sbatch`. A copy that is already
-  there (same hash) is reused. Default cap 2 GB per source (`options.max_relay_bytes`).
+  `<remote_root>/data/<name>-<manifest hash>/` before `sbatch`. The source is listed again
+  first, so the folder name, the cap and the provenance describe today's contents, and a
+  copy that is already there (same hash) is reused. A source that cannot be fully listed
+  is refused (its size is unknown), and the fetched size is checked against the cap
+  again before uploading. Default cap 2 GB per source (`options.max_relay_bytes`). The
+  batch file is built after staging so `DS_<NAME>` points at the folder just uploaded.
 - **direct**: the job downloads the source on the node in a `Staging data` stage (curl for
-  web, `gcloud storage rsync` for GCS, `rclone copy` for S3 remotes the cluster has),
+  web and public buckets, `gcloud storage rsync`, or per-file `cp` when filtered, for GCS,
+  `rclone copy` with the filters for S3 remotes the cluster has),
   under a `flock` so parallel jobs share one download.
 
 Either way the copy is made read-only, the job exports `DS_<NAME>`, `sources.json` in the
@@ -1421,13 +1508,16 @@ first.
 
 ### 21.4 Interfaces
 
-- CLI: `deep-research sources add|list|show|test|browse|preview|rm`.
+- CLI: `deep-research sources add|list|show|test|browse|preview|rm|index|discover`.
 - API: `GET/POST /api/sources`, `GET/PATCH/DELETE /api/sources/{id}`,
   `POST /api/sources/{id}/test`, `GET /api/sources/{id}/browse?path=`,
   `GET /api/sources/{id}/preview?path=`; `POST /api/sessions/{sid}/lab` accepts
   `data_sources`.
-- Dashboard: Sources page (library, add form, test, folder browser, preview) and a source
-  picker in the New lab run dialog and in plan review.
+- Dashboard: Data sources page (library, add form, test, folder browser, preview), a
+  source page with Edit (title, description, tags, filters, credentials, staging, level;
+  changing filters or credentials re-lists it; an edit never changes the saved index),
+  and a source picker in the launcher, the Ask box, the New lab run dialog and plan review.
+  Pickers refresh the list when they open, so deleted sources disappear.
 
 ### 21.5 Research runs and Ask
 
@@ -1435,7 +1525,9 @@ first.
   `data_sources` on `POST /api/research`): each source is fetched on this machine, readable
   files (text, CSV, JSON, code, PDF, Office) are flattened into one folder per source and
   uploaded to the run's temporary File Search Store like `--upload`. Caps: 200 files and
-  200 MB per source; over the cap is an error, never a silent cut. The use is recorded.
+  200 MB per source; over the cap is an error, never a silent cut. The temporary copy is
+  removed when the process exits. The use is recorded, including for foreground streamed
+  runs (whose stored prompt carries an appended File Search note).
 - **Ask / follow-up** (`followup --source NAME`; the picker above the Ask box;
   `data_sources` on `POST /api/sessions/{sid}/followup`): the text of each source goes into
   the prompt inside `<data_source name=... kind=... uri=...>` tags, capped at 60 KB per
@@ -1447,7 +1539,8 @@ first.
 
 `deep-research cleanup` deletes only temporary stores by default: stores named
 `deep-research-temp-*` (every upload store is created with that display name) and unnamed
-stores left by older versions. Named stores (such as future `deep-research-source-*`
+stores left by older versions. A temporary store named in the last 36 hours is kept,
+because a research run may still be using it. Named stores (such as future `deep-research-source-*`
 indexes, or stores the user made) and stores a data source points at are kept and listed.
 `--all` deletes everything, as before.
 
@@ -1467,8 +1560,9 @@ Google Dataset Search has no API, so `deep-research sources discover QUERY` (the
 datasets" panel, `GET /api/sources/discover?q=`) searches catalogs that do, in parallel:
 Data.gov (v4 Catalog API; `DATA_GOV_API_KEY` or the shared `DEMO_KEY`), Zenodo (datasets,
 no key) and the Hugging Face Hub (public, ungated datasets). Hits show title, catalog,
-license, publisher, page and direct file links; "add as source" makes a `web` source for
-one file. Nothing is downloaded during search; a failing catalog is reported, not fatal.
+license, publisher, page and direct file links, with a plain format name ("Excel",
+"GeoJSON") instead of a MIME type; "add as source" opens an inline form and makes a `web`
+source for one file. Results can be filtered by catalog. Nothing is downloaded during search; a failing catalog is reported, not fatal.
 
 ### 21.8a Free public cloud data
 
@@ -1499,7 +1593,10 @@ over canonical JSON). Reports: prompt, upload names and sizes, data sources with
 manifest hash they had when used. Lab runs: script, install list, resources, parameters and
 data sources with hashes. It is shown in the report inspector ("inputs") and on Lab run
 cards, printed by `show`, and written into Markdown and JSON exports. Same inputs, same
-fingerprint; a changed source changes it.
+fingerprint; a changed source changes it. Each use row keeps the source's name, kind and
+URI, so deleting a source does not change the provenance or fingerprint of reports and
+runs that used it. Tests and index builds update only their own fields, so one never
+drops the other's result.
 
 ### 21.10 Known gaps
 - Read-only: nothing is written back to buckets.
@@ -1535,3 +1632,4 @@ fingerprint; a changed source changes it.
 | 2026-09-28 | v0.26.0 | Saved per-source indexes (21.7), open dataset discovery (21.8), provenance fingerprints (21.9); plan review sections and AI fix diff (`plan.fix_diff`, 20.4). |
 | 2026-09-28 | v0.27.0 | Free public cloud data: `public_bucket` kind (anonymous AWS S3 and GCS), AWS Open Data, Google Cloud and Earth Engine discovery (21.8a). |
 | 2026-09-28 | v0.28.0 | Review fixes: loopback-only dashboard (REQ-DASH-2, 14.1); atomic Lab submit, recovery of runs stuck in submitting, guarded edit/fix, finish runs Slurm forgot (20); source safety and correctness (safe paths, hidden-file preview, filters on fetch, relay re-list and size check, stable hashes, name-first lookup, provenance snapshot, 21); UI: dialogs, drafts, failed-report view, find, notes page, source edit, accessibility. |
+| 2026-09-28 | v0.28.0 (docs) | Whole document brought up to date with v0.28.0: module map (5.1), tables (8.2), CLI (9.4), client (11), settings and files (12), controls (14.2), errors (15), test suite (16.1), K13, operations (18.3), Lab reliability (20.6), data sources (21). |
