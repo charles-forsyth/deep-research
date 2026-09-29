@@ -7,6 +7,18 @@ releases.
 
 ## [Unreleased]
 
+## [0.35.3] - 2026-09-29
+
+### Added
+
+- Pre-flight catches names a script's Python uses but never defines (run #82 finished an hour of GPU benchmarks, then died on a NameError in its report), and `$VARS` bash would expand inside an unquoted heredoc that the script never sets (run #83: a matplotlib label `$C_D` killed the job under `set -u`).
+- Pre-flight warns when a computed value is replaced by a fixed number when it comes out of range, so a failed calculation can't report a plausible result.
+
+### Fixed
+
+- Install check commands run without pipefail: `lmp -h | grep -q GRANULAR` died of SIGPIPE and marked a working LAMMPS environment broken (run #81).
+- A failed install rung is recorded with the ladder version; environments marked broken by an older (buggy) ladder are retried instead of skipped forever.
+
 ## [0.35.2] - 2026-09-29
 
 ### Added

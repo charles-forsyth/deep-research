@@ -158,3 +158,17 @@ def test_weak_reference_checks():
         assert not labguard.weak_reference_checks(s), s
     w = labguard.science_warnings({"script": bad[0]})
     assert any("reference check only tests" in x for x in w)
+
+
+def test_undefined_names_and_heredoc_unset_vars():
+    from deepresearch.dashboard import labguard
+
+    s = "python3 - <<'EOF'\nimport json\nx = 1\nprint(f'{x} {d3_fp32_mlups}')\nEOF\n"
+    assert labguard.undefined_names(s) == ["d3_fp32_mlups (line 4)"]
+    ok = "python3 - <<'EOF'\nimport numpy as np\ndef f(a):\n    return len(a)\nfor i in range(3):\n    print(f(np.zeros(i)))\nEOF\n"
+    assert labguard.undefined_names(ok) == []
+    s2 = 'WALL=3\npython3 - << EOF\nw = float("$WALL")\nplt.ylabel("$C_D")\nn = "${LAB_SMOKE:-0}"\nEOF\n'
+    assert labguard.heredoc_unset_vars(s2) == ["$C_D (line 4)"]
+    assert labguard.heredoc_unset_vars(s2.replace("<< EOF", "<< 'EOF'")) == []
+    w = labguard.science_warnings({"script": s2})
+    assert any("unquoted heredoc" in x for x in w)
