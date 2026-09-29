@@ -20,10 +20,19 @@ def test_flags_are_mutually_exclusive():
 @pytest.mark.parametrize(
     "argv,fn,call_args",
     [
-        (["dashboard", "--start"], "start", ("0.0.0.0", 7420)),
-        (["dashboard", "--start", "--port", "9000"], "start", ("0.0.0.0", 9000)),
+        (["dashboard", "--start"], "start", ("127.0.0.1", 7420, False)),
+        (
+            ["dashboard", "--start", "--port", "9000"],
+            "start",
+            ("127.0.0.1", 9000, False),
+        ),
+        (
+            ["dashboard", "--start", "--host", "0.0.0.0", "--allow-remote"],
+            "start",
+            ("0.0.0.0", 7420, True),
+        ),
         (["dashboard", "--stop"], "stop", ()),
-        (["dashboard", "--restart"], "restart", (None, None)),
+        (["dashboard", "--restart"], "restart", (None, None, False)),
         (["dashboard"], "status", ()),
         (["dashboard", "--status"], "status", ()),
     ],
@@ -52,3 +61,29 @@ def test_help_warns_about_no_auth():
     action = next(a for a in parser._actions if a.dest == "command")
     text = " ".join(action.choices["dashboard"].format_help().split())  # type: ignore[union-attr]
     assert "no login" in text and "127.0.0.1" in text and "7420" in text
+
+
+def test_foreground_refuses_remote_host_without_flag(capsys):
+    with (
+        patch(
+            "sys.argv",
+            ["deep-research", "dashboard", "--foreground", "--host", "0.0.0.0"],
+        ),
+        patch("deepresearch.dashboard.server.serve") as serve,
+        pytest.raises(SystemExit) as exc,
+    ):
+        main()
+    assert exc.value.code == 2 and not serve.called
+    assert "--allow-remote" in capsys.readouterr().out
+
+
+def test_foreground_default_is_loopback_and_local_only():
+    with (
+        patch("sys.argv", ["deep-research", "dashboard", "--foreground"]),
+        patch("deepresearch.dashboard.server.serve") as serve,
+    ):
+        try:
+            main()
+        except SystemExit as e:
+            assert e.code in (0, None)
+    serve.assert_called_once_with("127.0.0.1", 7420, local_only=True)

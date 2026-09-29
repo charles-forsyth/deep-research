@@ -432,3 +432,34 @@ def test_api_sources_crud_browse_preview_and_traversal(app, tmp_path, monkeypatc
     assert g["used_by"] == [] and len(g["manifest"]["entries"]) == 2
     assert call("DELETE", f"/api/sources/{sid}")[1] == {"deleted": "d1"}
     assert call("GET", f"/api/sources/{sid}")[0] == 404
+
+
+def test_local_only_handler_refuses_other_machines(tmp_path):
+    """Loopback-only default: a request from another address gets 403 even if the
+    socket is reachable."""
+    import io
+
+    from deepresearch.dashboard import server as srv
+
+    api = srv.Api(str(tmp_path / "h.db"), spawn=lambda *a: 1)
+    handler_cls = srv.make_handler(api, local_only=True)
+
+    def request(peer):
+        h = handler_cls.__new__(handler_cls)
+        h.client_address = (peer, 5555)
+        h.path = "/api/health"
+        h.headers = {"Host": "localhost:7420"}
+        h.requestline, h.request_version, h.command = (
+            "GET /api/health HTTP/1.1",
+            "HTTP/1.1",
+            "GET",
+        )
+        h.wfile = io.BytesIO()
+        h._headers_buffer = []
+        h._handle("GET")
+        return h.wfile.getvalue().split(b"\r\n", 1)[0]
+
+    assert b"403" in request("192.168.1.50")
+    assert b"200" in request("127.0.0.1")
+    assert b"200" in request("::1") and b"200" in request("::ffff:127.0.0.1")
+    assert srv._loopback_peer("10.0.0.1") is False

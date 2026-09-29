@@ -1420,9 +1420,27 @@ class Api:
         return {"deleted": int(rid)}
 
 
-def make_handler(api: Api):
+def _loopback_peer(addr: str) -> bool:
+    import ipaddress
+
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped:  # ::ffff:127.0.0.1
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
+def make_handler(api: Api, local_only: bool = False):
     class Handler(BaseHTTPRequestHandler):
         server_version = f"deep-research-dashboard/{__version__}"
+
+        def handle_one_request(self) -> None:
+            try:
+                super().handle_one_request()
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True  # the browser went away; nothing to do
 
         def log_message(self, format: str, *args: Any) -> None:
             if os.getenv("DR_DASHBOARD_ACCESS_LOG"):
@@ -1447,6 +1465,12 @@ def make_handler(api: Api):
 
         def _handle(self, method: str) -> None:
             url = urlparse(self.path)
+            if local_only and not _loopback_peer(self.client_address[0]):
+                # Belt and braces for the loopback-only default: even if the socket
+                # is reachable (a proxy, a mis-set --host), refuse other machines.
+                return self._json(
+                    403, {"error": "This dashboard only accepts this machine."}
+                )
             if not host_allowed(self.headers.get("Host", "")):
                 # DNS rebinding: a public site pointing its name at this machine.
                 return self._json(
@@ -1560,7 +1584,9 @@ def make_handler(api: Api):
     return Handler
 
 
-def serve(host: str, port: int, db_path: str = user_db_path) -> None:
+def serve(
+    host: str, port: int, db_path: str = user_db_path, local_only: bool = True
+) -> None:
     # Also covers `dashboard --foreground` run from a folder with an old .env:
     # the user settings file wins for everything this process and its runs do.
     from deepresearch.core.config import service_env
@@ -1568,7 +1594,7 @@ def serve(host: str, port: int, db_path: str = user_db_path) -> None:
     os.environ.update(service_env())
     api = Api(db_path)
     api.lab.ensure_watcher()  # pick up lab runs still active from before a restart
-    httpd = ThreadingHTTPServer((host, port), make_handler(api))
+    httpd = ThreadingHTTPServer((host, port), make_handler(api, local_only=local_only))
     httpd.daemon_threads = True
     print(f"[INFO] Deep Research dashboard {__version__} on http://{host}:{port}")
     try:
