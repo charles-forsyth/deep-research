@@ -445,3 +445,40 @@ def test_stockout_moves_a_queued_job_to_another_partition(wlab, monkeypatch):
         and "Moved from standard to computehigh" in moved["stage"]
     )
     assert t.cancelled and moved["job_id"] == "5151"
+
+
+def test_ensure_warm_scales_out_with_the_backlog(tmp_path):
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    (bin_ / "squeue").write_text("#!/bin/bash\necho '226 RUNNING'\n")
+    (bin_ / "sbatch").write_text(f"#!/bin/bash\necho x >> {tmp_path}/sb.log; echo 77\n")
+    for f in bin_.iterdir():
+        f.chmod(0o755)
+    home = tmp_path / "home"
+    w = home / "deep-research-lab" / "warm"
+    (w / "workers").mkdir(parents=True)
+    (w / "workers" / "226.json").write_text('{"job": 226, "draining": false}')
+    tgt = labm.SlurmSSHTarget(
+        {
+            "name": "x",
+            "ssh_host": "h",
+            "partitions": {"computehigh": {}},
+            "warm": {"max_workers": 3},
+        }
+    )
+
+    def sh(cmd, stdin=None, timeout=0):
+        env = {"HOME": str(home), "PATH": f"{bin_}:/usr/bin:/bin"}
+        return subprocess.run(
+            ["bash", "-c", cmd], input=stdin, env=env, capture_output=True, timeout=30
+        ).stdout.decode()
+
+    tgt.sh = sh  # type: ignore[method-assign]
+    assert tgt.ensure_warm() == "running:226"  # empty queue: the one worker is enough
+    assert not (tmp_path / "sb.log").exists()
+    for k in range(5):
+        (w / "queue" / f"t{k}").mkdir(parents=True)
+    assert tgt.ensure_warm().startswith("started:")
+    assert (tmp_path / "sb.log").read_text().count(
+        "x"
+    ) == 2  # 1 + 5 // 2 = 3 workers, capped at 3

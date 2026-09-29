@@ -7,6 +7,12 @@ releases.
 
 ## [Unreleased]
 
+## [0.33.2] - 2026-09-29
+
+### Changed
+
+- The warm Lab node scales out with the backlog: one worker plus one per two queued tasks, up to `warm.max_workers` (default 3). A batch of 15 runs no longer queues behind a single node.
+
 ## [0.33.1] - 2026-09-29
 
 ### Added

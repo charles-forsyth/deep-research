@@ -411,6 +411,7 @@ class SlurmSSHTarget:
             "max_par": int(cfg.get("max_par", 2)),
             "max_full_min": int(cfg.get("max_full_min", 120)),
             "smoke_min": int(cfg.get("smoke_min", 15)),
+            "max_workers": int(cfg.get("max_workers", 3)),
         }
 
     @property
@@ -433,6 +434,7 @@ class SlurmSSHTarget:
         w = self.warm_dir
         limit = int(cfg["hours"] * 3600)
         tl = f"{limit // 3600:02d}:{(limit % 3600) // 60:02d}:00"
+        max_w = max(1, int(cfg.get("max_workers", 3)))
         part = (
             cfg["partition"]
             if re.fullmatch(r"[\w.-]+", cfg["partition"])
@@ -445,14 +447,18 @@ class SlurmSSHTarget:
             f"live=$(squeue -h -u $USER -n lab-warm -o '%i %T' 2>/dev/null || true); ok=''; "
             f'for j in $(echo "$live" | awk \'$2=="PENDING"||$2=="CONFIGURING"{{print $1}}\'); '
             f"do ok=pending:$j; done; "
+            f'n=$(echo "$live" | awk \'$2=="PENDING"||$2=="CONFIGURING"\' | grep -c . || true); '
             f'for f in "$W"/workers/*.json; do [ -e "$f" ] || continue; j=$(basename "$f" .json); '
             f'if echo "$live" | grep -q "^$j RUNNING" && ! grep -q \'"draining": true\' "$f"; '
-            f"then ok=running:$j; fi; done; "
-            f'if [ -z "$ok" ]; then ok=started:$(sbatch --parsable --job-name=lab-warm '
+            f"then ok=running:$j; n=$((n+1)); fi; done; "
+            # scale out with the backlog: one worker, plus one per 2 queued tasks, capped
+            f'q=$(ls "$W/queue" 2>/dev/null | wc -l); want=$((1 + q / 2)); '
+            f'[ "$want" -gt {max_w} ] && want={max_w}; '
+            f'while [ "$n" -lt "$want" ]; do ok=started:$(sbatch --parsable --job-name=lab-warm '
             f"-p {part} -N 1 --exclusive -t {tl} --signal=B:USR1@60 "
             f'-o "$W/worker-%j.log" '
             f'--export=ALL,WARM="$W",IDLE_MIN={cfg["idle_min"]},MAX_PAR={cfg["max_par"]},'
-            f'WARM_LIMIT_SEC={limit} "$W/worker.sh"); fi; echo "$ok"'
+            f'WARM_LIMIT_SEC={limit} "$W/worker.sh"); n=$((n+1)); done; echo "$ok"'
         )
         out = self.sh(cmd, stdin=_worker_script().encode(), timeout=120).strip()
         state = out.splitlines()[-1] if out else ""

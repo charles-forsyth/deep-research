@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.33.1 (package `deepresearch`) |
+| Applies to | deep-research v0.33.2 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1474,7 +1474,8 @@ Added in v0.33.0 (Lab plan v3 releases 2-5).
   `warm.hours` (4), `--signal=B:USR1@60`. Spool at `<remote_root>/warm/`: `queue/<task>`
   (claimed by rename, oldest first), `running/`, `done/` (rc, log, started, finished, node),
   `workers/<job>.json` heartbeats, `stop` file. Up to `max_par` (2) tasks at once, each in
-  its own session with a private TMPDIR; an `exclusive` task (a full run) runs alone. A task
+  its own session with a private TMPDIR; an `exclusive` task (a full run) runs alone. Workers scale out: `ensure_warm()` keeps 1 + queued/2 workers
+  (running or pending, not draining), capped at `max_workers` (3). A task
   that can't finish before the job's limit marks the worker draining, and the dashboard starts
   a fresh one. Exits after `idle_min` (20) idle minutes. `SlurmSSHTarget.ensure_warm()` starts
   one unless a non-draining worker is running or one is pending.
@@ -1707,5 +1708,6 @@ drops the other's result.
 | 2026-09-29 | v0.28.1 | Lab submit: expired gcloud sign-in named plainly; a submit that never reached the cluster keeps the run as a draft (20.6). |
 | 2026-09-29 | v0.28.2 | Lab: OR-Tools plans on a Python module get an isolated venv (CP-SAT segfaulted on top of python-sci). |
 | 2026-09-29 | v0.29.0 | Lab: lessons (curated + learned) in plan/fix prompts, science guards, known-answer verdicts (20.10). |
+| 2026-09-29 | v0.33.2 | Lab: warm workers scale out with the queue (max_workers, default 3). |
 | 2026-09-29 | v0.33.1 | Lab: catalog usage cards in the planner's cluster description. |
 | 2026-09-29 | v0.33.0 | Lab: warm node, smoke test with AI fix loop, install ladder, planner probes, cluster matching (20.11). |
