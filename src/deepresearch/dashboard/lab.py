@@ -859,6 +859,12 @@ class SlurmSSHTarget:
                 f"Modules after `{t.get('requires', 'module load ' + mpi)}`: "
                 + ", ".join(t.get("modules") or [])
             )
+        cards = cat.get("usage_cards") or {}
+        if cards:
+            out.append(
+                "Usage cards (verified facts for installed software; follow them):"
+            )
+            out += [f"- {k}: {v}" for k, v in sorted(cards.items())]
         broken = sorted((cat.get("module_health") or {}).get("broken") or {})
         if broken:
             out.append(

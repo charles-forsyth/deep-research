@@ -7,6 +7,12 @@ releases.
 
 ## [Unreleased]
 
+## [0.33.1] - 2026-09-29
+
+### Added
+
+- The planner's cluster description includes the catalog's new usage cards: verified facts per installed package that AI plans got wrong before (SU2 incompressible solver keys and output files, OpenFOAM environment, GROMACS rank counts, OR-Tools isolation, pseudopotentials for Quantum ESPRESSO). Needs ursa-catalog with `usage_cards` (ucr-slurm-production).
+
 ## [0.33.0] - 2026-09-29
 
 Lab plan v3 (nexus `2026-09-29_Deep_Research_Lab_Plan_v3.md`), releases 2-5 in one version: warm node, smoke test, install ladder, planner probes, cluster matching.
