@@ -4377,6 +4377,47 @@ class Lab:
                         else ""
                     )
                 )
+            # mechanical problems pre-flight can see are fixed before spending a cluster
+            # round on them (run #86: the AI's fix kept a `$C_D` that killed the job again)
+            new["script"], esc = labguard.escape_heredoc_unset_vars(str(new["script"]))
+            if esc:
+                changes.append(
+                    "escaped unset shell variable(s) in an unquoted heredoc: "
+                    + ", ".join("$" + e for e in esc)
+                )
+            blocking = [
+                w
+                for w in check_script(str(new["script"]))
+                + [x for x in labguard.science_warnings(new) if "never defines" in x]
+            ]
+            if blocking:
+                prompt2 = (
+                    prompt
+                    + "\n\nYour previous answer still has these problems (found by a static "
+                    "check, before running). Return the corrected plan, same JSON format:\n- "
+                    + "\n- ".join(blocking)
+                    + "\n\nYour previous plan:\n"
+                    + json.dumps(new, indent=1)[:60000]
+                )
+                reply2, cost2 = self._ask(prompt2, search=False)
+                self._add_cost(run_id, cost2)
+                out2 = extract_json(reply2)
+                new2 = out2.get("plan") if isinstance(out2, dict) else None
+                if isinstance(new2, dict) and all(
+                    k in new2 for k in ("script", "resources", "install")
+                ):
+                    new2["script"], _ = labguard.escape_heredoc_unset_vars(
+                        str(new2["script"])
+                    )
+                    new = new2
+                    changes += [str(c) for c in (out2.get("changes") or [])][:10]
+                still = check_script(str(new["script"])) + [
+                    x for x in labguard.science_warnings(new) if "never defines" in x
+                ]
+                if still:
+                    raise ValueError(
+                        "the AI's fix still fails static checks: " + still[0][:160]
+                    )
             dropped = _dropped_options(plan, new)
             concerns = fix_concerns(plan, new)
             original = sm.get("original") or {}
