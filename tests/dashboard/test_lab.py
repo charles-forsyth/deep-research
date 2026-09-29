@@ -631,13 +631,14 @@ def test_env_cache_key_differs_for_every_package_set(lab):
 
     def key(conda, chans=("conda-forge",)):
         plan = dict(PLAN, install={"conda": conda, "channels": list(chans)})
-        return re.search(r"envs/(\S+)", build_sbatch(1, plan, lab.fake)).group(1)
+        return re.search(r"LADDER_KEY=(\S+)", build_sbatch(1, plan, lab.fake)).group(1)
 
     assert key(base) != key(base + ["xarray"])  # used to collide at 60 chars
     assert key(base) != key(base, ("conda-forge", "bioconda"))
     assert key(base) == key(list(reversed(base)))  # order does not matter
     s = build_sbatch(1, dict(PLAN), lab.fake)
     assert "flock 9" in s and "flock -u 9" in s  # concurrent builds wait
+    assert "envs/python-3-12-rdkit-" in s  # readable prefix
 
 
 def test_cancel_during_planning_is_not_overwritten(lab):
@@ -1464,16 +1465,25 @@ def test_pip_on_python_module_uses_module_python_venv(lab):
     }
     s = build_sbatch(1, plan, lab.fake)
     assert "module load python-sci/2026.09" in s
-    assert 'python3 -m venv --system-site-packages "$ENVDIR"' in s
+    # first rung: a venv layered on the module's Python (install ladder, v0.31)
+    lay = s.index("ladder_try layered-venv")
+    assert "python3 -m venv --system-site-packages" in s[lay:]
+    assert "-m pip install --progress-bar off flatbuffers tflite" in s[lay:]
+    # a separate Pixi Python is only the last fallback, after the isolated venv
     assert (
-        '"$ENVDIR/bin/python" -m pip install --progress-bar off flatbuffers tflite' in s
+        lay
+        < s.index("ladder_try isolated-venv")
+        < s.index("ladder_try pixi-conda-forge")
     )
-    assert "pixi" not in s  # no second Python stack
+    assert (
+        "LADDER_IMPORTS=' flatbuffers tflite'" in s
+        or "LADDER_IMPORTS='flatbuffers tflite'" in s
+    )
     assert "flock 9" in s and "flock -u 9" in s
     # the cache key includes the module, so python-ml gets its own venv
     ml = dict(plan, install={"modules": ["python-ml/2026.09"], "pip": ["tflite"]})
     sci = dict(plan, install={"modules": ["python-sci/2026.09"], "pip": ["tflite"]})
-    k = __import__("re").compile(r"envs/(\S+)")
+    k = __import__("re").compile(r"LADDER_KEY=(\S+)")
     assert k.search(build_sbatch(1, ml, lab.fake)).group(1) != k.search(
         build_sbatch(1, sci, lab.fake)
     ).group(1)
@@ -1591,18 +1601,19 @@ def test_ortools_on_python_module_gets_an_isolated_venv(lab):
     }
     s = build_sbatch(1, plan, lab.fake)
     assert "module load python-sci/2026.09" in s
-    assert 'python3 -m venv "$ENVDIR"' in s
-    assert "--system-site-packages" not in s
+    # the isolated rung comes first for OR-Tools; the layered one is only a fallback
+    iso = s.index("ladder_try isolated-venv")
+    assert iso < s.index("ladder_try layered-venv")
     assert (
-        '"$ENVDIR/bin/python" -m pip install --progress-bar off numpy pandas '
-        "matplotlib scipy ortools flatbuffers tflite" in s
+        "-m pip install --progress-bar off numpy pandas matplotlib scipy ortools "
+        "flatbuffers tflite" in s[iso:]
     )
-    assert "isolated from python-sci/2026.09" in s
     # a pinned spec is recognised too, and the cache key differs from a layered env
     pinned = dict(
         plan, install={"modules": ["python-sci/2026.09"], "pip": ["ortools==9.15.6755"]}
     )
-    assert "--system-site-packages" not in build_sbatch(1, pinned, lab.fake)
-    k = __import__("re").compile(r"envs/(\S+)")
+    sp = build_sbatch(1, pinned, lab.fake)
+    assert sp.index("ladder_try isolated-venv") < sp.index("ladder_try layered-venv")
+    k = __import__("re").compile(r"LADDER_KEY=(\S+)")
     layered = dict(plan, install={"modules": ["python-sci/2026.09"], "pip": ["tflite"]})
     assert k.search(s).group(1) != k.search(build_sbatch(1, layered, lab.fake)).group(1)

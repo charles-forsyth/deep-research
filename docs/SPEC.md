@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.29.0 (package `deepresearch`) |
+| Applies to | deep-research v0.33.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1465,6 +1465,48 @@ Added in v0.29.0 (Lab plan v3, nexus `2026-09-29_Deep_Research_Lab_Plan_v3.md`).
   verdict sets the stage to "Completed, known-answer check FAILED", the write-up must lead
   with it, and the run view shows the checks.
 
+### 20.11 Warm node, smoke test, install ladder, probes, matching
+
+Added in v0.33.0 (Lab plan v3 releases 2-5).
+
+- **Warm worker** (`dashboard/warm_worker.sh`, uploaded on every start). One Slurm job
+  named `lab-warm` on `warm.partition` (default `computehigh`), `--exclusive`, limit
+  `warm.hours` (4), `--signal=B:USR1@60`. Spool at `<remote_root>/warm/`: `queue/<task>`
+  (claimed by rename, oldest first), `running/`, `done/` (rc, log, started, finished, node),
+  `workers/<job>.json` heartbeats, `stop` file. Up to `max_par` (2) tasks at once, each in
+  its own session with a private TMPDIR; an `exclusive` task (a full run) runs alone. A task
+  that can't finish before the job's limit marks the worker draining, and the dashboard starts
+  a fresh one. Exits after `idle_min` (20) idle minutes. `SlurmSSHTarget.ensure_warm()` starts
+  one unless a non-draining worker is running or one is pending.
+- **Smoke test.** `submit()` on a CPU plan with a warm-capable target uploads the run folder
+  and queues `smoke-<run>-<round>`: `run.sbatch` copied to `run_N/smoke/` and run with
+  `LAB_SMOKE=1` under `timeout` (`smoke_min`, 15). Status `smoke`. Pass = exit 0 and every
+  `expected_outputs` pattern has a non-empty match (a clean timeout with no error lines also
+  passes). Pass with the plan unchanged: dispatch. Pass after AI fixes: back to `draft`
+  ("review the changes"). Fail: RUNFIX prompt with the smoke log, new plan re-uploaded
+  (folder kept), next round; after `SMOKE_MAX_ROUNDS` (3) the run fails with the smoke log as
+  `job.log`. `plan.smoke = false` or a GPU plan skips it. Rounds are kept in `lab_runs.smoke`.
+- **Dispatch.** Single-node CPU runs on the warm partition with a time limit up to
+  `max_full_min` (120) run on the warm node as exclusive task `full-<run>` (job id
+  `warm:full-<run>`; status, cancel and elapsed come from the spool). Others: `sbatch` of the
+  uploaded folder.
+- **Install ladder** (`install_ladder()` in `build_sbatch`). Rungs as in the changelog; each
+  built once under `envs/<prefix>-<key>-<rung>` with flock, verified by `ladder_verify`
+  (imports from `import_names()` plus `install.verify`), marked `.bad` when it fails. Exit 4
+  when nothing verifies (unless the plan lists a container). Modules that fail to load go to
+  `LADDER_MOD_FALLBACK` and are installed from conda-forge/bioconda. `install.spack` builds in
+  `~/deep-research-lab/spack` with `/apps/spack` as upstream.
+- **Probes.** `PROBE_PROMPT` (no search) returns up to 6 checks of kinds module, help,
+  pyversion, pyhelp, url; `_probe_cmd()` accepts only read-only forms (help flags from a fixed
+  list, http(s) URLs, dotted Python names) and refuses the rest. Output (24 KB max) goes into
+  the plan prompt as "FACTS CHECKED ON THE CLUSTER". After planning, `_check_urls()` fetches
+  each script/input URL from the warm node; failures become warnings (`plan.url_checks`).
+- **Matching.** `workload_shape()` (gpu, mpi, bigmem, sweep, cpu) and `suggest_partition()`
+  add a pre-flight hint; `time_from_history()` suggests 3x the longest similar completed run
+  plus 5 minutes. When a queued job reaches `NODE_FAIL_WARN` node failures and `sinfo -R`
+  shows its partition stocked out, `_switch_partition()` cancels it and resubmits the same plan
+  on the suggested partition once (`plan.partition_switched`).
+
 ## 21. Data sources
 
 A data source is a named reference to data that lives somewhere else: an open dataset
@@ -1665,3 +1707,4 @@ drops the other's result.
 | 2026-09-29 | v0.28.1 | Lab submit: expired gcloud sign-in named plainly; a submit that never reached the cluster keeps the run as a draft (20.6). |
 | 2026-09-29 | v0.28.2 | Lab: OR-Tools plans on a Python module get an isolated venv (CP-SAT segfaulted on top of python-sci). |
 | 2026-09-29 | v0.29.0 | Lab: lessons (curated + learned) in plan/fix prompts, science guards, known-answer verdicts (20.10). |
+| 2026-09-29 | v0.33.0 | Lab: warm node, smoke test with AI fix loop, install ladder, planner probes, cluster matching (20.11). |
