@@ -46,6 +46,7 @@ STATES = (
     "plan_failed",
     "draft",  # plan ready for review
     "submitting",
+    "smoke",  # cut-down run on the warm node before the real one
     "queued",  # accepted by Slurm, waiting for a node
     "running",  # the batch script is running (installing or computing)
     "fetching",  # copying results back
@@ -54,7 +55,7 @@ STATES = (
     "failed",
     "cancelled",
 )
-ACTIVE = ("submitting", "queued", "running", "fetching", "analyzing")
+ACTIVE = ("submitting", "smoke", "queued", "running", "fetching", "analyzing")
 FINAL = ("completed", "failed", "cancelled")
 SLURM_DONE = {
     "COMPLETED": "completed",
@@ -162,6 +163,28 @@ def extract_json(text: str) -> Any:
 
 class TargetError(RuntimeError):
     pass
+
+
+def _tar_b64(files: dict[str, str]) -> bytes:
+    """Files as a base64 tar.gz for `base64 -d | tar xzf -` on the cluster."""
+    import base64
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, text in files.items():
+            data = text.encode()
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mtime = int(time.time())
+            info.mode = 0o755 if name.endswith((".sh", ".sbatch")) else 0o644
+            tar.addfile(info, io.BytesIO(data))
+    return base64.b64encode(buf.getvalue())
+
+
+def _worker_script() -> str:
+    return (Path(__file__).parent / "warm_worker.sh").read_text()
 
 
 class NotSubmitted(TargetError):
@@ -324,20 +347,6 @@ class SlurmSSHTarget:
     def submit(self, run_id: int, files: dict[str, str]) -> str:
         """Upload the run's files and sbatch run.sbatch. Returns the Slurm job id."""
         d = self.job_dir(run_id)
-        import base64
-        import io
-        import tarfile
-
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            for name, text in files.items():
-                data = text.encode()
-                info = tarfile.TarInfo(name)
-                info.size = len(data)
-                info.mtime = int(time.time())
-                info.mode = 0o755 if name.endswith((".sh", ".sbatch")) else 0o644
-                tar.addfile(info, io.BytesIO(data))
-        payload = base64.b64encode(buf.getvalue())
         # Never write into a folder another run (or another history DB) left behind:
         # move it aside so its logs and outputs survive.
         out = self.sh(
@@ -345,7 +354,7 @@ class SlurmSSHTarget:
             f"mv {d} {d}.prev-$(date +%Y%m%d%H%M%S); fi; "
             f"mkdir -p {d}/outputs; cd {d}; base64 -d | tar xzf -; "
             f"sbatch --parsable run.sbatch",
-            stdin=payload,
+            stdin=_tar_b64(files),
             timeout=180,
         )
         job = out.strip().split(";")[0]
@@ -353,8 +362,239 @@ class SlurmSSHTarget:
             raise TargetError(f"sbatch returned {out.strip()!r}")
         return job
 
+    def upload(self, run_id: int, files: dict[str, str], fresh: bool = True) -> None:
+        """Put the run's files in its folder without submitting (smoke test first).
+
+        `fresh` moves an existing folder aside, like submit; a re-upload after an AI
+        smoke fix keeps the folder (its smoke logs) and overwrites the files.
+        """
+        d = self.job_dir(run_id)
+        aside = (
+            f"if [ -e {d}/run.sbatch ] || [ -e {d}/job.log ]; then "
+            f"mv {d} {d}.prev-$(date +%Y%m%d%H%M%S); fi; "
+            if fresh
+            else ""
+        )
+        self.sh(
+            f"set -e; {aside}mkdir -p {d}/outputs; cd {d}; base64 -d | tar xzf -",
+            stdin=_tar_b64(files),
+            timeout=180,
+        )
+
+    def sbatch_uploaded(self, run_id: int) -> str:
+        """sbatch the run.sbatch already in the run folder. Returns the job id."""
+        out = self.sh(
+            f"cd {self.job_dir(run_id)} && sbatch --parsable run.sbatch", timeout=120
+        )
+        job = out.strip().split(";")[0]
+        if not job.isdigit():
+            raise TargetError(f"sbatch returned {out.strip()!r}")
+        return job
+
+    # ---- warm worker -------------------------------------------------------
+    # One long-lived Slurm job ("lab-warm") runs Lab tasks from a spool folder so a
+    # burst of smoke tests, planner probes and short runs shares one booted node.
+    @property
+    def warm(self) -> dict | None:
+        """Warm worker settings, or None when disabled (`"warm": false`)."""
+        cfg = self.cfg.get("warm", {})
+        if cfg is False or (isinstance(cfg, dict) and cfg.get("enabled") is False):
+            return None
+        cfg = cfg if isinstance(cfg, dict) else {}
+        part = str(cfg.get("partition") or "computehigh")
+        if self.partitions and part not in self.partitions:
+            part = self.default_partition
+        return {
+            "partition": part,
+            "idle_min": int(cfg.get("idle_min", 20)),
+            "hours": float(cfg.get("hours", 4)),
+            "max_par": int(cfg.get("max_par", 2)),
+            "max_full_min": int(cfg.get("max_full_min", 120)),
+            "smoke_min": int(cfg.get("smoke_min", 15)),
+        }
+
+    @property
+    def warm_dir(self) -> str:
+        # $HOME, not ~: the path is used inside --export= and quotes, where ~ stays literal
+        root = self.remote_root
+        if root.startswith("~"):
+            root = "$HOME" + root[1:]
+        return f"{root}/warm"
+
+    def ensure_warm(self) -> str:
+        """Start a warm worker unless a usable one is running or pending.
+
+        Returns 'running:<job>', 'pending:<job>' or 'started:<job>'. The worker script
+        is re-uploaded every time, so the cluster always runs this version's copy.
+        """
+        cfg = self.warm
+        if not cfg:
+            raise TargetError("the warm worker is disabled for this target")
+        w = self.warm_dir
+        limit = int(cfg["hours"] * 3600)
+        tl = f"{limit // 3600:02d}:{(limit % 3600) // 60:02d}:00"
+        part = (
+            cfg["partition"]
+            if re.fullmatch(r"[\w.-]+", cfg["partition"])
+            else "computehigh"
+        )
+        cmd = (
+            f'set -e; W="{w}"; mkdir -p "$W/queue" "$W/running" "$W/done" "$W/workers"; '
+            f'cat > "$W/worker.sh.new"; chmod 755 "$W/worker.sh.new"; '
+            f'mv -f "$W/worker.sh.new" "$W/worker.sh"; '
+            f"live=$(squeue -h -u $USER -n lab-warm -o '%i %T' 2>/dev/null || true); ok=''; "
+            f'for j in $(echo "$live" | awk \'$2=="PENDING"||$2=="CONFIGURING"{{print $1}}\'); '
+            f"do ok=pending:$j; done; "
+            f'for f in "$W"/workers/*.json; do [ -e "$f" ] || continue; j=$(basename "$f" .json); '
+            f'if echo "$live" | grep -q "^$j RUNNING" && ! grep -q \'"draining": true\' "$f"; '
+            f"then ok=running:$j; fi; done; "
+            f'if [ -z "$ok" ]; then ok=started:$(sbatch --parsable --job-name=lab-warm '
+            f"-p {part} -N 1 --exclusive -t {tl} --signal=B:USR1@60 "
+            f'-o "$W/worker-%j.log" '
+            f'--export=ALL,WARM="$W",IDLE_MIN={cfg["idle_min"]},MAX_PAR={cfg["max_par"]},'
+            f'WARM_LIMIT_SEC={limit} "$W/worker.sh"); fi; echo "$ok"'
+        )
+        out = self.sh(cmd, stdin=_worker_script().encode(), timeout=120).strip()
+        state = out.splitlines()[-1] if out else ""
+        if not re.fullmatch(r"(running|pending|started):\d+(;\S+)?", state):
+            raise TargetError(f"could not start the warm worker: {out[-300:]!r}")
+        return state.split(";")[0]
+
+    def warm_status(self) -> dict:
+        """Workers (heartbeats joined with squeue) and the task counts."""
+        w = self.warm_dir
+        out = self.sh(
+            f'W="{w}"; echo "::SQ::"; squeue -h -u $USER -n lab-warm -o "%i|%T|%M|%N|%L" '
+            f'2>/dev/null; echo "::HB::"; cat "$W"/workers/*.json 2>/dev/null; '
+            f'echo "::Q::"; ls "$W/queue" 2>/dev/null | wc -l; ls "$W/running" 2>/dev/null | wc -l',
+            timeout=60,
+        )
+        sq = out.split("::SQ::", 1)[-1].split("::HB::", 1)[0]
+        hb = out.split("::HB::", 1)[-1].split("::Q::", 1)[0]
+        q = out.split("::Q::", 1)[-1].split()
+        beats = {}
+        for ln in hb.splitlines():
+            try:
+                d = json.loads(ln)
+                beats[str(d.get("job"))] = d
+            except ValueError:
+                continue
+        jobs = []
+        for ln in sq.splitlines():
+            parts = (ln.strip().split("|") + [""] * 5)[:5]
+            if not parts[0]:
+                continue
+            b = beats.get(parts[0], {})
+            jobs.append(
+                {
+                    "job": parts[0],
+                    "state": parts[1],
+                    "elapsed": parts[2],
+                    "node": parts[3] or b.get("node", ""),
+                    "left": parts[4],
+                    "busy": [t for t in str(b.get("busy") or "").split() if t],
+                    "draining": bool(b.get("draining")),
+                }
+            )
+        return {
+            "enabled": True,
+            "partition": (self.warm or {}).get("partition"),
+            "workers": jobs,
+            "queued": int(q[0]) if q and q[0].isdigit() else 0,
+            "running": int(q[1]) if len(q) > 1 and q[1].isdigit() else 0,
+        }
+
+    def warm_enqueue(
+        self, task: str, files: dict[str, str], need_sec: int, exclusive: bool = False
+    ) -> None:
+        if not re.fullmatch(r"[\w.-]+", task):
+            raise ValueError(f"bad task name {task!r}")
+        w = self.warm_dir
+        self.sh(
+            f'set -e; W="{w}"; mkdir -p "$W/queue"; rm -rf "$W/queue/.{task}" "$W/queue/{task}" '
+            f'"$W/done/{task}"; mkdir -p "$W/queue/.{task}"; cd "$W/queue/.{task}"; '
+            f"base64 -d | tar xzf -; echo {int(need_sec)} > need_sec; "
+            + ("touch exclusive; " if exclusive else "")
+            + f'chmod 755 run.sh; mv "$W/queue/.{task}" "$W/queue/{task}"',
+            stdin=_tar_b64(files),
+            timeout=120,
+        )
+
+    def warm_task(self, task: str) -> dict:
+        """Where a task is (queue/running/done/missing) with rc, times and node."""
+        w = self.warm_dir
+        out = self.sh(
+            f'W="{w}"; for d in queue running done; do if [ -d "$W/$d/{task}" ]; then '
+            f'echo "where=$d"; T="$W/$d/{task}"; echo "rc=$(cat $T/rc 2>/dev/null)"; '
+            f'echo "started=$(cat $T/started 2>/dev/null)"; echo "finished=$(cat $T/finished 2>/dev/null)"; '
+            f'echo "node=$(cat $T/node 2>/dev/null)"; echo "now=$(date +%s)"; break; fi; done',
+            timeout=60,
+        )
+        info: dict[str, str] = {}
+        for ln in out.splitlines():
+            k, sep, v = ln.partition("=")
+            if sep and k in ("where", "rc", "started", "finished", "node", "now"):
+                info[k] = v.strip()
+        return {
+            "where": info.get("where", "missing"),
+            "rc": int(info["rc"]) if info.get("rc", "").lstrip("-").isdigit() else None,
+            "started": int(info["started"])
+            if info.get("started", "").isdigit()
+            else None,
+            "finished": int(info["finished"])
+            if info.get("finished", "").isdigit()
+            else None,
+            "node": info.get("node", ""),
+            "now": int(info["now"]) if info.get("now", "").isdigit() else None,
+        }
+
+    def warm_task_log(self, task: str, limit: int = 60000) -> str:
+        w = self.warm_dir
+        return self.run(
+            f'W="{w}"; for d in running done queue; do [ -f "$W/$d/{task}/log" ] && '
+            f'{{ tail -c {int(limit)} "$W/$d/{task}/log"; break; }}; done',
+            timeout=60,
+        ).stdout.decode("utf-8", "replace")
+
+    def warm_cancel(self, task: str) -> None:
+        w = self.warm_dir
+        self.sh(
+            f'W="{w}"; if [ -d "$W/queue/{task}" ]; then mkdir -p "$W/done"; rm -rf "$W/done/{task}"; '
+            f'mv "$W/queue/{task}" "$W/done/{task}" && echo 130 > "$W/done/{task}/rc"; '
+            f'elif [ -d "$W/running/{task}" ]; then touch "$W/running/{task}/cancel"; fi; true',
+            timeout=60,
+        )
+
+    def warm_stop(self) -> None:
+        """Ask every warm worker to finish (running tasks are stopped)."""
+        w = self.warm_dir
+        self.sh(f'W="{w}"; mkdir -p "$W"; touch "$W/stop"; true', timeout=60)
+
+    def read_file(self, run_id: int, rel: str, limit: int = 60000) -> str:
+        """Tail of a text file in the run folder ('' when missing)."""
+        if not re.fullmatch(r"[\w./-]+", rel) or ".." in rel:
+            raise ValueError(f"bad path {rel!r}")
+        return self.run(
+            f"tail -c {int(limit)} {self.job_dir(run_id)}/{rel} 2>/dev/null", timeout=60
+        ).stdout.decode("utf-8", "replace")
+
+    def missing_outputs(self, run_id: int, sub: str, patterns: list[str]) -> list[str]:
+        """Expected output patterns with no non-empty match under the run folder/sub."""
+        pats = [p for p in patterns if re.fullmatch(r"[\w./*?-]+", p) and ".." not in p]
+        if not pats:
+            return []
+        d = self.job_dir(run_id) + (f"/{sub}" if sub else "")
+        out = self.run(
+            f"cd {d} 2>/dev/null || exit 0; for p in {' '.join(shlex.quote(x) for x in pats)}; do "
+            f'ok=""; for f in $p; do [ -s "$f" ] && ok=1 && break; done; [ -n "$ok" ] || echo "$p"; done',
+            timeout=60,
+        ).stdout.decode("utf-8", "replace")
+        return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
     def status(self, run_id: int, job_id: str) -> dict:
         """One round trip: Slurm state, last stage marker, log tail and size."""
+        if str(job_id).startswith("warm:"):
+            return self._warm_run_status(run_id, str(job_id)[5:])
         d = self.job_dir(run_id)
         cmd = (
             f"sacct -j {job_id} -X -n -P -o State,Elapsed,NodeList,ExitCode,Start 2>/dev/null | head -1; "
@@ -405,7 +645,40 @@ class SlurmSSHTarget:
         return body.decode("utf-8", "replace"), size
 
     def cancel(self, job_id: str) -> None:
+        if str(job_id).startswith("warm:"):
+            return self.warm_cancel(str(job_id)[5:])
         self.sh(f"scancel {job_id}", timeout=60)
+
+    def _warm_run_status(self, run_id: int, task: str) -> dict:
+        """A full run on the warm node, reported in the same shape as Slurm status."""
+        t = self.warm_task(task)
+        stage = self.read_file(run_id, "stage.txt", 2000).strip().splitlines()
+        rc = t["rc"]
+        state = {"queue": "PENDING", "running": "RUNNING"}.get(t["where"], "")
+        if t["where"] == "done":
+            state = (
+                "COMPLETED" if rc == 0
+                else "TIMEOUT" if rc == 124
+                else "CANCELLED" if rc in (130, 143)
+                else "FAILED"
+            )  # fmt: skip
+        elif t["where"] == "missing":
+            state = ""
+        end = t["finished"] or t["now"]
+        el = (end - t["started"]) if (t["started"] and end) else 0
+        return {
+            "slurm_state": state,
+            "reason": "warm node" if state == "PENDING" else "",
+            "elapsed": f"{el // 3600:d}:{(el % 3600) // 60:02d}:{el % 60:02d}"
+            if el
+            else "",
+            "node": t["node"],
+            "exit_code": f"{rc}:0" if rc is not None else "",
+            "started": "",
+            "stage": stage[-1] if stage else "",
+            "log_size": 0,
+            "node_fails": 0,
+        }
 
     def fetch(self, run_id: int, dest: Path) -> list[dict]:
         """Copy outputs/ plus the log, plan and script back. Returns the file list."""
@@ -414,7 +687,7 @@ class SlurmSSHTarget:
 
         d = self.job_dir(run_id)
         listing = self.sh(
-            f"cd {d} && find outputs job.log run.sbatch plan.json stage.txt "
+            f"cd {d} && find outputs job.log run.sbatch plan.json stage.txt smoke/job.log "
             f"-maxdepth 3 -type f -printf '%s\\t%p\\n' 2>/dev/null || true",
             timeout=60,
         )
@@ -1099,7 +1372,7 @@ open-source software for the task and to check exact package names and command-l
 {target}
 
 {lessons}
-
+{probes}
 SOURCE REPORT: {title}
 SELECTED MATERIAL ({scope}):
 {text}
@@ -1119,7 +1392,11 @@ Requirements for the job:
   (list it under install.apptainer; the harness pulls it and exports IMG_<NAME>, NAME being the
   image name without registry or tag, upper-cased, dashes as underscores, e.g.
   docker://vllm/vllm-openai:v0.6.4 -> $IMG_VLLM_OPENAI; use `apptainer exec --nv` for GPUs);
-  Spack only for compiled HPC codes.
+  Spack only for compiled HPC codes (install.spack; the harness builds them in a user
+  Spack chained to the site's). The harness verifies each install (imports of listed Python
+  packages plus install.verify) and falls back automatically: layered venv -> isolated venv ->
+  conda-forge, or Pixi -> relaxed Pixi -> pip; a module that does not load is replaced by its
+  conda package. So list what the job needs plainly; do not write install code in the script.
 - Download public inputs inside the job (curl/wget work; the cluster has outbound internet).
 - The run script runs with the working directory set to the job folder; write every result
   file (CSV, JSON, PNG plots, text summaries) into ./outputs/. Keep outputs under 100 MB.
@@ -1158,7 +1435,7 @@ strings write every backslash as \\\\ (regexes, LaTeX, Windows paths) and line b
 "inputs": ["data or structures used, with URLs where downloaded"],
 "parameters": {{"name": value}},
 "resources": {{"partition": "...", "nodes": 1, "ntasks_per_node": null, "time_limit": "HH:MM:SS", "gpus": 0}},
-"install": {{"modules": [], "conda": ["package", ...], "channels": ["conda-forge"], "pip": ["package", "--extra-index-url https://...", ...], "apptainer": ["docker://image:tag"]}},
+"install": {{"modules": [], "conda": ["package", ...], "channels": ["conda-forge"], "pip": ["package", "--extra-index-url https://...", ...], "apptainer": ["docker://image:tag"], "spack": ["only for compiled codes that are neither modules nor on conda-forge"], "verify": ["one-line shell checks that prove the software works, e.g. \"SU2_CFD --help | head -1\" or \"python -c 'import rdkit'\""]}},
 "script": "bash commands to run after install (no #SBATCH lines, no install commands). Parameters from 'parameters' are exported as env vars named PARAM_<NAME> in upper case; use them.",
 "expected_outputs": ["outputs/..."],
 "success_criteria": "how to tell the run worked",
@@ -1274,100 +1551,22 @@ stage() {{ echo "$1" >> "$SLURM_SUBMIT_DIR/stage.txt"; echo "[STAGE] $1"; }}
 export -f stage
 trap 'rc=$?; if [ $rc -ne 0 ]; then stage "Failed (exit $rc)"; fi' EXIT
 echo "[INFO] job $SLURM_JOB_ID on $(hostname), $SLURM_CPUS_ON_NODE CPUs, $(date -u +%FT%TZ)"
+export LAB_SMOKE="${{LAB_SMOKE:-0}}"  # 1 = cut-down smoke test (see plan)
+[ "$LAB_SMOKE" = 1 ] && echo "[INFO] SMOKE TEST: cut-down run"
 {site_header}{exports}
 
 stage "Installing software"
 """
     if mods:
         body += "module purge >/dev/null 2>&1 || true\n"
-        body += "".join(f"module load {m}\n" for m in mods)
-    pymods = [m for m in mods if m.split("/")[0] in PYTHON_ENV_MODULES]
-    if pips and not conda and len(pymods) == 1:
-        # pip packages on top of a Python environment module (python-sci/python-ml):
-        # a venv on the module's own Python with --system-site-packages, so the module's
-        # numpy/pandas/matplotlib stay importable and pip adds only what is missing. A
-        # separate Pixi Python here hid the module's packages (issue #113, run #30).
-        pkg_names = sorted(x for x in pips if not x.startswith(("--", "https:")))
-        isolate = any(
-            re.split(r"[<>=!~\[ ]", n, maxsplit=1)[0].lower() in ISOLATE_FROM_MODULE_PIP
-            for n in pkg_names
+        body += 'LADDER_MOD_FALLBACK=""\n'
+        body += "".join(
+            f'module load {m} || {{ echo "[LADDER] module {m} did not load; will try '
+            f'{m.split("/")[0]} from conda-forge/bioconda"; '
+            f'LADDER_MOD_FALLBACK="$LADDER_MOD_FALLBACK {m.split("/")[0]}"; }}\n'
+            for m in mods
         )
-        # An isolated venv can't see the module's packages, so it installs the usual
-        # scientific stack itself (pip picks wheels matching the module's Python).
-        extra = [p for p in ISOLATED_BASE_PIP if p not in pkg_names] if isolate else []
-        digest = hashlib.sha256(
-            json.dumps([pymods[0], pkg_names, pips, isolate]).encode()
-        ).hexdigest()[:12]
-        env_key = f"{_slug(pymods[0] + '-' + '-'.join(pkg_names), 40)}-{digest}"
-        venv_flag = "" if isolate else " --system-site-packages"
-        note = (
-            "# OR-Tools crashes on top of the module's libraries: isolated venv.\n"
-            if isolate
-            else ""
-        )
-        body += f"""{note}ENVDIR=$HOME/deep-research-lab/envs/{env_key}
-mkdir -p "$(dirname "$ENVDIR")"
-# Two jobs needing the same environment build it once: the second waits here.
-exec 9>"$ENVDIR.lock"
-flock 9
-if [ ! -f "$ENVDIR/.ready" ]; then
-  rm -rf "$ENVDIR"
-  python3 -m venv{venv_flag} "$ENVDIR"
-  "$ENVDIR/bin/python" -m pip install --progress-bar off {" ".join(shlex.quote(p) for p in extra + pips)}
-  touch "$ENVDIR/.ready"
-else
-  echo "[INFO] reusing cached environment $ENVDIR"
-fi
-flock -u 9
-. "$ENVDIR/bin/activate"
-echo "[INFO] python $(command -v python) {"isolated from" if isolate else "on top of"} {pymods[0]}"
-"""
-    elif conda or pips:
-        # Readable prefix plus a hash of everything that shapes the environment: a
-        # truncated name alone let two different package lists share one cache.
-        pkg_names = sorted(
-            conda + [x for x in pips if not x.startswith(("--", "https:"))]
-        )
-        digest = hashlib.sha256(
-            json.dumps([pkg_names, sorted(chans), pips]).encode()
-        ).hexdigest()[:12]
-        env_key = f"{_slug('-'.join(pkg_names), 40)}-{digest}"
-        body += f"""export PATH=/apps/pixi/bin:$HOME/.pixi/bin:$PATH
-export PIXI_CACHE_DIR=$HOME/.cache/rattler
-ENVDIR=$HOME/deep-research-lab/envs/{env_key}
-mkdir -p "$(dirname "$ENVDIR")"
-# Two jobs needing the same environment build it once: the second waits here.
-exec 9>"$ENVDIR.lock"
-flock 9
-if [ ! -f "$ENVDIR/.ready" ]; then
-  rm -rf "$ENVDIR"; mkdir -p "$ENVDIR"
-  ( cd "$ENVDIR" && pixi init {" ".join("-c " + shlex.quote(c) for c in chans)} . >/dev/null )
-"""
-        pkgs = list(conda)
-        if pips:
-            # pip needs a Python and pip inside the environment; pin Python because
-            # wheels for brand-new releases lag (vLLM, PyTorch...)
-            if not any(re.match(r"python\b", c) for c in pkgs):
-                pkgs.append("python=3.12")
-            if not any(re.match(r"pip\b", c) for c in pkgs):
-                pkgs.append("pip")
-        body += (
-            f'  ( cd "$ENVDIR" && pixi add {" ".join(shlex.quote(c) for c in pkgs)} )\n'
-        )
-        if pips:
-            body += f'  ( cd "$ENVDIR" && pixi run python -m pip install --progress-bar off {" ".join(shlex.quote(p) for p in pips)} )\n'
-        body += """  touch "$ENVDIR/.ready"
-else
-  echo "[INFO] reusing cached environment $ENVDIR"
-fi
-flock -u 9
-eval "$(cd "$ENVDIR" && pixi shell-hook)"
-# Pip wheels (PyTorch...) pull in the host's old libstdc++ first, which breaks conda
-# libraries that need a newer one. Put the environment's own runtime libraries first.
-if declare -F ursa_conda_libs >/dev/null; then ursa_conda_libs; else
-  export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-fi
-"""
+    body += install_ladder(mods, conda, chans, pips, inst)
     if imgs:
         body += """command -v apptainer >/dev/null 2>&1 || module load apptainer 2>/dev/null || true
 if ! command -v apptainer >/dev/null 2>&1; then
@@ -1400,6 +1599,650 @@ echo "[INFO] finished $(date -u +%FT%TZ)"
 ls -la outputs
 """
     return "\n".join(lines) + "\n" + body
+
+
+# ----------------------------------------------------------------------- cluster matching
+def workload_shape(plan: dict) -> str:
+    """gpu | mpi | sweep | bigmem | cpu, from what the plan says it needs."""
+    r = plan.get("resources") or {}
+    text = (
+        " ".join(
+            str(plan.get(k) or "") for k in ("approach", "title", "question")
+        ).lower()
+        + " "
+        + str(plan.get("script") or "")[:20000].lower()
+    )
+    if _int(r.get("gpus"), 0) > 0 or re.search(
+        r"\bcuda\b|--nv\b|\.to\(['\"]cuda|torch\.cuda", text
+    ):
+        return "gpu"
+    if _int(r.get("nodes"), 1) > 1 or re.search(r"\b(srun|mpirun|mpiexec)\b", text):
+        return "mpi"
+    mem = re.search(r"(\d{3,4})\s*gb\b", text)
+    if mem and int(mem.group(1)) > 100:
+        return "bigmem"
+    if re.search(
+        r"parameter sweep|monte carlo|replicates|xargs -p|job array|sbatch --array",
+        text,
+    ):
+        return "sweep"
+    return "cpu"
+
+
+def suggest_partition(
+    target, plan: dict, stocked_out: set[str] | None = None
+) -> tuple[str, str]:
+    """(partition, reason) that fits the plan's shape and is not stocked out."""
+    parts = getattr(target, "partitions", {}) or {}
+    want = (plan.get("resources") or {}).get("partition") or target.default_partition
+    out = set(stocked_out or ())
+    shape = workload_shape(plan)
+    by_shape = {
+        "gpu": ["gpul4"],
+        "mpi": ["computehigh", "standard"],
+        "bigmem": ["highmem"],
+        "sweep": ["computehigh", "spot", "standard"],
+        "cpu": ["computehigh", "standard"],
+    }[shape]
+    ok = [p for p in by_shape if p in parts and p not in out]
+    if want in parts and want not in out:
+        if (shape == "gpu") == bool(parts[want].get("gpus")):
+            return want, ""
+    if ok:
+        why = (
+            f"'{want}' is stocked out in the zone"
+            if want in out
+            else f"a {shape} job fits '{ok[0]}' better than '{want}'"
+        )
+        return ok[0], why
+    return want, ""
+
+
+def time_from_history(db_path: str, plan: dict, floor_min: int = 10) -> str | None:
+    """A time limit from similar completed runs (same software), or None.
+
+    3x the longest similar run plus 5 minutes for installs, rounded up to 5 minutes,
+    never below `floor_min`. Similar = shares a software/package name with the plan.
+    """
+    keys = set(labguard.software_keys(plan))
+    if not keys:
+        return None
+    try:
+        with sqlite3.connect(db_path, timeout=10) as conn:
+            rows = conn.execute(
+                "SELECT plan, elapsed FROM lab_runs WHERE status='completed' AND elapsed IS NOT NULL "
+                "ORDER BY id DESC LIMIT 300"
+            ).fetchall()
+    except sqlite3.Error:
+        return None
+    worst = 0
+    n = 0
+    for pj, el in rows:
+        try:
+            other = json.loads(pj or "{}")
+        except ValueError:
+            continue
+        if not keys & set(labguard.software_keys(other)):
+            continue
+        el = str(el)
+        sec = int(_hours(el) * 3600) if TIME_RE.fullmatch(el) else 0
+        if sec:
+            worst, n = max(worst, sec), n + 1
+    if not n:
+        return None
+    mins = max(floor_min, -(-(worst * 3 + 300) // 300) * 5)
+    return f"{mins // 60:02d}:{mins % 60:02d}:00"
+
+
+def stocked_out_partitions(target) -> set[str]:
+    """Partitions whose nodes failed to start for lack of GCP capacity (sinfo -R)."""
+    try:
+        out = target.sh(
+            "sinfo -h -R -o '%E|%N' 2>/dev/null | grep -iE 'RESOURCE_POOL_EXHAUSTED|stockout|"
+            "ZONE_RESOURCE|insufficient capacity' | cut -d'|' -f2; "
+            "echo '::P::'; sinfo -h -o '%R|%N' 2>/dev/null",
+            timeout=40,
+        )
+    except Exception:
+        return set()
+    bad_nodes, _, parts = out.partition("::P::")
+    prefixes = {
+        re.sub(r"[\[\d].*$", "", n.strip()) for n in bad_nodes.split() if n.strip()
+    }
+    res = set()
+    for ln in parts.splitlines():
+        p, _, nodes = ln.partition("|")
+        if any(nodes.strip().startswith(px) for px in prefixes if px):
+            res.add(p.strip())
+    return res
+
+
+# ----------------------------------------------------------------------- planner probes
+PROBE_PROMPT = """You are about to plan a computational job on the HPC cluster below. Before
+writing the plan, you may check facts on a compute node: installed module details, program
+help text and versions, Python package versions and function signatures, and whether
+download URLs work. List the checks that would most reduce the risk of the job failing
+(wrong flags, removed APIs, wrong output file names, dead links). At most {max_checks}.
+
+{target}
+
+SOURCE REPORT: {title}
+MATERIAL (excerpt):
+{text}
+{question_line}
+Check kinds (use exactly these):
+- {{"kind": "module", "name": "su2/8.2.0", "load": ["openmpi"]}}  -> `module show` and the programs it adds
+- {{"kind": "help", "cmd": "SU2_CFD --help", "load": ["openmpi", "su2/8.2.0"]}}  -> first 150 lines of output
+- {{"kind": "pyversion", "package": "ortools"}}  -> versions available on PyPI and the one in python-sci
+- {{"kind": "pyhelp", "target": "ortools.sat.python.cp_model.CpModel.NewFixedSizeIntervalVar", "pip": ["ortools"]}}  -> signature and docstring
+- {{"kind": "url", "url": "https://..."}}  -> HTTP status and size
+
+Return JSON only, in a ```json block: {{"checks": [ ... ]}}"""
+
+PROBE_KINDS = ("module", "help", "pyversion", "pyhelp", "url")
+_SAFE_TOKEN = re.compile(r"[\w.+/:=@-]+")
+
+
+def _probe_cmd(chk: dict) -> str | None:
+    """Shell for one probe, or None when it is unsafe or malformed.
+
+    Probes are read-only: module show/avail, `<program> --help|-h|--version|-version`,
+    pip index/download metadata into a throwaway venv, Python `help()` on a dotted name,
+    and `curl -sI` on http(s) URLs. Anything else is refused.
+    """
+    kind = chk.get("kind")
+    loads = [str(m) for m in chk.get("load") or [] if _SAFE_TOKEN.fullmatch(str(m))][:4]
+    pre = "module purge >/dev/null 2>&1; " + "".join(
+        f"module load {shlex.quote(m)} >/dev/null 2>&1; " for m in loads
+    )
+    if kind == "module":
+        name = str(chk.get("name") or "")
+        if not _SAFE_TOKEN.fullmatch(name):
+            return None
+        q = shlex.quote(name)
+        return (
+            pre + f"module show {q} 2>&1 | head -60; "
+            f'for d in $(module show {q} 2>&1 | sed -n \'s/.*prepend_path("PATH","\\([^"]*\\)").*/\\1/p\'); '
+            'do echo "programs in $d:"; ls "$d" 2>/dev/null | head -40; done'
+        )
+    if kind == "help":
+        parts = str(chk.get("cmd") or "").split()
+        if (
+            not parts
+            or len(parts) > 3
+            or not all(_SAFE_TOKEN.fullmatch(p) for p in parts)
+        ):
+            return None
+        flags = parts[1:]
+        if any(
+            f not in ("--help", "-h", "-help", "--version", "-version", "-V", "help")
+            for f in flags
+        ):
+            return None
+        return (
+            pre
+            + "timeout 30 "
+            + " ".join(shlex.quote(p) for p in parts)
+            + " 2>&1 < /dev/null | head -150"
+        )
+    if kind == "pyversion":
+        pkg = str(chk.get("package") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", pkg):
+            return None
+        return (
+            "module load python-sci >/dev/null 2>&1; "
+            f'echo "python-sci: $(python3 -c \'import importlib.metadata as m; print(m.version(\\"{pkg}\\"))\' 2>/dev/null || echo not installed)"; '
+            f"timeout 60 python3 -m pip index versions {shlex.quote(pkg)} 2>/dev/null | head -3"
+        )
+    if kind == "pyhelp":
+        target = str(chk.get("target") or "")
+        pips = [
+            str(p)
+            for p in chk.get("pip") or []
+            if re.fullmatch(r"[A-Za-z0-9_.=<>!-]+", str(p))
+        ][:3]
+        if not re.fullmatch(r"[A-Za-z_][\w.]*", target):
+            return None
+        mod = target.split(".")[0]
+        inst = (
+            'V="$TMPDIR/probe-venv"; python3 -m venv --system-site-packages "$V" >/dev/null && '
+            f'"$V/bin/python" -m pip install -q {" ".join(shlex.quote(p) for p in pips)} >/dev/null 2>&1; PY="$V/bin/python"; '
+            if pips
+            else "PY=python3; "
+        )
+        code = (
+            "import importlib, inspect, pydoc, sys\n"
+            f"t = {target!r}\n"
+            "parts = t.split('.')\n"
+            "obj = None\n"
+            "for i in range(len(parts), 0, -1):\n"
+            "    try:\n"
+            "        obj = importlib.import_module('.'.join(parts[:i]))\n"
+            "        for a in parts[i:]:\n"
+            "            obj = getattr(obj, a)\n"
+            "        break\n"
+            "    except (ImportError, AttributeError) as e:\n"
+            "        err = e\n"
+            "if obj is None:\n"
+            "    print('NOT FOUND:', err); sys.exit(0)\n"
+            "try:\n"
+            "    print('signature:', inspect.signature(obj))\n"
+            "except (TypeError, ValueError):\n"
+            "    pass\n"
+            "print(pydoc.render_doc(obj, renderer=pydoc.plaintext)[:4000])\n"
+            f"m = importlib.import_module({mod!r}); print('version:', getattr(m, '__version__', '?'))\n"
+        )
+        return (
+            "module load python-sci >/dev/null 2>&1; "
+            + inst
+            + f"timeout 60 $PY - <<'PYEOF'\n{code}PYEOF"
+        )
+    if kind == "url":
+        url = str(chk.get("url") or "")
+        if not re.fullmatch(r"https?://[\w.:/%?=&~+@,-]+", url) or len(url) > 400:
+            return None
+        return (
+            f"curl -sSIL -m 20 -o /dev/null -w 'HTTP %{{http_code}}, %{{size_download}} bytes\\n' {shlex.quote(url)} 2>&1 | head -c 300; "
+            f"curl -sSL -m 20 -r 0-2047 {shlex.quote(url)} 2>/dev/null | head -c 400 | tr -c '[:print:]\\n' '.'"
+        )
+    return None
+
+
+def probe_script(checks: list[dict]) -> tuple[str, list[dict]]:
+    """A bash script running each accepted probe with a header line; (script, accepted)."""
+    ok = []
+    lines = [
+        "#!/bin/bash",
+        "set +e",
+        "[ -r /apps/docs/templates/job-header.sh ] && . /apps/docs/templates/job-header.sh >/dev/null 2>&1",
+    ]
+    for i, c in enumerate(checks):
+        if not isinstance(c, dict) or c.get("kind") not in PROBE_KINDS:
+            continue
+        cmd = _probe_cmd(c)
+        if not cmd:
+            continue
+        ok.append(c)
+        lines.append(
+            f"echo '=== CHECK {len(ok)}: {json.dumps(c)[:200].replace(chr(39), '')}'"
+        )
+        lines.append(f"( {cmd} ) 2>&1 | head -c 6000")
+    return "\n".join(lines) + "\n", ok
+
+
+_URL_IN_SCRIPT = re.compile(r"https?://[^\s'\"<>)\\]+")
+
+
+def script_urls(plan: dict) -> list[str]:
+    """Download URLs in a plan's script and inputs (not docs links), deduplicated."""
+    text = (
+        str(plan.get("script") or "")
+        + "\n"
+        + "\n".join(str(x) for x in plan.get("inputs") or [])
+    )
+    urls = []
+    for u in _URL_IN_SCRIPT.findall(text):
+        u = u.rstrip(".,;:")
+        if "$" in u or "{" in u or u in urls:
+            continue
+        urls.append(u)
+    return urls[:15]
+
+
+# ----------------------------------------------------------------------- install ladder
+# Import names that differ from the package name (for the automatic import check).
+IMPORT_NAMES = {
+    "scikit-learn": "sklearn",
+    "scikit-image": "skimage",
+    "opencv-python": "cv2",
+    "opencv-python-headless": "cv2",
+    "pillow": "PIL",
+    "pyyaml": "yaml",
+    "biopython": "Bio",
+    "beautifulsoup4": "bs4",
+    "python-dateutil": "dateutil",
+    "batman-package": "batman",
+    "pytorch": "torch",
+    "tensorflow-cpu": "tensorflow",
+    "ortools": "ortools",
+    "netcdf4": "netCDF4",
+    "pytables": "tables",
+    "tables": "tables",
+    "py3dmol": "py3Dmol",
+    "rdkit-pypi": "rdkit",
+    "mdanalysis": "MDAnalysis",
+    "pymatgen": "pymatgen",
+    "ase": "ase",
+    "openmm": "openmm",
+    "pyscf": "pyscf",
+    "networkx": "networkx",
+    "simpy": "simpy",
+    "pythermalcomfort": "pythermalcomfort",
+    "astropy": "astropy",
+    "skyfield": "skyfield",
+    "treetime": "treetime",
+    "phylo-treetime": "treetime",
+    "nextstrain-augur": "augur",
+    "augur": "augur",
+    "jax": "jax",
+    "jaxlib": "jaxlib",
+    "numba": "numba",
+    "sympy": "sympy",
+}
+# conda-only tools with no Python import: never import-checked
+NO_IMPORT = {
+    "python",
+    "pip",
+    "gcc",
+    "gxx",
+    "gfortran",
+    "make",
+    "cmake",
+    "openmpi",
+    "mpich",
+    "iqtree",
+    "mafft",
+    "raxml-ng",
+    "blast",
+    "samtools",
+    "bwa",
+    "gromacs",
+    "lammps",
+    "cp2k",
+    "quantum-espresso",
+    "nodejs",
+    "r-base",
+    "julia",
+    "fftw",
+    "hdf5",
+    "compilers",
+    "cxx-compiler",
+    "c-compiler",
+    "fortran-compiler",
+    "ffmpeg",
+}
+
+
+def _pkg_name(spec: str) -> str:
+    return re.split(r"[<>=!~\[ ;]", spec.strip(), maxsplit=1)[0].lower()
+
+
+def import_names(pkgs: list[str]) -> list[str]:
+    """Python import names to verify an environment with (best effort)."""
+    out = []
+    for p in pkgs:
+        if p.startswith(("--", "https:")):
+            continue
+        n = _pkg_name(p)
+        if not n or n in NO_IMPORT or n.startswith(("r-", "lib")):
+            continue
+        mod = IMPORT_NAMES.get(n, n.replace("-", "_"))
+        if re.fullmatch(r"[A-Za-z_][\w.]*", mod):
+            out.append(mod)
+    return sorted(set(out))
+
+
+_LADDER_FUNCS = r"""
+# ---- install ladder: try each way to get the software, keep the first that verifies
+LADDER_LOG="$SLURM_SUBMIT_DIR/outputs/environment.json"
+ladder_verify() {  # python-bin: import checks and the plan's verify commands
+  local py=$1 rc=0
+  if [ -n "$LADDER_IMPORTS" ]; then
+    "$py" - "$LADDER_IMPORTS" <<'PYEOF' || rc=1
+import importlib, sys
+bad = []
+for m in sys.argv[1].split():
+    try:
+        importlib.import_module(m)
+    except Exception as e:  # noqa: BLE001
+        bad.append(f"{m}: {type(e).__name__}: {e}"[:300])
+if bad:
+    print("[LADDER] import check failed: " + "; ".join(bad))
+    sys.exit(1)
+print("[LADDER] imports OK: " + sys.argv[1])
+PYEOF
+  fi
+  if [ $rc = 0 ] && [ -n "${LADDER_VERIFY:-}" ]; then
+    ( set +e; eval "$LADDER_VERIFY" ) > "$TMPDIR/ladder_verify.log" 2>&1 || {
+      echo "[LADDER] verify commands failed:"; tail -20 "$TMPDIR/ladder_verify.log"; rc=1; }
+  fi
+  return $rc
+}
+ladder_record() {  # rung envdir
+  local py; py=$(command -v python3 || command -v python || true)
+  local lock=""
+  if [ -n "$py" ]; then lock=$("$py" -m pip freeze 2>/dev/null | head -400 | tr '\n' ';' | sed 's/"/\\"/g'); fi
+  printf '{"rung": "%s", "env": "%s", "tried": "%s", "python": "%s", "packages": "%s"}\n' \
+    "$1" "$2" "${LADDER_TRIED# }" "$($py -V 2>&1 | tr -d '\n')" "$lock" > "$LADDER_LOG"
+  mkdir -p "$HOME/deep-research-lab/envs"
+  printf '{"key": "%s", "rung": "%s", "run": "%s", "when": "%s"}\n' "$LADDER_KEY" "$1" \
+    "$(basename "$SLURM_SUBMIT_DIR")" "$(date -u +%FT%TZ)" >> "$HOME/deep-research-lab/envs/ladder.jsonl"
+  echo "[LADDER] using rung $1 ($2)"
+}
+ladder_try() {  # name envdir build-commands...: build once (cached), activate, verify
+  local name=$1 dir=$2; shift 2
+  LADDER_TRIED="$LADDER_TRIED $name"
+  echo "[LADDER] trying $name"
+  mkdir -p "$(dirname "$dir")"
+  exec 9>"$dir.lock"; flock 9
+  if [ -f "$dir/.bad" ]; then
+    echo "[LADDER] $name failed before for this package list; skipping"; flock -u 9; return 1
+  fi
+  if [ ! -f "$dir/.ready" ]; then
+    rm -rf "$dir"
+    if ! ( set -e; "$@" ) ; then
+      echo "[LADDER] $name: install failed"; mkdir -p "$dir"; touch "$dir/.bad"; flock -u 9; return 1
+    fi
+    touch "$dir/.ready"
+  else
+    echo "[INFO] reusing cached environment $dir"
+  fi
+  flock -u 9
+  return 0
+}
+"""
+
+
+def install_ladder(
+    mods: list[str], conda: list[str], chans: list[str], pips: list[str], inst: dict
+) -> str:
+    """Shell that installs the plan's software, falling back rung by rung.
+
+    Python work: (1) venv layered on the Python module; (2) isolated venv on the
+    module's Python (native wheels that clash with the module, e.g. OR-Tools); (3) a
+    Pixi environment with everything from conda-forge (pip for what conda lacks).
+    Conda/Pixi plans: (1) Pixi as listed; (2) Pixi with conda-forge + bioconda and the
+    Python pins dropped; (3) pip into a plain venv. Every rung is verified (imports of
+    the listed packages plus the plan's install.verify commands) before it is used; a
+    rung that fails is cached as bad for that package list. A module that does not load
+    is replaced by its conda package. The rung used goes to outputs/environment.json and
+    ~/deep-research-lab/envs/ladder.jsonl (read by later plans).
+    """
+    spack = [
+        str(x)
+        for x in inst.get("spack") or []
+        if re.fullmatch(r"[\w.@%+~=^-]+", str(x))
+    ][:4]
+    spack_sh = _spack_block(spack) if spack else ""
+    pymods = [m for m in mods if m.split("/")[0] in PYTHON_ENV_MODULES]
+    names = [x for x in pips if not x.startswith(("--", "https:"))]
+    verify = [
+        str(v)
+        for v in (inst.get("verify") or [])
+        if isinstance(v, str) and "\n" not in v
+    ][:10]
+    imports = import_names(names + conda)
+    # the MPI/module fallbacks can add conda packages at run time
+    if not (conda or pips or verify):
+        return spack_sh + (
+            'if [ -n "${LADDER_MOD_FALLBACK:-}" ]; then\n'
+            + _pixi_fallback_only(chans)
+            + "fi\n"
+        )
+    key = hashlib.sha256(
+        json.dumps([mods, sorted(conda), sorted(chans), pips]).encode()
+    ).hexdigest()[:12]
+    base = f"$HOME/deep-research-lab/envs/{_slug('-'.join(sorted(conda + names)) or 'env', 40)}-{key}"
+    out = _LADDER_FUNCS
+    out += f'LADDER_KEY={shlex.quote(key)}\nLADDER_TRIED=""\n'
+    out += f"LADDER_IMPORTS={shlex.quote(' '.join(imports))}\n"
+    out += "LADDER_VERIFY=" + shlex.quote("\n".join(verify)) + "\n"
+    out += "export PATH=/apps/pixi/bin:$HOME/.pixi/bin:$PATH\n"
+    out += "export PIXI_CACHE_DIR=${PIXI_CACHE_DIR:-$HOME/.cache/rattler}\n"
+    q = " ".join(shlex.quote(p) for p in pips)
+    isolate_first = any(_pkg_name(n) in ISOLATE_FROM_MODULE_PIP for n in names)
+    extra = " ".join(
+        shlex.quote(p)
+        for p in ISOLATED_BASE_PIP
+        if p not in [_pkg_name(n) for n in names]
+    )
+    rungs: list[tuple[str, str, str]] = []  # name, envdir, build commands (bash)
+    if pymods and not conda:
+        layered = (
+            "layered-venv",
+            f"{base}-layered",
+            f'python3 -m venv --system-site-packages "{base}-layered" && '
+            f'"{base}-layered/bin/python" -m pip install --progress-bar off {q}',
+        )
+        isolated = (
+            "isolated-venv",
+            f"{base}-isolated",
+            f'python3 -m venv "{base}-isolated" && '
+            f'"{base}-isolated/bin/python" -m pip install --progress-bar off {extra} {q}',
+        )
+        rungs += [isolated, layered] if isolate_first else [layered, isolated]
+        conda_all = ["python=3.12", "pip", "numpy", "scipy", "pandas", "matplotlib"]
+        rungs.append(
+            (
+                "pixi-conda-forge",
+                f"{base}-pixi",
+                f'mkdir -p "{base}-pixi" && cd "{base}-pixi" && pixi init -c conda-forge . >/dev/null && '
+                f"pixi add {' '.join(shlex.quote(c) for c in conda_all)} && "
+                f"(pixi add {' '.join(shlex.quote(_pkg_name(n)) for n in names)} || "
+                f"pixi run python -m pip install --progress-bar off {q})",
+            )
+        )
+    else:
+        pk = list(conda)
+        if pips or not any(re.match(r"python\b", c) for c in pk):
+            if not any(re.match(r"python\b", c) for c in pk) and (pips or imports):
+                pk.append("python=3.12")
+        if pips and not any(re.match(r"pip\b", c) for c in pk):
+            pk.append("pip")
+        chan_args = " ".join("-c " + shlex.quote(c) for c in chans)
+        pip_step = (
+            f" && pixi run python -m pip install --progress-bar off {q}" if pips else ""
+        )
+        rungs.append(
+            (
+                "pixi",
+                f"{base}-pixi",
+                f'mkdir -p "{base}-pixi" && cd "{base}-pixi" && pixi init {chan_args} . >/dev/null && '
+                f"pixi add {' '.join(shlex.quote(c) for c in pk)}{pip_step}",
+            )
+        )
+        loose = [c for c in pk if not re.match(r"python\b", c)] + ["python", "pip"]
+        loose = [
+            re.split(r"[=<>]", c)[0] if not c.startswith("python") else c for c in loose
+        ]
+        rungs.append(
+            (
+                "pixi-loose",
+                f"{base}-pixi2",
+                f'mkdir -p "{base}-pixi2" && cd "{base}-pixi2" && '
+                f"pixi init -c conda-forge -c bioconda . >/dev/null && "
+                f"pixi add {' '.join(shlex.quote(c) for c in sorted(set(loose)))}{pip_step}",
+            )
+        )
+        pyish = [
+            _pkg_name(c)
+            for c in conda
+            if _pkg_name(c) not in NO_IMPORT and not c.startswith("python")
+        ]
+        if pyish or pips:
+            rungs.append(
+                (
+                    "pip-venv",
+                    f"{base}-pip",
+                    f'python3 -m venv "{base}-pip" && "{base}-pip/bin/python" -m pip install '
+                    f"--progress-bar off {' '.join(shlex.quote(x) for x in pyish)} {q}",
+                )
+            )
+    out += 'LADDER_OK=""\n'
+    for name, envdir, build in rungs:
+        act = (
+            f'eval "$(cd "{envdir}" && pixi shell-hook)"; '
+            "if declare -F ursa_conda_libs >/dev/null; then ursa_conda_libs; else "
+            'export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; fi'
+            if name.startswith("pixi")
+            else f'. "{envdir}/bin/activate"'
+        )
+        py = "python3"
+        out += (
+            f'if [ -z "$LADDER_OK" ] && ladder_try {name} "{envdir}" bash -c {shlex.quote(build)}; then\n'
+            f'  ( {act}; ladder_verify {py} ) && {{ {act}; LADDER_OK={name}; ladder_record {name} "{envdir}"; }} '
+            f'|| {{ echo "[LADDER] {name} did not verify"; touch "{envdir}/.bad"; }}\n'
+            "fi\n"
+        )
+    if inst.get("apptainer"):
+        # the plan also lists container images; they may carry what the rungs lacked
+        out += (
+            'if [ -z "$LADDER_OK" ]; then\n'
+            '  echo "[LADDER] no Python/conda rung worked (tried:$LADDER_TRIED); '
+            'continuing with the container image(s)"\n'
+            "fi\n"
+        )
+    else:
+        out += (
+            'if [ -z "$LADDER_OK" ]; then\n'
+            '  echo "[ERROR] no install method produced a working environment (tried:$LADDER_TRIED)"\n'
+            "  exit 4\nfi\n"
+        )
+    out += (
+        'if [ -n "${LADDER_MOD_FALLBACK:-}" ]; then\n'
+        + _pixi_fallback_only(chans)
+        + "fi\n"
+    )
+    return spack_sh + out
+
+
+def _spack_block(specs: list[str]) -> str:
+    """User-level Spack builds chained to the site's /apps/spack (reuses its packages).
+
+    For compiled codes that are neither a module nor on conda-forge. The user instance
+    lives in ~/deep-research-lab/spack and is shared by later jobs.
+    """
+    q = " ".join(shlex.quote(s) for s in specs)
+    names = " ".join(specs)
+    return (
+        f"# ---- user-level Spack (chained to /apps/spack), for: {names}\n"
+        "SP=$HOME/deep-research-lab/spack\n"
+        'exec 8>"$SP.lock"; flock 8\n'
+        'if [ ! -x "$SP/bin/spack" ]; then\n'
+        '  git clone --depth 1 -q https://github.com/spack/spack.git "$SP"\n'
+        '  mkdir -p "$SP/etc/spack"\n'
+        "  printf 'upstreams:\\n  site:\\n    install_tree: /apps/spack/opt/spack\\n' "
+        '> "$SP/etc/spack/upstreams.yaml"\n'
+        "fi\n"
+        '. "$SP/share/spack/setup-env.sh"\n'
+        f'echo "[LADDER] spack: installing {names} (reuses /apps/spack builds)"\n'
+        f'spack install -j "${{SLURM_CPUS_ON_NODE:-8}}" --reuse {q}\n'
+        "flock -u 8\n"
+        f"spack load {q}\n"
+        f'echo "[LADDER] spack loaded: {names}"\n'
+    )
+
+
+def _pixi_fallback_only(chans: list[str]) -> str:
+    """Modules that failed to load: install them from conda-forge/bioconda instead."""
+    return (
+        "  export PATH=/apps/pixi/bin:$HOME/.pixi/bin:$PATH\n"
+        '  FB="$HOME/deep-research-lab/envs/modfallback-$(echo $LADDER_MOD_FALLBACK | tr " " "-")"\n'
+        '  mkdir -p "$FB"; ( cd "$FB" && [ -f .ready ] || { pixi init -c conda-forge -c bioconda . >/dev/null '
+        "&& pixi add $LADDER_MOD_FALLBACK && touch .ready; } )\n"
+        '  eval "$(cd "$FB" && pixi shell-hook)"\n'
+        '  echo "[LADDER] replaced modules with conda packages:$LADDER_MOD_FALLBACK"\n'
+    )
 
 
 # --------------------------------------------------------------------------- store + service
@@ -1466,6 +2309,10 @@ class Lab:
         self._genai = None
         self._client_lock = threading.Lock()
         self._fetch_tries: dict[int, int] = {}
+        self._warm_checked: dict[str, float] = {}  # target -> last ensure_warm()
+        self._stocked_out: dict[
+            str, set[str]
+        ] = {}  # target -> partitions GCP can't fill
         self._gone_polls: dict[int, int] = {}
         self._watch_lock = threading.Lock()
         self._watcher: threading.Thread | None = None
@@ -1517,6 +2364,8 @@ class Lab:
                 conn.execute("ALTER TABLE lab_runs ADD COLUMN data_sources TEXT")
             if "verdict" not in cols:  # outputs/verdict.json: known-answer checks
                 conn.execute("ALTER TABLE lab_runs ADD COLUMN verdict TEXT")
+            if "smoke" not in cols:  # smoke-test rounds and the plan as submitted
+                conn.execute("ALTER TABLE lab_runs ADD COLUMN smoke TEXT")
             conn.commit()
 
     # ---- plumbing --------------------------------------------------------
@@ -1623,7 +2472,7 @@ class Lab:
     @staticmethod
     def _row(row) -> dict:
         d = dict(row)
-        for k in ("plan", "files", "data_sources", "verdict"):
+        for k in ("plan", "files", "data_sources", "verdict", "smoke"):
             try:
                 d[k] = json.loads(d[k]) if d.get(k) else None
             except ValueError:
@@ -1671,7 +2520,7 @@ class Lab:
         """
         if not fields:
             return False
-        for k in ("plan", "files", "verdict"):
+        for k in ("plan", "files", "verdict", "smoke"):
             if k in fields and not isinstance(fields[k], (str, type(None))):
                 fields[k] = json.dumps(fields[k])
         fields["updated_at"] = _now()
@@ -1838,7 +2687,48 @@ class Lab:
         return out
 
     def _check(self, tgt, plan: dict) -> list[str]:
-        return validate_plan(tgt, plan) + self.source_warnings(plan)
+        return (
+            validate_plan(tgt, plan)
+            + self.source_warnings(plan)
+            + self.url_warnings(plan)
+            + self.env_warnings(plan)
+            + self.match_warnings(tgt, plan)
+        )
+
+    def match_warnings(self, tgt, plan: dict) -> list[str]:
+        """Partition and time-limit advice from the workload shape and past runs."""
+        if not tgt or not getattr(tgt, "partitions", None):
+            return []
+        warns = []
+        part, why = suggest_partition(tgt, plan, self._stocked_out.get(tgt.name))
+        if why:
+            warns.append(f"Partition: {why}; consider resources.partition = '{part}'")
+        hist = time_from_history(self.db_path, plan)
+        tl = str((plan.get("resources") or {}).get("time_limit") or "01:00:00")
+        if hist and TIME_RE.fullmatch(tl) and _hours(tl) > 2.5 * _hours(hist):
+            warns.append(
+                f"Time limit {tl} is far above similar past runs (suggested {hist}); "
+                "a tighter limit lowers the worst-case cost"
+            )
+        return warns
+
+    @staticmethod
+    def url_warnings(plan: dict) -> list[str]:
+        """Download URLs that failed their check on a compute node (while planning)."""
+        bad = [
+            u for u in (plan.get("url_checks") or [])
+            if isinstance(u, dict) and u.get("ok") is False
+            and u.get("url") in script_urls(plan)
+        ]  # fmt: skip
+        return [
+            f"URL did not download on the cluster ({u.get('status') or 'no answer'}): "
+            f"{str(u.get('url'))[:160]}"
+            for u in bad[:5]
+        ]
+
+    def env_warnings(self, plan: dict) -> list[str]:
+        """Nothing blocks on ladder memory; this only notes a known-good environment."""
+        return []
 
     def _safe_sources(self, plan: dict) -> list:
         """Like _plan_sources for previews: unknown names are skipped (they show up as
@@ -1904,8 +2794,13 @@ class Lab:
             ):
                 return  # cancelled before it started
             self._fresh_catalog(tgt)
+            probes = self._run_probes(run_id, run, tgt, title)
+            notes = self.env_notes(tgt)
+            if notes:
+                probes += "\n" + notes + "\n"
             prompt = PLAN_PROMPT.format(
                 target=_describe(tgt, full=True),
+                probes=probes,
                 lessons=labguard.prompt_block(
                     " ".join(
                         [
@@ -1967,6 +2862,7 @@ class Lab:
                     raise ValueError(f"plan is missing '{key}'")
             if run.get("data_sources"):
                 plan["data_sources"] = list(run["data_sources"])
+            plan["url_checks"] = self._check_urls(run_id, tgt, plan)
             plan["warnings"] = self._check(tgt, plan)
             if tgt and getattr(tgt, "catalog", None):
                 plan["catalog_generated"] = tgt.catalog.get("generated")  # type: ignore[union-attr]
@@ -2301,7 +3197,17 @@ class Lab:
                 files["sources.json"] = sources_json(
                     sources, getattr(tgt, "remote_root", "~/deep-research-lab")
                 )
-            job = tgt.submit(run_id, files)
+            if self._smoke_applies(tgt, plan):
+                # Smoke test first, on the warm node: the real run only starts if the
+                # cut-down run of this exact plan passes (decisions, Lab plan v3).
+                tgt.upload(run_id, files, fresh=True)
+                for src in sources:
+                    self.sources.record_use(src, "lab_run", run_id)
+                _IN_FLIGHT.discard(run_id)
+                self._start_smoke(run_id, tgt, plan, round_no=1, original=plan)
+                self.ensure_watcher()
+                return self.get(run_id) or {}
+            job = self._dispatch(run_id, tgt, plan, files)
             for src in sources:
                 self.sources.record_use(src, "lab_run", run_id)
         except NotSubmitted as e:
@@ -2334,7 +3240,9 @@ class Lab:
             run_id,
             only_if=("submitting",),
             status="queued",
-            stage="Queued, waiting for a node",
+            stage="Queued on the warm Lab node"
+            if job.startswith("warm:")
+            else "Queued, waiting for a node",
             job_id=job,
             submitted_at=_now(),
         ):
@@ -2361,6 +3269,21 @@ class Lab:
                 run_id,
                 status="cancelled",
                 stage="Cancelled after the job ended",
+                finished_at=_now(),
+            )
+        elif run["status"] == "smoke":
+            tgt = self.target(run["target"])
+            task = (run.get("smoke") or {}).get("task")
+            if tgt and task:
+                try:
+                    tgt.warm_cancel(task)
+                except Exception:
+                    pass  # the task will still end with the worker
+            self._update(
+                run_id,
+                only_if=("smoke",),
+                status="cancelled",
+                stage="Cancelled during the smoke test",
                 finished_at=_now(),
             )
         elif run["status"] == "submitting" and not run.get("job_id"):
@@ -2412,6 +3335,583 @@ class Lab:
         )
         return self.get(run_id) or {}
 
+    def _switch_partition(self, run: dict, tgt) -> bool:
+        """A queued job whose nodes keep failing on a stocked-out partition moves to one
+        that has capacity (same plan, new partition), once. True when it moved."""
+        plan = dict(run.get("plan") or {})
+        if plan.get("partition_switched"):
+            return False
+        out = stocked_out_partitions(tgt)
+        self._stocked_out[tgt.name] = out
+        cur = (plan.get("resources") or {}).get("partition") or tgt.default_partition
+        if cur not in out:
+            return False
+        new, why = suggest_partition(tgt, plan, out)
+        if new == cur:
+            return False
+        try:
+            tgt.cancel(run["job_id"])
+        except Exception:
+            return False
+        plan["resources"] = {**(plan.get("resources") or {}), "partition": new}
+        plan["partition_switched"] = f"{cur} -> {new} (GCP had no capacity for {cur})"
+        script = build_sbatch(run["id"], plan, tgt, self._safe_sources(plan))
+        try:
+            tgt.upload(
+                run["id"],
+                {"run.sbatch": script, "plan.json": json.dumps(plan, indent=2)},
+                fresh=False,
+            )
+            job = tgt.sbatch_uploaded(run["id"])
+        except Exception as e:
+            self._update(
+                run["id"],
+                only_if=ACTIVE,
+                error=f"partition switch failed: {str(e)[:200]}",
+            )
+            return False
+        self._update(
+            run["id"],
+            only_if=ACTIVE,
+            plan=plan,
+            script=script,
+            job_id=job,
+            estimate_usd=estimate_cost(tgt, plan),
+            stage=f"Moved from {cur} to {new}: GCP had no capacity for {cur}; queued again",
+        )
+        return True
+
+    # ---- planner probes (warm node) ---------------------------------------
+    PROBE_MAX = 6
+    PROBE_WAIT_S = 420
+
+    def _warm_exec(
+        self, tgt, task: str, script: str, wait_s: int
+    ) -> tuple[int | None, str]:
+        """Run a short read-only script on the warm node; (rc, output). Never raises."""
+        try:
+            tgt.warm_enqueue(task, {"run.sh": script}, need_sec=min(wait_s, 600))
+            self._keep_warm(tgt, force=True)
+        except Exception as e:
+            return None, f"(could not reach the warm node: {str(e)[:200]})"
+        t0 = time.time()
+        while time.time() - t0 < wait_s:
+            try:
+                t = tgt.warm_task(task)
+            except Exception:
+                t = {"where": "?"}
+            if t.get("where") == "done":
+                return t.get("rc"), tgt.warm_task_log(task, 40000)
+            time.sleep(5)
+        try:
+            tgt.warm_cancel(task)
+        except Exception:
+            pass
+        return None, "(timed out waiting for the warm node)"
+
+    def _run_probes(self, run_id: int, run: dict, tgt, title: str) -> str:
+        """Ask the model which facts to check, check them on the warm node, return text."""
+        if not tgt or not getattr(tgt, "warm", None):
+            return ""
+        try:
+            self._update(
+                run_id,
+                only_if=("planning",),
+                stage="Choosing what to check on the cluster",
+            )
+            reply, cost = self._ask(
+                PROBE_PROMPT.format(
+                    max_checks=self.PROBE_MAX,
+                    target=_describe(tgt, full=True)[:30000],
+                    title=title,
+                    text=_strip_sources(run["selection"] or "")[:15000],
+                    question_line=f"\nTHE USER'S INSTRUCTION: {run['request']}\n"
+                    if run.get("request")
+                    else "",
+                ),
+                search=False,
+            )
+            self._add_cost(run_id, cost)
+            data = extract_json(reply)
+            checks = (data.get("checks") if isinstance(data, dict) else data) or []
+            script, ok = probe_script(
+                [c for c in checks if isinstance(c, dict)][: self.PROBE_MAX]
+            )
+            if not ok:
+                return ""
+            self._update(
+                run_id,
+                only_if=("planning",),
+                stage=f"Checking {len(ok)} facts on the warm Lab node (software help, versions, URLs)",
+            )
+            rc, out = self._warm_exec(
+                tgt, f"probe-{run_id}-{int(time.time())}", script, self.PROBE_WAIT_S
+            )
+        except Exception as e:  # probes help; they never block planning
+            return f"\n(Cluster checks were skipped: {str(e)[:160]})\n"
+        return (
+            "\nFACTS CHECKED ON THE CLUSTER JUST NOW (trust these over memory; use the exact "
+            "flags, versions, signatures and file names shown):\n" + out[:24000] + "\n"
+        )
+
+    def _check_urls(self, run_id: int, tgt, plan: dict) -> list[dict]:
+        """curl every download URL of a new plan from the warm node."""
+        urls = script_urls(plan)
+        if not urls or not tgt or not getattr(tgt, "warm", None):
+            return []
+        self._update(
+            run_id,
+            only_if=("planning",),
+            stage=f"Checking {len(urls)} download URL(s) on the cluster",
+        )
+        lines = ["#!/bin/bash"]
+        for u in urls:
+            q = shlex.quote(u)
+            lines.append(
+                f"echo \"URL {u} $(curl -sSL -m 25 -o /dev/null -w '%{{http_code}} %{{size_download}}' -r 0-65535 {q} 2>&1 | tail -c 120)\""
+            )
+        rc, out = self._warm_exec(
+            tgt, f"urls-{run_id}-{int(time.time())}", "\n".join(lines) + "\n", 240
+        )
+        res: list[dict[str, Any]] = []
+        for u in urls:
+            m = re.search(r"^URL " + re.escape(u) + r" (\S+)(?: (\S+))?", out, re.M)
+            if not m:
+                res.append({"url": u, "ok": None, "status": "not checked"})
+                continue
+            code = m.group(1)
+            # 206 = the partial range we asked for
+            ok = code.isdigit() and 200 <= int(code) < 400
+            res.append(
+                {
+                    "url": u,
+                    "ok": ok,
+                    "status": f"HTTP {code}" if code.isdigit() else code[:60],
+                }
+            )
+        return res
+
+    def env_notes(self, tgt) -> str:
+        """Which install rung worked for recent package lists (ladder.jsonl), for prompts."""
+        if not tgt or not getattr(tgt, "warm", None):
+            return ""
+        try:
+            raw = tgt.run(
+                "tail -n 400 ~/deep-research-lab/envs/ladder.jsonl 2>/dev/null",
+                timeout=30,
+            ).stdout.decode("utf-8", "replace")
+        except Exception:
+            return ""
+        runs = {}
+        for ln in raw.splitlines():
+            try:
+                d = json.loads(ln)
+            except ValueError:
+                continue
+            if d.get("rung") and d.get("rung") not in ("layered-venv", "pixi"):
+                runs[d.get("key")] = (
+                    d  # only the interesting ones: a fallback was needed
+                )
+        if not runs:
+            return ""
+        return (
+            "Recent jobs needed a fallback install method (the harness does this "
+            "automatically; list packages normally): "
+            + "; ".join(
+                f"{d.get('run')}: {d.get('rung')}" for d in list(runs.values())[-8:]
+            )
+        )
+
+    # ---- smoke test and warm node ------------------------------------------
+    SMOKE_MAX_ROUNDS = 3  # AI fixes of a failing smoke test before giving up
+    WARM_RECHECK_S = 120.0
+
+    @staticmethod
+    def _plan_core(plan: dict) -> dict:
+        """The parts of a plan that decide what runs (for 'is this still the same plan')."""
+        return {
+            k: v
+            for k, v in (plan or {}).items()
+            if k not in PLAN_DIFF_SKIP
+            and k not in ("fix_changes", "fix_notes", "smoke_fix")
+        }
+
+    @staticmethod
+    def _smoke_applies(tgt, plan: dict) -> bool:
+        if not getattr(tgt, "warm", None) or plan.get("smoke") is False:
+            return False
+        r = plan.get("resources") or {}
+        # CPU warm node: a GPU plan's smoke test would fail for want of a GPU
+        return _int(r.get("gpus"), 0) == 0
+
+    @staticmethod
+    def _warm_full_ok(tgt, plan: dict) -> bool:
+        """Short single-node CPU runs on the warm node's partition skip the node boot."""
+        cfg = getattr(tgt, "warm", None)
+        if not cfg:
+            return False
+        r = plan.get("resources") or {}
+        part = r.get("partition") or tgt.default_partition
+        tl = str(r.get("time_limit") or "01:00:00")
+        tl = tl if TIME_RE.fullmatch(tl) else "01:00:00"
+        return (
+            part == cfg["partition"]
+            and max(_int(r.get("nodes"), 1), 1) == 1
+            and _int(r.get("gpus"), 0) == 0
+            and _hours(tl) * 60 <= cfg["max_full_min"]
+        )
+
+    def _keep_warm(self, tgt, force: bool = False) -> str | None:
+        """Make sure a warm worker exists (at most every WARM_RECHECK_S seconds)."""
+        now = time.time()
+        if (
+            not force
+            and now - self._warm_checked.get(tgt.name, 0) < self.WARM_RECHECK_S
+        ):
+            return None
+        self._warm_checked[tgt.name] = now
+        return tgt.ensure_warm()
+
+    @staticmethod
+    def _home(path: str) -> str:
+        return "$HOME" + path[1:] if path.startswith("~") else path
+
+    def _dispatch(self, run_id: int, tgt, plan: dict, files: dict | None) -> str:
+        """Start the real run: on the warm node when it fits, else as its own Slurm job.
+
+        `files` None means they are already in the run folder (after a smoke test).
+        Returns the job id ('warm:<task>' for the warm node).
+        """
+        if self._warm_full_ok(tgt, plan):
+            if files:
+                tgt.upload(run_id, files, fresh=True)
+            r = plan.get("resources") or {}
+            tl = str(r.get("time_limit") or "01:00:00")
+            sec = int(_hours(tl if TIME_RE.fullmatch(tl) else "01:00:00") * 3600)
+            d = self._home(tgt.job_dir(run_id))
+            task = f"full-{run_id}"
+            run_sh = (
+                "#!/bin/bash\n"
+                f'RUN="{d}"\nexport SLURM_SUBMIT_DIR="$RUN"\ncd "$RUN"\n'
+                'echo "[INFO] running on the warm Lab node $(hostname -s)" >> job.log\n'
+                f"exec timeout --kill-after=30 {sec} bash run.sbatch >> job.log 2>&1\n"
+            )
+            tgt.warm_enqueue(
+                task, {"run.sh": run_sh}, need_sec=sec + 120, exclusive=True
+            )
+            self._keep_warm(tgt, force=True)
+            return "warm:" + task
+        if files:
+            return tgt.submit(run_id, files)
+        return tgt.sbatch_uploaded(run_id)
+
+    def _start_smoke(
+        self, run_id: int, tgt, plan: dict, round_no: int, original: dict,
+        rounds: list | None = None,
+    ) -> None:  # fmt: skip
+        cfg = tgt.warm or {}
+        d = self._home(tgt.job_dir(run_id))
+        task = f"smoke-{run_id}-{round_no}"
+        sec = int(cfg.get("smoke_min", 15)) * 60
+        run_sh = (
+            "#!/bin/bash\n"
+            f'RUN="{d}"\nS="$RUN/smoke"\nrm -rf "$S"; mkdir -p "$S"\n'
+            'cp "$RUN/run.sbatch" "$S/"; for f in plan.json sources.json; do '
+            '[ -f "$RUN/$f" ] && cp "$RUN/$f" "$S/"; done\n'
+            'cd "$S"\nexport SLURM_SUBMIT_DIR="$S" LAB_SMOKE=1\n'
+            f"exec timeout --kill-after=20 {sec} bash run.sbatch > job.log 2>&1\n"
+        )
+        tgt.warm_enqueue(task, {"run.sh": run_sh}, need_sec=sec + 60)
+        state = self._keep_warm(tgt, force=True) or ""
+        self._update(
+            run_id,
+            only_if=("submitting", "smoke"),
+            status="smoke",
+            stage=f"Smoke test (round {round_no}): "
+            + (
+                "warm Lab node booting"
+                if state.startswith(("started", "pending"))
+                else "queued on the warm Lab node"
+            ),
+            error=None,
+            smoke={
+                "task": task,
+                "round": round_no,
+                "rounds": rounds or [],
+                "original": self._plan_core(original),
+                "fixing": False,
+            },
+        )
+
+    _SMOKE_ERR = re.compile(
+        r"Traceback|Error:|error:|No such file|not found|Segmentation fault|Killed|"
+        r"command not found|FAILED|Failed \(exit",
+    )
+
+    def _poll_smoke(self, run: dict, tgt) -> None:
+        sm = dict(run.get("smoke") or {})
+        if sm.get("fixing") or not sm.get("task"):
+            return
+        run_id = run["id"]
+        t = tgt.warm_task(sm["task"])
+        n = sm.get("round", 1)
+        if t["where"] in ("queue", "missing"):
+            if t["where"] == "missing":
+                sm["missing"] = int(sm.get("missing") or 0) + 1
+                if sm["missing"] < 3:  # renames between polls; look again
+                    self._update(run_id, only_if=("smoke",), smoke=sm)
+                    return
+                self._update(
+                    run_id,
+                    only_if=("smoke",),
+                    status="failed",
+                    stage="Smoke test lost",
+                    error="The smoke-test task disappeared from the warm node's queue.",
+                    finished_at=_now(),
+                )
+                return
+            state = self._keep_warm(tgt) or ""
+            if state:
+                self._update(
+                    run_id,
+                    only_if=("smoke",),
+                    stage=f"Smoke test (round {n}): "
+                    + (
+                        "warm Lab node booting"
+                        if state.startswith(("started", "pending"))
+                        else "queued on the warm Lab node"
+                    ),
+                )
+            return
+        if t["where"] == "running":
+            st = tgt.read_file(run_id, "smoke/stage.txt", 2000).strip().splitlines()
+            self._update(
+                run_id,
+                only_if=("smoke",),
+                node=t["node"],
+                stage=f"Smoke test (round {n}) on {t['node']}"
+                + (f": {st[-1]}" if st else ""),
+            )
+            return
+        # done
+        rc = t["rc"]
+        log = tgt.read_file(run_id, "smoke/job.log", 60000)
+        plan = run.get("plan") or {}
+        missing = tgt.missing_outputs(
+            run_id, "smoke", [str(x) for x in plan.get("expected_outputs") or []]
+        )
+        clean_timeout = rc == 124 and not self._SMOKE_ERR.search(log[-20000:])
+        passed = (rc == 0 and not missing) or clean_timeout
+        sm["rounds"] = list(sm.get("rounds") or []) + [
+            {
+                "round": n,
+                "rc": rc,
+                "missing": missing,
+                "passed": passed,
+                "note": "timed out without errors (the script may ignore LAB_SMOKE)"
+                if clean_timeout
+                else "",
+                "seconds": (t["finished"] - t["started"])
+                if t["finished"] and t["started"]
+                else None,
+                "log_tail": log[-4000:],
+            }
+        ]
+        if passed:
+            same = self._plan_core(plan) == sm.get("original")
+            if same:
+                try:
+                    job = self._dispatch(run_id, tgt, plan, None)
+                except Exception as e:
+                    self._update(
+                        run_id,
+                        only_if=("smoke",),
+                        status="failed",
+                        stage="Submit failed after the smoke test",
+                        error=str(e)[:500],
+                        smoke=sm,
+                        finished_at=_now(),
+                    )
+                    return
+                self._update(
+                    run_id,
+                    only_if=("smoke",),
+                    status="queued",
+                    stage=f"Smoke test passed (round {n}); "
+                    + (
+                        "queued on the warm Lab node"
+                        if job.startswith("warm:")
+                        else "queued, waiting for a node"
+                    ),
+                    job_id=job,
+                    smoke=sm,
+                )
+            else:
+                # the AI changed the plan to get here: a person approves it first
+                self._update(
+                    run_id,
+                    only_if=("smoke",),
+                    status="draft",
+                    stage=f"Smoke test passed after {n - 1} AI fix(es): review the changes, then submit",
+                    smoke=sm,
+                    submitted_at=None,
+                )
+            return
+        if n >= self.SMOKE_MAX_ROUNDS:
+            self._fail_smoke(run, sm, log, f"Smoke test failed {n} times")
+            return
+        sm["fixing"] = True
+        if not self._update(
+            run_id,
+            only_if=("smoke",),
+            stage=f"Smoke test failed (round {n}, exit {rc}"
+            + (f", missing {', '.join(missing[:3])}" if missing else "")
+            + "); AI is fixing it",
+            smoke=sm,
+        ):
+            return
+        threading.Thread(
+            target=self._smoke_fix, args=(run_id, log, rc, missing), daemon=True
+        ).start()
+
+    def _fail_smoke(self, run: dict, sm: dict, log: str, why: str) -> None:
+        dest = self.results_dir / f"run_{run['id']}"
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "job.log").write_text(log)  # so Fix with AI and the Log view have it
+        last = (sm.get("rounds") or [{}])[-1]
+        self._update(
+            run["id"],
+            only_if=("smoke",),
+            status="failed",
+            stage=why,
+            error=f"{why}; last exit {last.get('rc')}"
+            + (
+                f", missing outputs: {', '.join(last.get('missing') or [])}"
+                if last.get("missing")
+                else ""
+            )
+            + ". The full run was not started.",
+            smoke={**sm, "fixing": False},
+            finished_at=_now(),
+        )
+
+    def _smoke_fix(
+        self, run_id: int, log: str, rc: int | None, missing: list[str]
+    ) -> None:
+        """Background: ask the AI to fix a failed smoke test, then run the next round."""
+        run = self.get(run_id)
+        if not run or run["status"] != "smoke":
+            return
+        sm = dict(run.get("smoke") or {})
+        tgt = self.target(run["target"])
+        plan = {
+            k: v for k, v in (run.get("plan") or {}).items() if k not in PLAN_DIFF_SKIP
+        }
+        try:
+            if not tgt:
+                raise ValueError("no target")
+            self._fresh_catalog(tgt)
+            extra = (
+                f"Expected output files that were missing or empty: {', '.join(missing)}. "
+                if missing
+                else ""
+            )
+            prompt = RUNFIX_PROMPT.format(
+                target=_describe(tgt, full=True),
+                lessons=labguard.prompt_block(
+                    json.dumps(plan) + " " + log[-3000:], self.state_dir
+                ),
+                state="SMOKE TEST FAILED: the plan ran with LAB_SMOKE=1 (a cut-down run) on the "
+                "warm Lab node. "
+                + extra
+                + "Fix the cause. If the script ignores LAB_SMOKE, "
+                "also make it honour it (smallest sizes, every step, every output)",
+                exit_code=rc,
+                elapsed="-",
+                log=_log_for_fix(log),
+                plan=json.dumps(plan, indent=1)[:60000],
+            )
+            reply, cost = self._ask(prompt, search=False)
+            self._add_cost(run_id, cost)
+            out = extract_json(reply)
+            new = out.get("plan") if isinstance(out, dict) else None
+            changes = (
+                [str(c) for c in (out.get("changes") or [])][:20]
+                if isinstance(out, dict)
+                else []
+            )
+            if not isinstance(new, dict) or not all(
+                k in new for k in ("script", "resources", "install")
+            ):
+                raise ValueError("the AI returned no usable plan")
+            if not changes or self._plan_core(new) == self._plan_core(plan):
+                raise ValueError(
+                    "the AI found nothing to fix"
+                    + (
+                        f": {str(out.get('notes'))[:200]}"
+                        if isinstance(out, dict) and out.get("notes")
+                        else ""
+                    )
+                )
+            dropped = _dropped_options(plan, new)
+            original = sm.get("original") or {}
+            new["fix_changes"] = list(
+                (run.get("plan") or {}).get("fix_changes") or []
+            ) + [f"smoke round {sm.get('round', 1)}: {c}" for c in changes]
+            new["fix_notes"] = (
+                (f"REVIEW: removes option(s) {', '.join(dropped)}. " if dropped else "")
+                + str(out.get("notes") or "")
+            ).strip()
+            new["fix_diff"] = plan_diff(original, new)
+            if run.get("data_sources"):
+                new["data_sources"] = list(run["data_sources"])
+            new["warnings"] = self._check(tgt, new)
+            if tgt.catalog:
+                new["catalog_generated"] = tgt.catalog.get("generated")
+            sources = self._plan_sources(new)
+            script = build_sbatch(run_id, new, tgt, sources)
+            files = {"run.sbatch": script, "plan.json": json.dumps(new, indent=2)}
+            tgt.upload(run_id, files, fresh=False)
+            if not self._update(
+                run_id, only_if=("smoke",), plan=new, script=script,
+                estimate_usd=estimate_cost(tgt, new),
+            ):  # fmt: skip
+                return  # cancelled meanwhile
+            self._start_smoke(
+                run_id, tgt, new, int(sm.get("round", 1)) + 1,
+                original={}, rounds=sm.get("rounds"),
+            )  # fmt: skip
+            # keep the plan Chuck submitted as the reference, not the fixed one
+            cur = self.get(run_id) or {}
+            sm2 = dict(cur.get("smoke") or {})
+            sm2["original"] = original
+            self._update(run_id, only_if=("smoke",), smoke=sm2)
+        except Exception as e:
+            run = self.get(run_id) or run
+            self._fail_smoke(
+                run, sm, log, f"Smoke test failed; AI fix failed ({str(e)[:160]})"
+            )
+
+    def warm_status(self, name: str | None = None) -> dict:
+        tgt = self.target(name)
+        if not tgt or not getattr(tgt, "warm", None):
+            return {"enabled": False}
+        return tgt.warm_status()
+
+    def warm_start(self, name: str | None = None) -> dict:
+        tgt = self.target(name)
+        if not tgt or not getattr(tgt, "warm", None):
+            raise ValueError("no warm worker configured for this target")
+        state = self._keep_warm(tgt, force=True)
+        return {"state": state, **tgt.warm_status()}
+
+    def warm_stop(self, name: str | None = None) -> dict:
+        tgt = self.target(name)
+        if not tgt or not getattr(tgt, "warm", None):
+            raise ValueError("no warm worker configured for this target")
+        tgt.warm_stop()
+        return {"stopping": True}
+
     def log(self, run_id: int, offset: int = 0) -> dict:
         run = self.get(run_id)
         if not run:
@@ -2425,9 +3925,18 @@ class Lab:
                 "size": len(data),
                 "source": "local",
             }
+        tgt = self.target(run["target"])
+        if run["status"] == "smoke" and tgt:
+            text = tgt.read_file(run_id, "smoke/job.log", 200000)
+            data = text.encode()
+            off = offset if 0 <= offset <= len(data) else 0
+            return {
+                "text": data[off:].decode("utf-8", "replace"),
+                "size": len(data),
+                "source": "smoke",
+            }
         if not run.get("job_id"):
             return {"text": "", "size": 0, "source": "none"}
-        tgt = self.target(run["target"])
         if not tgt:
             return {"text": "", "size": 0, "source": "none"}
         text, size = tgt.log(run_id, offset)
@@ -2485,6 +3994,10 @@ class Lab:
             )
             return
         tgt = self.target(run["target"])
+        if tgt and run["status"] == "smoke":
+            return self._poll_smoke(run, tgt)
+        if tgt and str(run.get("job_id") or "").startswith("warm:"):
+            self._keep_warm(tgt)
         if not tgt or not run.get("job_id"):
             return
         if run["status"] in ("fetching", "analyzing"):
@@ -2509,6 +4022,8 @@ class Lab:
             if reason and reason not in ("None", "Priority"):
                 label += f" ({reason})"
             fails = int(st.get("node_fails") or 0)
+            if fails >= NODE_FAIL_WARN and self._switch_partition(run, tgt):
+                return
             if fails:
                 part = ((run.get("plan") or {}).get("resources") or {}).get("partition")
                 label = (

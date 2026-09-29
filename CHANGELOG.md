@@ -7,6 +7,18 @@ releases.
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-09-29
+
+Lab plan v3 (nexus `2026-09-29_Deep_Research_Lab_Plan_v3.md`), releases 2-5 in one version: warm node, smoke test, install ladder, planner probes, cluster matching.
+
+### Added
+
+- **Warm Lab node.** One long-lived Slurm job (`lab-warm`, default `computehigh`, 4 h limit, stops after 20 idle minutes) runs Lab work from a spool folder on the cluster, so a burst of runs shares one booted node instead of booting one per job. Short single-node CPU runs on its partition (time limit up to 2 h) run there directly as `warm:<task>` jobs; everything else still gets its own Slurm job. Status, start and stop: `GET /api/lab/warm`, `POST /api/lab/warm/start|stop`, and a line on the Lab runs page. Settings under `"warm"` in `lab_targets.json` (`false` disables it).
+- **Smoke test before every CPU run.** Submit first runs the plan on the warm node with `LAB_SMOKE=1` (a cut-down run the planner is now asked to support) in `run_N/smoke/`, and checks the exit code and that every expected output exists. Pass: the real run starts. Fail: the AI fixes the plan from the smoke log and runs it again, up to 3 rounds. If the AI had to change the plan, the run comes back as a draft with the diff for review instead of starting by itself.
+- **Install ladder.** Each install is verified (imports of the listed Python packages plus the plan's new `install.verify` commands) and falls back on its own: layered venv, then isolated venv, then conda-forge for Python on a module; Pixi, then relaxed Pixi with bioconda, then pip for conda plans; a module that won't load is replaced by its conda package; `install.spack` builds in a user Spack chained to `/apps/spack`; plans with a container carry on to the image. A failed rung is remembered for that package list; the rung used goes to `outputs/environment.json` and `envs/ladder.jsonl`, and recent fallbacks are shown to the planner.
+- **Planner probes.** Before writing a plan, the AI picks up to 6 read-only checks (module details, `--help`/`--version` output, PyPI versions, Python signatures and docstrings, URL status), which run on the warm node; the answers go into the planning prompt. Every download URL of a new plan is also fetched from the cluster, and one that fails is a pre-flight warning.
+- **Cluster matching.** Pre-flight suggests a partition that fits the job's shape (GPU, MPI, sweep, big memory) and flags time limits far above what similar past runs needed. A queued job whose nodes keep failing on a partition GCP can't fill moves once, automatically, to another machine family (same plan, noted on the run).
+
 ## [0.29.0] - 2026-09-29
 
 ### Added

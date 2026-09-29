@@ -104,8 +104,8 @@ const LAB = {
   // ------------------------------------------------------------------ one run card
   runHtml(r) {
     const p = r.plan || {};
-    const live = ["planning", "submitting", "queued", "running", "fetching", "analyzing"].includes(r.status);
-    const badge = { draft: "review", plan_failed: "failed", planning: "planning", submitting: "running", queued: "queued", running: "running", fetching: "running", analyzing: "running" }[r.status] || r.status;
+    const live = ["planning", "submitting", "smoke", "queued", "running", "fetching", "analyzing"].includes(r.status);
+    const badge = { draft: "review", plan_failed: "failed", planning: "planning", submitting: "running", smoke: "smoke test", queued: "queued", running: "running", fetching: "running", analyzing: "running" }[r.status] || r.status;
     // SVG can carry scripts, so it is listed as a download, never shown inline
     const images = (r.files || []).filter((f) => !f.skipped && /\.(png|jpe?g|gif|webp)$/i.test(f.path));
     const others = (r.files || []).filter((f) => !images.includes(f));
@@ -124,6 +124,7 @@ const LAB = {
       ${p.question ? `<div class="lab-q"><span class="label">Question</span> ${esc(p.question)}</div>` : ""}
       ${r.scope === "selection" && r.selection ? `<details class="lab-sel"><summary class="dim">Selected passage</summary><blockquote>${esc(clip(r.selection, 1200))}</blockquote></details>` : ""}
       ${r.status === "plan_failed" && p.why_not ? `<div class="lab-q dim">${esc(p.why_not)}</div>` : ""}
+      ${this.smokeHtml(r)}
       ${this.verdictHtml(r.verdict)}
       ${r.result_md ? `<div class="lab-result md">${renderMd(this.plainMath(r.result_md))}</div>` : ""}
       ${images.length ? `<div class="lab-imgs">${images.map((f) => `<a href="${this.fileUrl(r.id, f.path)}" target="_blank" rel="noopener"><img src="${this.fileUrl(r.id, f.path)}" alt="${esc(f.path)}" loading="lazy"></a>`).join("")}</div>` : ""}
@@ -151,7 +152,7 @@ const LAB = {
   stepsHtml(r) {
     const order = ["planning", "draft", "queued", "running", "fetching", "analyzing", "completed"];
     const names = ["Plan", "Review", "Queued", "Running", "Fetch", "Write-up", "Done"];
-    const at = { submitting: 2, plan_failed: 0 }[r.status] ?? order.indexOf(r.status);
+    const at = { submitting: 2, smoke: 2, plan_failed: 0 }[r.status] ?? order.indexOf(r.status);
     if (at < 0 && !["failed", "cancelled"].includes(r.status)) return "";
     // Where it stopped: before submit (1), in the job (3 = Running: the job itself
     // failed or was cancelled, even when a write-up of the failure exists), fetching
@@ -169,6 +170,19 @@ const LAB = {
   },
 
   // Write-ups are asked for plain Unicode; turn stray inline TeX ($\theta$, $\le$) into symbols.
+  smokeHtml(r) {
+    // smoke test rounds on the warm node, and the plan changes the AI made to pass them
+    const sm = r.smoke;
+    const p = r.plan || {};
+    const bits = [];
+    if (sm && Array.isArray(sm.rounds) && sm.rounds.length) {
+      bits.push(`<span class="label">Smoke test</span> ` + sm.rounds.map((x) => `round ${x.round}: ${x.passed ? "passed" : "<b>failed</b>"}${x.rc != null ? ` (exit ${x.rc}${x.seconds != null ? `, ${x.seconds}s` : ""})` : ""}${(x.missing || []).length ? `, missing ${esc(x.missing.join(", "))}` : ""}${x.note ? ` <span class="dim">${esc(x.note)}</span>` : ""}`).join("; "));
+    }
+    if (p.partition_switched) bits.push(`<span class="label">Partition</span> ${esc(p.partition_switched)}`);
+    if (String(r.job_id || "").startsWith("warm:")) bits.push(`<span class="label">Ran on</span> the warm Lab node (no node boot)`);
+    if (!bits.length) return "";
+    return `<div class="lab-q dim" style="font-size:11.5px">${bits.join("<br>")}</div>`;
+  },
   verdictHtml(v) {
     // outputs/verdict.json: the job's own known-answer checks
     if (!v || !Array.isArray(v.checks)) return "";
@@ -210,7 +224,7 @@ const LAB = {
       if (!(await confirmBox(`Delete lab run #${r.id}?`, "Removes the run and its downloaded results from this computer. Files on the cluster are kept.", "Delete"))) return;
       try { await api(`/api/lab/${r.id}`, { method: "DELETE" }); } finally { this.refresh(el, s); }
     });
-    const live = ["planning", "submitting", "queued", "running", "fetching", "analyzing"].includes(r.status);
+    const live = ["planning", "submitting", "smoke", "queued", "running", "fetching", "analyzing"].includes(r.status);
     if (live) this.poll(el, s, r);
   },
 
@@ -258,7 +272,7 @@ const LAB = {
         if (!box.textContent) box.textContent = "(no output yet)";
         off = d.size || off;
       } catch (e) { box.insertAdjacentHTML("beforeend", `\n<span class="err">${esc(e.message)}</span>`); }
-      const live = ["queued", "running", "fetching", "submitting"].includes(r.status);
+      const live = ["queued", "running", "fetching", "submitting", "smoke"].includes(r.status);
       if (live) this.logs[r.id] = setTimeout(tick, 4000);
     };
     tick();
@@ -458,20 +472,37 @@ const LAB = {
     } catch { /* optional */ }
   },
 
+  async warmBox() {
+    // the warm Lab node: one long-lived job that runs smoke tests, checks and short runs
+    const box = $("#warm-box");
+    if (!box) return;
+    try {
+      const w = await api("/api/lab/warm");
+      if (!w.enabled) { box.textContent = ""; return; }
+      const ws = (w.workers || []).map((x) => `job ${esc(x.job)} ${esc(x.state.toLowerCase())}${x.node ? " on " + esc(x.node) : ""}${x.left ? `, ${esc(x.left)} left` : ""}${x.busy.length ? `, busy: ${esc(x.busy.join(", "))}` : ", idle"}${x.draining ? " (draining)" : ""}`).join("; ");
+      box.innerHTML = `<b>Warm Lab node</b> (${esc(w.partition || "")}): ${ws || "not running (starts on the next submit)"}; ${w.queued} queued, ${w.running} running. It stops after 20 idle minutes. <button class="btn small" id="warm-start">Start now</button> ${ws ? '<button class="btn small danger" id="warm-stop">Stop</button>' : ""}`;
+      const st = $("#warm-start"), sp = $("#warm-stop");
+      if (st) st.onclick = () => busy(st, async () => { await api("/api/lab/warm/start", { method: "POST" }); toast("Warm Lab node requested", "ok"); this.warmBox(); });
+      if (sp) sp.onclick = () => busy(sp, async () => { await api("/api/lab/warm/stop", { method: "POST" }); toast("Warm Lab node stopping", "ok"); setTimeout(() => this.warmBox(), 4000); });
+    } catch (e) { box.textContent = "Warm Lab node: " + e.message; }
+  },
+
   // ------------------------------------------------------------------ all runs page
   async renderAll(v) {
     v.innerHTML = `<div class="runs-view"><div class="runs-head"><h2>Lab runs</h2>
       <select id="runs-filter" aria-label="Filter lab runs"><option value="">All</option><option value="live">Running or queued</option><option value="draft">Waiting for review</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select>
       <span class="grow"></span><span class="dim" id="runs-count"></span></div>
+      <div id="warm-box" class="dim" style="font-size:12px;margin:6px 0 10px"></div>
       <div id="runs-body"><span class="spinner"></span></div></div>`;
-    const live = ["planning", "submitting", "queued", "running", "fetching", "analyzing"];
+    this.warmBox();
+    const live = ["planning", "submitting", "smoke", "queued", "running", "fetching", "analyzing"];
     const draw = (runs) => {
       const f = $("#runs-filter").value;
       const shown = runs.filter((r) => !f || (f === "live" ? live.includes(r.status) : f === "failed" ? ["failed", "plan_failed"].includes(r.status) : r.status === f));
       $("#runs-count").textContent = `${shown.length} of ${runs.length}`;
       $("#runs-body").innerHTML = shown.length ? `<table class="runs-table"><thead><tr><th>#</th><th>Status</th><th>What</th><th>Report</th><th>Where</th><th title="worst case: nodes x time limit x list price">Max cost</th><th>Updated</th></tr></thead><tbody>${shown.map((r) => {
         const p = r.plan || {};
-        const badge = { draft: "review", plan_failed: "failed", submitting: "running", fetching: "running", analyzing: "running" }[r.status] || r.status;
+        const badge = { draft: "review", plan_failed: "failed", submitting: "running", smoke: "smoke test", fetching: "running", analyzing: "running" }[r.status] || r.status;
         const cost = r.estimate_usd != null ? "\u2264 $" + (+r.estimate_usd).toFixed(2) : "";
         return `<tr data-sid="${r.session_id}" data-rid="${r.id}">
           <td class="mono">${r.id}</td>
