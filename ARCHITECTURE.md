@@ -74,11 +74,15 @@ src/deepresearch/
   storage/           SQLite schema, File Search Store uploads
   utils/             logging, retry decorators, exporters
   dashboard/
-    daemon.py        --start/--stop/--restart/--status (detached process, PID file)
-    server.py        stdlib ThreadingHTTPServer, JSON API, static files
+    daemon.py        --start/--stop/--restart/--status (detached process, PID file, loopback check)
+    server.py        stdlib ThreadingHTTPServer, JSON API, static files, loopback-only guard
     store.py         notebooks, annotations, stars/tags (extra SQLite tables)
     features.py      actual cost, research map, compare, briefs, audio (Gemini TTS)
-    static/          index.html, app.js, features.js, app.css, vendored marked + DOMPurify
+    lab.py           Lab runs: cluster catalog, planner, pre-flight, Slurm job harness, watcher
+    static/          index.html, app.js, features.js, lab.js, sources.js, app.css,
+                     vendored marked + DOMPurify
+  sources/           data sources: registry, adapters (web, GCS, S3, public buckets, local),
+                     staging for Lab jobs, discovery, provenance, saved indexes
 ```
 
 ## 6. The Dashboard
@@ -99,3 +103,13 @@ The dashboard is a thin layer over the same history database and the same CLI:
     converted to MP3 with `ffmpeg` when available, cached on disk and served with HTTP Range support.
 *   **Frontend** is vanilla JavaScript with no build step; Markdown is rendered with `marked` and
     sanitized with `DOMPurify` before insertion.
+*   **Network**: the server listens on `127.0.0.1` by default and refuses requests from other
+    addresses unless started with `--allow-remote`; it also checks the Host and Origin headers.
+*   **Lab runs** reach the cluster with the user's own `ssh`/`scp`; the cluster's job folder is the
+    source of truth and the `lab_runs` table is a cache. Submit claims the draft atomically, so one
+    click means at most one Slurm job.
+*   **Data sources** store credential references only (`rclone:<remote>`, `gcloud`); fetches use
+    the existing `rclone`, `gcloud` and `curl` tools, and every downloaded file name is checked to
+    stay inside its folder.
+
+The full specification is [docs/SPEC.md](docs/SPEC.md).

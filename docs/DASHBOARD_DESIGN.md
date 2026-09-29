@@ -31,11 +31,15 @@ ask -> watch -> read -> mark up -> collect -> reuse
 
 - **An instrument panel, not a chatbot.** A dark analyst-workstation look, with live counters for
   running, complete, failed, corpus size and API key health.
-- **Three panes.** Archive left, work center (tabs), inspector right (intel, notes, outline, live
-  log). On phones the side panes are slide-out drawers.
-- **Keyboard-first.** Ctrl K command palette, Ctrl F find, Ctrl S save.
-- **Private and self-hosted.** Binds 0.0.0.0:7420 on the owner's machine and is reached over the
-  home LAN and tailnet only. No cloud account; research lives in the local SQLite history.
+- **Three panes.** Archive left, work center (tabs), inspector right (details, notes, outline,
+  live log). On phones the side panes are slide-out drawers.
+- **Keyboard-first.** Ctrl K command palette, Ctrl F find, Ctrl S save; tabs, rows and dialogs work
+  from the keyboard, and Escape closes any dialog.
+- **Private and self-hosted.** Listens on 127.0.0.1:7420 (this machine only) by default; reaching
+  it from another machine takes an explicit `--allow-remote` or an SSH tunnel, because it has no
+  login. No cloud account; research lives in the local SQLite history.
+- **Nothing lost, nothing by accident.** Drafts, uploads and search answers survive switching
+  tabs; confirm dialogs never fire on a stray Enter; paid actions can't be double-submitted.
 - **No build step.** Standard-library Python server, vanilla JS, vendored marked + DOMPurify.
   Launches use the same detached `--adopt-session` path as the CLI, so the two never drift.
 - **Honest status.** Runs whose process died show as crashed, never "running" forever.
@@ -66,3 +70,14 @@ ask -> watch -> read -> mark up -> collect -> reuse
 Estimates were recalibrated in v0.17: the old model assumed 60k in / 4k out per agent run, about
 10x below real runs. It now uses Google's published figures (~250k in, ~60% cached, ~60k out),
 which match measured runs.
+
+## Since v0.17
+
+- **Lab runs** (v0.19 to v0.22): computations on a Slurm cluster from a report, always reviewed
+  before submit, with results notes and figures on the report and a Lab runs page.
+- **Data sources** (v0.23 to v0.27): a registry of web, bucket and local datasets for research,
+  follow-ups and Lab runs, with provenance, saved indexes and discovery of free open data.
+- **Review fixes** (v0.28): localhost only by default, one shared dialog helper, per-tab state,
+  a failed-report view, readable math, find next/previous, a Notes page, editable sources,
+  keyboard and phone access, and a set of safety fixes for files, buckets and cluster jobs.
+  Details in [SPEC.md](SPEC.md) sections 11, 14, 20 and 21.
