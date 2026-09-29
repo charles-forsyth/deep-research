@@ -1,6 +1,7 @@
 """Lab plan v3: warm node, smoke test + AI fix loop, install ladder, probes, matching."""
 
 import json
+import re
 import subprocess
 
 import pytest
@@ -482,3 +483,41 @@ def test_ensure_warm_scales_out_with_the_backlog(tmp_path):
     assert (tmp_path / "sb.log").read_text().count(
         "x"
     ) == 2  # 1 + 5 // 2 = 3 workers, capped at 3
+
+
+def test_ladder_module_first_and_verify_imports_installed_in_fallbacks():
+    """A python-sci plan with no pip: use the module as is; fallbacks get numba too."""
+    t = FakeTarget()
+    plan = dict(
+        PLAN,
+        install={
+            "modules": ["python-sci/2026.09"],
+            "verify": ["python -c 'import numba, scipy.sparse, os'"],
+        },
+    )
+    s = build_sbatch(1, plan, t)
+    assert "LADDER_OK=module" in s
+    assert s.index("LADDER_OK=module") < s.index("ladder_try isolated-venv")
+    assert "ladder_try layered-venv" not in s  # nothing to layer
+    iso = s[s.index("ladder_try isolated-venv") :].split("\n", 1)[0]
+    assert "numba" in iso and " os" not in iso
+    px = s[s.index("ladder_try pixi-conda-forge") :].split("\n", 1)[0]
+    assert "numba" in px
+    assert labm.verify_imports(
+        [
+            "python -c 'import networkx, EoN; from sklearn.cluster import KMeans'",
+            "lmp -h",
+        ]
+    ) == ["networkx", "EoN", "sklearn"]
+    # the verify list is part of the env key: different checks, different cache dirs
+    other = dict(
+        PLAN,
+        install={
+            "modules": ["python-sci/2026.09"],
+            "verify": ["python -c 'import numpy'"],
+        },
+    )
+    assert re.search(r"LADDER_KEY=(\w+)", s).group(1) != re.search(
+        r"LADDER_KEY=(\w+)", build_sbatch(1, other, t)
+    ).group(1)
+    assert subprocess.run(["bash", "-n"], input=s, text=True).returncode == 0

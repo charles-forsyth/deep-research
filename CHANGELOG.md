@@ -7,6 +7,12 @@ releases.
 
 ## [Unreleased]
 
+## [0.33.3] - 2026-09-29
+
+### Fixed
+
+- Install ladder: a plan that only loads a Python module (no pip) now uses the module as is first, instead of failing into venvs that lack its packages. Packages imported by `install.verify` commands (numba, networkx, ...) are installed in the isolated-venv and Pixi fallbacks. The verify list is part of the environment key, so a rung marked bad for one plan's checks is not skipped for another plan with different checks. Five of the first 12 batch runs failed on this (exit 4).
+
 ## [0.33.2] - 2026-09-29
 
 ### Changed

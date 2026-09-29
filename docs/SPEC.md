@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.33.2 (package `deepresearch`) |
+| Applies to | deep-research v0.33.3 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1491,7 +1491,10 @@ Added in v0.33.0 (Lab plan v3 releases 2-5).
   `max_full_min` (120) run on the warm node as exclusive task `full-<run>` (job id
   `warm:full-<run>`; status, cancel and elapsed come from the spool). Others: `sbatch` of the
   uploaded folder.
-- **Install ladder** (`install_ladder()` in `build_sbatch`). Rungs as in the changelog; each
+- **Install ladder** (`install_ladder()` in `build_sbatch`). A module-only Python plan (no pip)
+  tries the module itself first (`module` rung). Modules imported by `install.verify` are
+  added to the isolated-venv and Pixi rungs (`verify_imports()`); verify is part of the env key.
+  Rungs as in the changelog; each
   built once under `envs/<prefix>-<key>-<rung>` with flock, verified by `ladder_verify`
   (imports from `import_names()` plus `install.verify`), marked `.bad` when it fails. Exit 4
   when nothing verifies (unless the plan lists a container). Modules that fail to load go to
@@ -1708,6 +1711,7 @@ drops the other's result.
 | 2026-09-29 | v0.28.1 | Lab submit: expired gcloud sign-in named plainly; a submit that never reached the cluster keeps the run as a draft (20.6). |
 | 2026-09-29 | v0.28.2 | Lab: OR-Tools plans on a Python module get an isolated venv (CP-SAT segfaulted on top of python-sci). |
 | 2026-09-29 | v0.29.0 | Lab: lessons (curated + learned) in plan/fix prompts, science guards, known-answer verdicts (20.10). |
+| 2026-09-29 | v0.33.3 | Lab ladder: module rung first for module-only Python plans; verify imports installed in fallbacks; verify in env key. |
 | 2026-09-29 | v0.33.2 | Lab: warm workers scale out with the queue (max_workers, default 3). |
 | 2026-09-29 | v0.33.1 | Lab: catalog usage cards in the planner's cluster description. |
 | 2026-09-29 | v0.33.0 | Lab: warm node, smoke test with AI fix loop, install ladder, planner probes, cluster matching (20.11). |
