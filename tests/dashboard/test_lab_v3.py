@@ -667,3 +667,46 @@ def test_ladder_pinned_binary_conda_plan():
     assert "lammps=2023.08.02" in loose
     assert "ladder_try pip-venv" not in s
     assert "while IFS= read -r line" in s and "set -o pipefail" in s
+
+
+def test_smoke_fix_interrupted_by_restart_is_failed_not_stuck(wlab):
+    run = _draft(wlab)
+    wlab.submit(run["id"])
+    sm = dict(wlab.get(run["id"])["smoke"], fixing=True)
+    wlab._update(run["id"], smoke=sm)  # as left by a dashboard that died mid-fix
+    labm._SMOKE_FIXING.discard(run["id"])
+    wlab.poll(wlab.get(run["id"]))
+    f = wlab.get(run["id"])
+    assert f["status"] == "failed" and "restarted" in f["stage"]
+
+
+def test_pixi_hook_runs_without_nounset():
+    """conda activation scripts reference unset variables (hwloc: ZSH_VERSION, run #77)."""
+    plan = dict(PLAN, install={"conda": ["gmsh", "numpy"], "channels": ["conda-forge"]})
+    s = build_sbatch(1, plan, FakeTarget())
+    assert 'set +u; eval "$(cd' in s and 'pixi shell-hook)"; set -u' in s
+
+
+def test_missing_import_warning():
+    plan = dict(
+        PLAN,
+        install={"modules": ["python-sci/2026.09"]},
+        script="python3 - <<'EOF'\nimport numpy\nimport simpy\nfrom skrf import Network\nEOF\n",
+    )
+    w = labm.missing_import_warnings(plan)
+    assert w and "simpy" in w[0] and "skrf" in w[0] and "numpy" not in w[0]
+    plan["install"]["pip"] = ["simpy", "scikit-rf"]
+    assert labm.missing_import_warnings(plan) == []
+    # a container Python may carry anything
+    assert (
+        labm.missing_import_warnings(dict(plan, install={"apptainer": ["docker://x"]}))
+        == []
+    )
+
+
+def test_layered_venv_sees_a_module_that_is_itself_a_venv():
+    """python-ml is a venv: --system-site-packages alone hid pandas (run #76)."""
+    plan = dict(PLAN, install={"modules": ["python-ml/2026.09"], "pip": ["simpy"]})
+    s = build_sbatch(1, plan, FakeTarget())
+    lay = s[s.index("ladder_try layered-venv") :].split("\n", 1)[0]
+    assert "_site_module.pth" in lay and "site.getsitepackages" in lay

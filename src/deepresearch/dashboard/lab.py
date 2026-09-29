@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 import difflib
+import ast
 import hashlib
 import json
 import os
@@ -71,6 +72,7 @@ SLURM_DONE = {
 }
 # Lab runs whose submit is running in this process right now (see poll()).
 _IN_FLIGHT: set[int] = set()
+_SMOKE_FIXING: set[int] = set()  # runs whose AI smoke fix runs in this process
 GONE_POLLS = 8  # empty squeue+sacct polls (~2 min) before a running job is fetched
 MAX_FETCH_BYTES = 200 * 1024 * 1024  # whole outputs folder
 MAX_FILE_BYTES = 50 * 1024 * 1024  # any single file
@@ -531,7 +533,9 @@ class SlurmSSHTarget:
         """Where a task is (queue/running/done/missing) with rc, times and node."""
         w = self.warm_dir
         out = self.sh(
-            f'W="{w}"; for d in queue running done; do if [ -d "$W/$d/{task}" ]; then '
+            # done first: a task moves queue -> running -> done by rename, so checking in
+            # that order can miss it mid-move and report it missing (run #77)
+            f'W="{w}"; for d in done running queue done; do if [ -d "$W/$d/{task}" ]; then '
             f'echo "where=$d"; T="$W/$d/{task}"; echo "rc=$(cat $T/rc 2>/dev/null)"; '
             f'echo "started=$(cat $T/started 2>/dev/null)"; echo "finished=$(cat $T/finished 2>/dev/null)"; '
             f'echo "node=$(cat $T/node 2>/dev/null)"; echo "now=$(date +%s)"; break; fi; done',
@@ -1134,6 +1138,7 @@ def validate_plan(target: SlurmSSHTarget | None, plan: dict) -> list[str]:
                 warns.append(f"Container image '{i}' is not in /apps/containers")
     warns += check_script(str(plan.get("script") or ""))
     warns += labguard.science_warnings(plan)
+    warns += missing_import_warnings(plan)
     inst = plan.get("install") or {}
     builds_python = bool(inst.get("pip") or inst.get("conda")) or any(
         str(m).split("/")[0] in PYTHON_ENV_MODULES for m in inst.get("modules") or []
@@ -1154,6 +1159,99 @@ _HEREDOC = re.compile(
     r"(?P<body>.*?)\n[ \t]*(?P=tag)[ \t]*(?:\n|$)",
     re.S,
 )
+
+
+# What each site Python module provides (from the catalog usage cards; used to catch a
+# script importing a package nobody installs: run #76 imported pandas on python-ml).
+MODULE_PYTHON_PACKAGES = {
+    "python-sci": {
+        "numpy",
+        "scipy",
+        "pandas",
+        "matplotlib",
+        "numba",
+        "xarray",
+        "astropy",
+        "skyfield",
+        "Bio",
+        "networkx",
+        "sklearn",
+        "statsmodels",
+    },
+    # checked on a compute node 2026-09-29
+    "python-ml": {
+        "torch",
+        "transformers",
+        "sklearn",
+        "numpy",
+        "scipy",
+        "pandas",
+        "matplotlib",
+        "networkx",
+    },
+}
+_STDLIB = set(getattr(sys, "stdlib_module_names", ())) | {"__future__"}
+
+
+def script_imports(script: str) -> set[str]:
+    """Top-level modules the script's Python imports (heredoc bodies and python -c)."""
+    out: set[str] = set()
+    for _, body in labguard._python_bodies(script):
+        try:
+            tree = ast.parse(body)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                out |= {a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                out.add(node.module.split(".")[0])
+    return {m for m in out if m not in _STDLIB}
+
+
+def missing_import_warnings(plan: dict) -> list[str]:
+    """Imports in the script that no module, pip or conda entry provides."""
+    inst = plan.get("install") or {}
+    mods = [str(m).split("/")[0] for m in inst.get("modules") or []]
+    if inst.get("apptainer") and not any(m in MODULE_PYTHON_PACKAGES for m in mods):
+        return []  # Python from a container may carry anything
+    pyenv = [m for m in mods if m in MODULE_PYTHON_PACKAGES]
+    if not pyenv and not (inst.get("pip") or inst.get("conda")):
+        return []
+    have: set[str] = set()
+    for m in pyenv:
+        have |= MODULE_PYTHON_PACKAGES[m]
+    listed = [str(x) for x in (inst.get("pip") or []) + (inst.get("conda") or [])]
+    have |= set(import_names(listed)) | {_pkg_name(x) for x in listed}
+    have |= {_pkg_name(x).replace("-", "_") for x in listed}
+    have |= {IMPORT_NAMES.get(_pkg_name(x), _pkg_name(x)) for x in listed}
+    if inst.get("conda"):
+        have |= {"numpy"}  # every conda Python science package pulls numpy
+    if inst.get("conda") or any(
+        not m.startswith(("python-sci", "python-ml")) for m in mods
+    ):
+        # conda envs and other modules bring packages we can't enumerate; only flag
+        # imports that are clearly the common scientific stack
+        common = {
+            "numpy",
+            "scipy",
+            "pandas",
+            "matplotlib",
+            "numba",
+            "networkx",
+            "sklearn",
+        }
+        need = script_imports(str(plan.get("script") or "")) & common
+    else:
+        need = script_imports(str(plan.get("script") or ""))
+    missing = sorted(m for m in need - have if not m.startswith("_"))
+    if not missing:
+        return []
+    where = f" ({', '.join(pyenv)} doesn't have them)" if pyenv else ""
+    return [
+        f"The script imports {', '.join(missing)} but nothing installs them{where}; "
+        "add them to install.pip (or install.conda)."
+    ]
 
 
 def check_script(script: str) -> list[str]:
@@ -2172,6 +2270,7 @@ IMPORT_NAMES = {
     "jaxlib": "jaxlib",
     "numba": "numba",
     "sympy": "sympy",
+    "scikit-rf": "skrf",
 }
 # conda-only tools with no Python import: never import-checked
 NO_IMPORT = {
@@ -2390,10 +2489,17 @@ def install_ladder(
             '|| { LADDER_TRIED=" module"; echo "[LADDER] module did not verify"; }\n'
         )
     if pymods and not conda and pips:
+        # --system-site-packages is not enough when the module is itself a venv
+        # (python-ml: its packages live in its own site-packages, not the base Python's,
+        # so a layered venv saw none of them, run #76). A .pth file pointing at the
+        # module's site-packages layers it in both cases.
         layered = (
             "layered-venv",
             f"{base}-layered",
             f'python3 -m venv --system-site-packages "{base}-layered" && '
+            f'SP=$(python3 -c "import site; print(chr(10).join(site.getsitepackages()))") && '
+            f'for d in "{base}-layered"/lib*/python3*/site-packages; do '
+            f'echo "$SP" > "$d/_site_module.pth"; done && '
             f'"{base}-layered/bin/python" -m pip install --progress-bar off {q}',
         )
         isolated = (
@@ -2500,7 +2606,7 @@ def install_ladder(
             )
     for name, envdir, build in rungs:
         act = (
-            f'eval "$(cd "{envdir}" && pixi shell-hook)"; '
+            f'set +u; eval "$(cd "{envdir}" && pixi shell-hook)"; set -u; '
             "if declare -F ursa_conda_libs >/dev/null; then ursa_conda_libs; else "
             'export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; fi'
             if name.startswith("pixi")
@@ -2569,7 +2675,7 @@ def _pixi_fallback_only(chans: list[str]) -> str:
         '  FB="$HOME/deep-research-lab/envs/modfallback-$(echo $LADDER_MOD_FALLBACK | tr " " "-")"\n'
         '  mkdir -p "$FB"; ( cd "$FB" && [ -f .ready ] || { pixi init -c conda-forge -c bioconda . >/dev/null '
         "&& pixi add $LADDER_MOD_FALLBACK && touch .ready; } )\n"
-        '  eval "$(cd "$FB" && pixi shell-hook)"\n'
+        '  set +u; eval "$(cd "$FB" && pixi shell-hook)"; set -u\n'
         '  echo "[LADDER] replaced modules with conda packages:$LADDER_MOD_FALLBACK"\n'
     )
 
@@ -3989,6 +4095,14 @@ class Lab:
 
     def _poll_smoke(self, run: dict, tgt) -> None:
         sm = dict(run.get("smoke") or {})
+        if sm.get("fixing") and run["id"] not in _SMOKE_FIXING:
+            # the dashboard restarted while the AI was fixing it: nothing will finish it
+            self._fail_smoke(
+                run, sm, str((sm.get("rounds") or [{}])[-1].get("log_tail") or ""),
+                "Smoke test interrupted (the dashboard restarted during the AI fix)",
+                "Submit again to retry.",
+            )  # fmt: skip
+            return
         if sm.get("fixing") or not sm.get("task"):
             return
         run_id = run["id"]
@@ -3997,7 +4111,7 @@ class Lab:
         if t["where"] in ("queue", "missing"):
             if t["where"] == "missing":
                 sm["missing"] = int(sm.get("missing") or 0) + 1
-                if sm["missing"] < 3:  # renames between polls; look again
+                if sm["missing"] < 6:  # renames between polls; look again
                     self._update(run_id, only_if=("smoke",), smoke=sm)
                     return
                 self._update(
@@ -4005,7 +4119,8 @@ class Lab:
                     only_if=("smoke",),
                     status="failed",
                     stage="Smoke test lost",
-                    error="The smoke-test task disappeared from the warm node's queue.",
+                    error="The smoke-test task disappeared from the warm node's queue "
+                    "(the node may have been reclaimed). Submit again to retry.",
                     finished_at=_now(),
                 )
                 return
@@ -4121,6 +4236,7 @@ class Lab:
             smoke=sm,
         ):
             return
+        _SMOKE_FIXING.add(run_id)
         threading.Thread(
             target=self._smoke_fix,
             args=(run_id, log, rc, missing, fadvice),
@@ -4156,6 +4272,15 @@ class Lab:
         advice: str = "",
     ) -> None:  # fmt: skip
         """Background: ask the AI to fix a failed smoke test, then run the next round."""
+        try:
+            self._smoke_fix_inner(run_id, log, rc, missing, advice)
+        finally:
+            _SMOKE_FIXING.discard(run_id)
+
+    def _smoke_fix_inner(
+        self, run_id: int, log: str, rc: int | None, missing: list[str],
+        advice: str = "",
+    ) -> None:  # fmt: skip
         run = self.get(run_id)
         if not run or run["status"] != "smoke":
             return
