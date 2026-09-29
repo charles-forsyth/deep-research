@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shlex
+import sys
 import sqlite3
 import subprocess
 import threading
@@ -1979,6 +1980,35 @@ def _pkg_name(spec: str) -> str:
     return re.split(r"[<>=!~\[ ;]", spec.strip(), maxsplit=1)[0].lower()
 
 
+# import name -> PyPI/conda package, for modules found in verify commands
+IMPORT_TO_PKG = {v: k for k, v in IMPORT_NAMES.items()}
+_VERIFY_IMPORT = re.compile(r"\bimport\s+([\w.]+(?:\s*,\s*[\w.]+)*)")
+_VERIFY_FROM = re.compile(r"\bfrom\s+([\w.]+)\s+import\b")
+
+
+def verify_imports(verify: list[str]) -> list[str]:
+    """Top-level third-party modules imported by the plan's verify commands."""
+    std = set(getattr(sys, "stdlib_module_names", ())) | {"__future__"}
+    out: list[str] = []
+    for v in verify:
+        if "python" not in v:
+            continue
+        froms = _VERIFY_FROM.findall(v)
+        rest = re.sub(r"\bfrom\s+[\w.]+\s+import\s+[\w.]+(?:\s*,\s*[\w.]+)*", " ", v)
+        mods = [m for grp in _VERIFY_IMPORT.findall(rest) for m in grp.split(",")]
+        mods += froms
+        for m in mods:
+            top = m.strip().split(".")[0]
+            if (
+                top
+                and top not in std
+                and top not in out
+                and re.fullmatch(r"[A-Za-z_]\w*", top)
+            ):
+                out.append(top)
+    return out
+
+
 def import_names(pkgs: list[str]) -> list[str]:
     """Python import names to verify an environment with (best effort)."""
     out = []
@@ -2084,6 +2114,10 @@ def install_ladder(
         if isinstance(v, str) and "\n" not in v
     ][:10]
     imports = import_names(names + conda)
+    # packages the verify commands import (python -c 'import numba, scipy.sparse'): the
+    # isolated/conda rungs must install them too, since they don't have the module's set
+    vimports = verify_imports(verify)
+    vpk = [IMPORT_TO_PKG.get(m, m) for m in vimports]
     # the MPI/module fallbacks can add conda packages at run time
     if not (conda or pips or verify):
         return spack_sh + (
@@ -2091,8 +2125,10 @@ def install_ladder(
             + _pixi_fallback_only(chans)
             + "fi\n"
         )
+    # verify is part of the key: a rung marked bad for one plan's checks must not be
+    # skipped for a plan with different checks
     key = hashlib.sha256(
-        json.dumps([mods, sorted(conda), sorted(chans), pips]).encode()
+        json.dumps([mods, sorted(conda), sorted(chans), pips, verify]).encode()
     ).hexdigest()[:12]
     base = f"$HOME/deep-research-lab/envs/{_slug('-'.join(sorted(conda + names)) or 'env', 40)}-{key}"
     out = _LADDER_FUNCS
@@ -2103,13 +2139,20 @@ def install_ladder(
     out += "export PIXI_CACHE_DIR=${PIXI_CACHE_DIR:-$HOME/.cache/rattler}\n"
     q = " ".join(shlex.quote(p) for p in pips)
     isolate_first = any(_pkg_name(n) in ISOLATE_FROM_MODULE_PIP for n in names)
+    have = [_pkg_name(n) for n in names]
     extra = " ".join(
-        shlex.quote(p)
-        for p in ISOLATED_BASE_PIP
-        if p not in [_pkg_name(n) for n in names]
+        shlex.quote(p) for p in dict.fromkeys(ISOLATED_BASE_PIP + vpk) if p not in have
     )
     rungs: list[tuple[str, str, str]] = []  # name, envdir, build commands (bash)
-    if pymods and not conda:
+    out += 'LADDER_OK=""\n'
+    if pymods and not conda and not pips:
+        # nothing to add: the module itself is rung 1 (no venv, nothing to build)
+        out += (
+            '( ladder_verify python3 ) && { LADDER_OK=module; LADDER_TRIED=" module"; '
+            f"ladder_record module {shlex.quote(pymods[0])}; }} "
+            '|| { LADDER_TRIED=" module"; echo "[LADDER] module did not verify"; }\n'
+        )
+    if pymods and not conda and pips:
         layered = (
             "layered-venv",
             f"{base}-layered",
@@ -2123,18 +2166,37 @@ def install_ladder(
             f'"{base}-isolated/bin/python" -m pip install --progress-bar off {extra} {q}',
         )
         rungs += [isolated, layered] if isolate_first else [layered, isolated]
-        conda_all = ["python=3.12", "pip", "numpy", "scipy", "pandas", "matplotlib"]
+    if pymods and not conda:
+        if not pips:
+            rungs.append(
+                (
+                    "isolated-venv",
+                    f"{base}-isolated",
+                    f'python3 -m venv "{base}-isolated" && '
+                    f'"{base}-isolated/bin/python" -m pip install --progress-bar off {extra}',
+                )
+            )
+        conda_all = list(
+            dict.fromkeys(
+                ["python=3.12", "pip", "numpy", "scipy", "pandas", "matplotlib"] + vpk
+            )
+        )
+        add_names = " ".join(shlex.quote(_pkg_name(n)) for n in names)
         rungs.append(
             (
                 "pixi-conda-forge",
                 f"{base}-pixi",
                 f'mkdir -p "{base}-pixi" && cd "{base}-pixi" && pixi init -c conda-forge . >/dev/null && '
-                f"pixi add {' '.join(shlex.quote(c) for c in conda_all)} && "
-                f"(pixi add {' '.join(shlex.quote(_pkg_name(n)) for n in names)} || "
-                f"pixi run python -m pip install --progress-bar off {q})",
+                f"pixi add {' '.join(shlex.quote(c) for c in conda_all)}"
+                + (
+                    f" && (pixi add {add_names} || "
+                    f"pixi run python -m pip install --progress-bar off {q})"
+                    if names
+                    else ""
+                ),
             )
         )
-    else:
+    elif not (pymods and not conda):
         pk = list(conda)
         if pips or not any(re.match(r"python\b", c) for c in pk):
             if not any(re.match(r"python\b", c) for c in pk) and (pips or imports):
@@ -2180,7 +2242,6 @@ def install_ladder(
                     f"--progress-bar off {' '.join(shlex.quote(x) for x in pyish)} {q}",
                 )
             )
-    out += 'LADDER_OK=""\n'
     for name, envdir, build in rungs:
         act = (
             f'eval "$(cd "{envdir}" && pixi shell-hook)"; '
