@@ -2276,8 +2276,14 @@ print("[LADDER] imports OK: " + sys.argv[1])
 PYEOF
   fi
   if [ $rc = 0 ] && [ -n "${LADDER_VERIFY:-}" ]; then
-    ( set +e; eval "$LADDER_VERIFY" ) > "$TMPDIR/ladder_verify.log" 2>&1 || {
-      echo "[LADDER] verify commands failed:"; tail -20 "$TMPDIR/ladder_verify.log"; rc=1; }
+    # every line must succeed (eval of a multi-line string only reports the last one:
+    # `lmp -h | grep -q GRANULAR` failed and was ignored, run #75)
+    local line
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      ( set +e; set -o pipefail; eval "$line" ) >> "$TMPDIR/ladder_verify.log" 2>&1 || {
+        echo "[LADDER] verify failed: $line"; tail -20 "$TMPDIR/ladder_verify.log"; rc=1; break; }
+    done <<< "$LADDER_VERIFY"
   fi
   return $rc
 }
@@ -2429,9 +2435,14 @@ def install_ladder(
         )
     elif not (pymods and not conda):
         pk = list(conda)
+        # a pinned old build (e.g. lammps=2023.08.02 for glibc 2.28) may not exist for a
+        # new Python: don't force python=3.12 next to a pin, let the solver choose
+        pinned_pkg = any(
+            re.search(r"[=<>]", c) and not re.match(r"python\b", c) for c in conda
+        )
         if pips or not any(re.match(r"python\b", c) for c in pk):
             if not any(re.match(r"python\b", c) for c in pk) and (pips or imports):
-                pk.append("python=3.12")
+                pk.append("python" if pinned_pkg else "python=3.12")
         if pips and not any(re.match(r"pip\b", c) for c in pk):
             pk.append("pip")
         chan_args = " ".join("-c " + shlex.quote(c) for c in chans)
@@ -2447,8 +2458,16 @@ def install_ladder(
             )
         )
         loose = [c for c in pk if not re.match(r"python\b", c)] + ["python", "pip"]
+        # the relaxed rung drops version pins, but keeps pins on compiled programs
+        # (NO_IMPORT: lammps, gromacs...): those pins are usually there for a reason the
+        # solver can't see (glibc 2.28 on the nodes, run #75)
+        vtxt = " ".join(verify).lower()
         loose = [
-            re.split(r"[=<>]", c)[0] if not c.startswith("python") else c for c in loose
+            c
+            if c.startswith("python")
+            or (re.search(r"[=<>]", c) and _pkg_name(c) in NO_IMPORT)
+            else re.split(r"[=<>]", c)[0]
+            for c in loose
         ]
         rungs.append(
             (
@@ -2464,7 +2483,13 @@ def install_ladder(
             for c in conda
             if _pkg_name(c) not in NO_IMPORT and not c.startswith("python")
         ]
-        if pyish or pips:
+        # pip can't provide a compiled program the checks call (lmp, gmx...): a pip rung
+        # would "verify" Python imports and then fail at run time (run #75: lmp: command
+        # not found after the pip-venv rung)
+        needs_binary = any(
+            _pkg_name(c).lower() in vtxt and _pkg_name(c) in NO_IMPORT for c in conda
+        ) or bool(re.search(r"\blmp\b|\bgmx\b|SU2_CFD|\bnvcc\b", " ".join(verify)))
+        if (pyish or pips) and not needs_binary:
             rungs.append(
                 (
                     "pip-venv",
