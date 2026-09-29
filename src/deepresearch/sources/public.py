@@ -28,6 +28,8 @@ from deepresearch.sources.adapters import (
     _filtered,
     _FullManifest,
     _manifest,
+    safe_join,
+    safe_rel,
 )
 from deepresearch.sources.model import ManifestEntry
 
@@ -124,7 +126,12 @@ class PublicBucketAdapter(SourceAdapter):
             if token:
                 q["continuation-token"] = token
             xml = _http(f"https://{host}/?" + urllib.parse.urlencode(q))
-            root = ET.fromstring(xml)
+            try:
+                root = ET.fromstring(xml)
+            except ET.ParseError as e:
+                raise SourceError(
+                    "the bucket did not return a listing (is it an S3 bucket?)"
+                ) from e
             for c in root.findall(f"{S3_NS}Contents"):
                 row = (
                     c.findtext(f"{S3_NS}Key") or "",
@@ -134,11 +141,11 @@ class PublicBucketAdapter(SourceAdapter):
                 if self._keep(row[0], prefix):
                     rows.append(row)
             pages += 1
-            if pages >= MAX_PAGES:
-                return rows, True
             token = root.findtext(f"{S3_NS}NextContinuationToken")
             if root.findtext(f"{S3_NS}IsTruncated") != "true" or not token:
                 return rows, len(rows) > limit
+            if pages >= MAX_PAGES:
+                return rows, True
         return rows, True
 
     def _list_gs(self, bucket: str, prefix: str, limit: int) -> tuple[list, bool]:
@@ -156,23 +163,25 @@ class PublicBucketAdapter(SourceAdapter):
                 q["delimiter"] = "/"
             if token:
                 q["pageToken"] = token
-            d = json.loads(
-                _http(
-                    f"https://storage.googleapis.com/storage/v1/b/{bucket}/o?"
-                    + urllib.parse.urlencode(q)
-                )
+            raw = _http(
+                f"https://storage.googleapis.com/storage/v1/b/{bucket}/o?"
+                + urllib.parse.urlencode(q)
             )
+            try:
+                d = json.loads(raw)
+            except ValueError as e:
+                raise SourceError("the bucket did not return a listing") from e
             for it in d.get("items") or []:
                 if self._keep(it["name"], prefix):
                     rows.append(
                         (it["name"], int(it.get("size") or 0), it.get("updated", ""))
                     )
             pages += 1
-            if pages >= MAX_PAGES:
-                return rows, True
             token = d.get("nextPageToken")
             if not token:
                 return rows, len(rows) > limit
+            if pages >= MAX_PAGES:
+                return rows, True
         return rows, True
 
     def _top_only(self) -> bool:
@@ -184,7 +193,9 @@ class PublicBucketAdapter(SourceAdapter):
 
     def _keep(self, key: str, prefix: str) -> bool:
         rel = key[len(prefix) + 1 :] if prefix else key
-        return bool(rel) and not rel.endswith("/") and _filtered(self.s, rel)
+        if not rel or rel.endswith("/") or safe_rel(rel) != rel:
+            return False  # folder markers and keys that are not plain relative paths
+        return _filtered(self.s, rel)
 
     def manifest(self, limit: int = MANIFEST_LIMIT) -> _FullManifest:
         scheme, bucket, prefix = self._parts()
@@ -220,7 +231,7 @@ class PublicBucketAdapter(SourceAdapter):
         files = self._files()
 
         def get(e: ManifestEntry) -> None:
-            out = dest / e.path
+            out = safe_join(dest, e.path)
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(_http(self.object_url(self._key(e.path))))
 
@@ -233,12 +244,15 @@ class PublicBucketAdapter(SourceAdapter):
         files = self._files()
         lines = []
         for e in files:
-            rel = shlex.quote(e.path)
-            url = shlex.quote(self.object_url(self._key(e.path)))
-            lines.append(
-                f'mkdir -p "$DEST"/$(dirname {rel}) && '
-                f'curl -fsSL --retry 3 -o "$DEST"/{rel} {url}'
-            )
+            clean = safe_rel(e.path)
+            if clean is None:
+                raise SourceError(
+                    f"refusing unsafe file name from the bucket: {e.path!r}"
+                )
+            rel = shlex.quote(clean)
+            url = shlex.quote(self.object_url(self._key(clean)))
+            # --create-dirs makes the parent folders; no word-splitting on spaces.
+            lines.append(f'curl -fsSL --retry 3 --create-dirs -o "$DEST"/{rel} {url}')
         return "\n".join(lines) + "\n"
 
 

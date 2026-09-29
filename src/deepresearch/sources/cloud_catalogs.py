@@ -82,6 +82,13 @@ def _cache_dir() -> Path:
     return d
 
 
+def _atomic_write(p: Path, text: str) -> None:
+    """Write via a temp file and rename, so a reader never sees half a file."""
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, "utf-8")
+    os.replace(tmp, p)
+
+
 def _cached_text(name: str, url: str) -> str:
     p = _cache_dir() / name
     if p.exists() and time.time() - p.stat().st_mtime < CACHE_TTL:
@@ -91,7 +98,7 @@ def _cached_text(name: str, url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "deep-research discovery"})
     with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310 (fixed host)
         text = r.read().decode("utf-8", "replace")
-    p.write_text(text, "utf-8")
+    _atomic_write(p, text)
     return text
 
 
@@ -231,7 +238,7 @@ def _ee_collections() -> list[dict[str, Any]]:
 
     with ThreadPoolExecutor(max_workers=32) as pool:
         rows = [r for r in pool.map(detail, items) if r]
-    p.write_text(json.dumps(rows), "utf-8")
+    _atomic_write(p, json.dumps(rows))
     return rows
 
 

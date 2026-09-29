@@ -88,6 +88,11 @@ def handle_research(args):
         uploads = _source_uploads(args)
     except Exception as e:
         print(f"[ERROR] {e}")
+        if args.adopt_session:
+            # the dashboard made this row and waits on it; say why it stopped
+            SessionManager().fail_session_id(
+                int(args.adopt_session), f"Could not prepare the data sources: {e}"
+            )
         sys.exit(2)
     _record_source_use(args, args.adopt_session)
     started = None

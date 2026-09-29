@@ -412,7 +412,13 @@ def test_api_sources_crud_browse_preview_and_traversal(app, tmp_path, monkeypatc
     assert call("POST", "/api/sources", {"name": "d1", "uri": str(root)})[0] == 409
     assert call("POST", "/api/sources", {"name": "Bad!", "uri": str(root)})[0] == 400
     st, out = call("POST", "/api/sources", {"name": "out1", "uri": str(tmp_path)})
-    assert st == 200 and out["status"] == "unreachable"  # saved, flagged
+    assert st == 400 and "outside the folders" in out["error"]  # refused, not saved
+    for bad in ("ftp://nope/x", "mailto:x@y.z"):
+        st, out = call("POST", "/api/sources", {"name": "bad1", "uri": bad})
+        assert st == 400 and "not supported" in out["error"]
+    st, out = call("POST", "/api/sources", {"name": "Bad!", "uri": str(root)})
+    assert not out["error"].startswith("Value error")
+    assert [x["name"] for x in call("GET", "/api/sources")[1]["sources"]] == ["d1"]
     st, b = call("GET", f"/api/sources/{sid}/browse")
     assert [i["name"] for i in b["items"]] == ["sub/", "a.csv"]
     st, p = call("GET", f"/api/sources/{sid}/preview?path=a.csv")

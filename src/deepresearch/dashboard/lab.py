@@ -888,6 +888,18 @@ def _describe(tgt, full: bool) -> str:
     return tgt.describe()
 
 
+def _int(v: Any, default: int) -> int:
+    """A resource count from a plan ('2', 2, 2.0) or the default ('auto', '1.5x')."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return int(f) if f == int(f) else default
+
+
+TIME_RE = re.compile(r"(\d+-)?\d{1,3}(:\d{2}){0,2}")
+
+
 def estimate_cost(target: SlurmSSHTarget | None, plan: dict) -> float | None:
     if not target:
         return None
@@ -896,9 +908,11 @@ def estimate_cost(target: SlurmSSHTarget | None, plan: dict) -> float | None:
     rate = part.get("usd_per_hour")
     if rate is None:
         return None
-    nodes = max(int(r.get("nodes") or 1), 1)
-    hours = _hours(r.get("time_limit") or "01:00:00")
-    return round(nodes * hours * float(rate), 2)
+    nodes = max(_int(r.get("nodes"), 1), 1)
+    tl = str(r.get("time_limit") or "01:00:00")
+    if not TIME_RE.fullmatch(tl):
+        tl = "01:00:00"  # build_sbatch falls back the same way
+    return round(nodes * _hours(tl) * float(rate), 2)
 
 
 def _hours(limit: str) -> float:
@@ -1138,13 +1152,16 @@ def build_sbatch(
     run_id: int, plan: dict, target: SlurmSSHTarget, sources: list | None = None
 ) -> str:
     r = plan.get("resources") or {}
-    part = r.get("partition") or target.default_partition
+    part = str(r.get("partition") or target.default_partition)
     if part not in target.partitions and target.partitions:
         part = target.default_partition
-    nodes = max(int(r.get("nodes") or 1), 1)
-    gpus = int(r.get("gpus") or 0)
+    if not re.fullmatch(r"[\w.-]+", part or ""):
+        # never let a plan value put extra lines into run.sbatch
+        part = target.default_partition
+    nodes = max(_int(r.get("nodes"), 1), 1)
+    gpus = max(_int(r.get("gpus"), 0), 0)
     tl = str(r.get("time_limit") or "01:00:00")
-    if not re.fullmatch(r"(\d+-)?\d{1,3}(:\d{2}){0,2}", tl):
+    if not TIME_RE.fullmatch(tl):
         tl = "01:00:00"
     inst = plan.get("install") or {}
     mods = [m for m in inst.get("modules") or [] if re.fullmatch(r"[\w./+-]+", str(m))]
@@ -2178,8 +2195,6 @@ class Lab:
         try:
             plan = run["plan"] or {}
             sources = self._plan_sources(plan)
-            script = build_sbatch(run_id, plan, tgt, sources)
-            self._update(run_id, script=script)
             from deepresearch.sources.staging import relay_upload, sources_json
 
             for src in sources:
@@ -2187,7 +2202,13 @@ class Lab:
                     self._update(
                         run_id, stage=f"Uploading data source {src.name} to the cluster"
                     )
+                    # Re-lists the source first: the cluster copy, its folder name and
+                    # the provenance all follow today's contents.
                     relay_upload(tgt, src, log=lambda m: None)
+                    self.sources.save_check(src)
+            # Built after staging so $DS_<NAME> points at the folder just uploaded.
+            script = build_sbatch(run_id, plan, tgt, sources)
+            self._update(run_id, script=script)
             files = {
                 "run.sbatch": script,
                 "plan.json": json.dumps(plan, indent=2),

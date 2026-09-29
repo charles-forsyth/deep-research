@@ -98,6 +98,40 @@ def add_parser(subparsers) -> None:
         x.add_argument("--json", action="store_true", help="machine-readable output")
 
 
+def local_uri(uri: str) -> str:
+    """An absolute local path for a local source, checked up front.
+
+    Relative paths are read from the home folder (not wherever the dashboard or CLI
+    happens to run). Anything that looks like another URL scheme, or a path outside
+    the allowed folders, is refused instead of being saved as a broken folder.
+    """
+    import os
+    import re
+    from pathlib import Path
+
+    from deepresearch.sources.adapters import local_roots
+
+    raw = uri.strip()
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", raw) and not re.match(
+        r"^[a-zA-Z]:[\\/]", raw
+    ):
+        raise ValueError(
+            f"'{raw.split(':', 1)[0]}:' addresses are not supported; use https://, "
+            "gs://, s3://, report:N, notebook:N, or a folder or file path"
+        )
+    p = Path(os.path.expanduser(raw))
+    if not p.is_absolute():
+        p = Path.home() / p
+    real = p.resolve()
+    roots = local_roots()
+    if not any(real == r or r in real.parents for r in roots):
+        raise ValueError(
+            f"{real} is outside the folders local sources may use "
+            f"({', '.join(str(r) for r in roots)})"
+        )
+    return str(real)
+
+
 def guess_kind(uri: str, auth: str = "") -> str:
     """Buckets without credentials are public (read anonymously, never billed)."""
     import re
@@ -119,8 +153,12 @@ def guess_kind(uri: str, auth: str = "") -> str:
     if uri.startswith("notebook:"):
         return "notebook"
     import os
+    from pathlib import Path
 
-    return "local_file" if os.path.isfile(os.path.expanduser(uri)) else "local_folder"
+    p = Path(os.path.expanduser(uri))
+    if not p.is_absolute():
+        p = Path.home() / p
+    return "local_file" if p.is_file() else "local_folder"
 
 
 def handle(args: argparse.Namespace, reg: SourceRegistry | None = None) -> int:
@@ -131,9 +169,11 @@ def handle(args: argparse.Namespace, reg: SourceRegistry | None = None) -> int:
         kind = args.kind or guess_kind(args.uri, args.auth or "")
         uri = args.uri
         if kind.startswith("local_"):
-            import os
-
-            uri = os.path.abspath(os.path.expanduser(uri))
+            try:
+                uri = local_uri(uri)
+            except ValueError as e:
+                print(f"[ERROR] {e}")
+                return 2
         opts = {}
         if args.include:
             opts["include"] = args.include

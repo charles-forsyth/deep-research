@@ -134,7 +134,7 @@ def test_direct_staging_uses_curl_only():
     s.manifest = Manifest.build([ManifestEntry(path="ghcnd-states.txt", size=1)])
     b = staging_block([s], "~/drl")
     assert (
-        "curl -fsSL --retry 3 -o" in b
+        "curl -fsSL --retry 3 --create-dirs -o" in b
         and "https://noaa-ghcn-pds.s3.amazonaws.com/ghcnd-states.txt" in b
     )
     assert "rclone" not in b and "gcloud" not in b and "aws " not in b

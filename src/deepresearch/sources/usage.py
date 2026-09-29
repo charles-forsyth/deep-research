@@ -12,6 +12,8 @@ research run or a Lab run.
 
 from __future__ import annotations
 
+import atexit
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -48,7 +50,13 @@ def research_uploads(
     Returns (paths to upload, notes). Only file types File Search reads are kept; a
     source over the size or file cap is refused rather than silently cut.
     """
-    base = Path(workdir or tempfile.mkdtemp(prefix="dr-sources-"))
+    if workdir is None:
+        # Removed when the interpreter exits (the run needs the files until the
+        # upload finishes, which is later than this function returns).
+        tmp = tempfile.mkdtemp(prefix="dr-sources-")
+        atexit.register(shutil.rmtree, tmp, True)
+        workdir = Path(tmp)
+    base = Path(workdir)
     paths: list[str] = []
     notes: list[str] = []
     for s in sources:

@@ -26,11 +26,15 @@ def _sources_used(db_path: str, kind: str, ident: int) -> list[dict[str, Any]]:
         with sqlite3.connect(db_path, timeout=10) as c:
             c.row_factory = sqlite3.Row
             rows = c.execute(
-                "SELECT s.name, s.kind, s.uri, u.manifest_hash, u.created_at "
-                "FROM data_source_uses u JOIN data_sources s ON s.id = u.source_id "
+                "SELECT COALESCE(NULLIF(u.source_name, ''), s.name) AS name, "
+                "COALESCE(NULLIF(u.source_kind, ''), s.kind) AS kind, "
+                "COALESCE(NULLIF(u.source_uri, ''), s.uri) AS uri, "
+                "u.manifest_hash, u.created_at "
+                "FROM data_source_uses u LEFT JOIN data_sources s ON s.id = u.source_id "
                 "WHERE u.used_by_kind = ? AND u.used_by_id = ? ORDER BY u.id",
                 (kind, ident),
             ).fetchall()
+            rows = [r for r in rows if r["name"]]
     except sqlite3.OperationalError:  # registry tables not created yet
         return []
     seen: dict[tuple, dict[str, Any]] = {}

@@ -76,12 +76,9 @@ def build_index(
         except Exception:
             _delete_store(client, store.name)
             raise
-    s.options = {
-        **s.options,
-        "store": store.name,
-        "store_hash": s.manifest.hash if s.manifest else "",
-    }
-    s = reg.update(s)
+    s = reg.set_options(
+        s, store=store.name, store_hash=s.manifest.hash if s.manifest else ""
+    )
     if old and old != store.name:
         try:
             _delete_store(client, old)
@@ -96,8 +93,7 @@ def drop_index(reg: SourceRegistry, s: DataSource, client: Any) -> DataSource:
     store = s.options.get("store")
     if store:
         _delete_store(client, store)
-    s.options = {k: v for k, v in s.options.items() if k not in ("store", "store_hash")}
-    return reg.update(s)
+    return reg.set_options(s, store=None, store_hash=None)
 
 
 def stores_for(

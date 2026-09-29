@@ -75,7 +75,9 @@ def test_registry_round_trip_unique_names_uses(reg):
     assert [x.name for x in reg.list()] == ["lab-data"]
     assert len(reg.list(include_temporary=True)) == 2
     assert reg.delete("lab-data") and reg.get("lab-data") is None
-    assert reg.used_by("lab_run", 31) == []
+    # the run's record of what it used survives deleting the source
+    kept = reg.used_by("lab_run", 31)
+    assert kept[0]["name"] == "lab-data" and kept[0]["uri"] == "gs://b/p"
 
 
 def test_manifest_hash_tracks_content():

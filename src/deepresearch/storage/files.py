@@ -12,12 +12,26 @@ TEMP_STORE_PREFIX = "deep-research-temp-"
 SOURCE_STORE_PREFIX = "deep-research-source-"
 
 
-def is_disposable_store(store, protected: set[str] | None = None) -> bool:
-    """True for stores `cleanup` may delete without --all."""
+TEMP_STORE_GRACE_S = 36 * 3600  # a research task can run for up to a day and a half
+
+
+def is_disposable_store(
+    store, protected: set[str] | None = None, now: float | None = None
+) -> bool:
+    """True for stores `cleanup` may delete without --all.
+
+    A temporary store named in the last TEMP_STORE_GRACE_S seconds may belong to a
+    research run that is still going, so it is kept.
+    """
     if store.name in (protected or set()):
         return False
     name = getattr(store, "display_name", None) or ""
-    return name == "" or name.startswith(TEMP_STORE_PREFIX)
+    if name.startswith(TEMP_STORE_PREFIX):
+        stamp = name[len(TEMP_STORE_PREFIX) :]
+        if stamp.isdigit():
+            return (now or time.time()) - int(stamp) > TEMP_STORE_GRACE_S
+        return True
+    return name == ""
 
 
 class FileManager:
