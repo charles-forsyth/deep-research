@@ -162,6 +162,38 @@ class TargetError(RuntimeError):
     pass
 
 
+class NotSubmitted(TargetError):
+    """The cluster was never reached: nothing was uploaded and no job exists."""
+
+
+GCLOUD_LOGIN_HINT = (
+    "Google sign-in has expired, so the cluster can't be reached. Run "
+    "`gcloud auth login` in a terminal, then press Submit again."
+)
+
+
+def _gcloud_error(stderr: str) -> str:
+    """gcloud's last stderr line is often only the tail of its advice ("to select an
+    already authenticated account to use."); name the real problem instead."""
+    text = (stderr or "").strip()
+    low = text.lower()
+    if (
+        "reauthentication" in low
+        or "gcloud auth login" in low
+        or "refreshing your current auth tokens" in low
+        or "credentials" in low
+        and "expired" in low
+    ):
+        return GCLOUD_LOGIN_HINT
+    first = next(
+        (ln.strip() for ln in text.splitlines() if ln.strip().startswith("ERROR")),
+        None,
+    )
+    return "gcloud could not build the SSH command: " + (
+        first or (text.splitlines() or ["no output"])[-1]
+    )
+
+
 class EmptyReply(ValueError):
     """The model returned no text (for example it stopped on a tool-call limit)."""
 
@@ -222,10 +254,7 @@ class SlurmSSHTarget:
                         timeout=60,
                     )
                     if out.returncode != 0 or not out.stdout.strip():
-                        raise TargetError(
-                            "gcloud could not build the SSH command: "
-                            + (out.stderr.strip().splitlines() or ["no output"])[-1]
-                        )
+                        raise TargetError(_gcloud_error(out.stderr))
                     argv = [a for a in shlex.split(out.stdout.strip()) if a != "-t"]
                     self._dest = argv.pop()
                 else:
@@ -252,7 +281,10 @@ class SlurmSSHTarget:
     def run(
         self, command: str, stdin: bytes | None = None, timeout: int = 120
     ) -> subprocess.CompletedProcess:
-        argv, dest = self._base()
+        try:
+            argv, dest = self._base()
+        except TargetError as e:
+            raise NotSubmitted(str(e)) from e
         try:
             r = subprocess.run(
                 argv + [dest, command],
@@ -262,10 +294,10 @@ class SlurmSSHTarget:
             )
         except subprocess.TimeoutExpired as e:
             raise TargetError(f"cluster command timed out after {timeout}s") from e
-        if r.returncode == 255:  # ssh itself failed
+        if r.returncode == 255:  # ssh itself failed: the command never ran
             with self._lock:
                 self._argv = None  # rebuild next time (token or tunnel expired)
-            raise TargetError(
+            raise NotSubmitted(
                 "cannot reach the cluster: "
                 + (
                     r.stderr.decode("utf-8", "replace").strip().splitlines()
@@ -2222,6 +2254,20 @@ class Lab:
             job = tgt.submit(run_id, files)
             for src in sources:
                 self.sources.record_use(src, "lab_run", run_id)
+        except NotSubmitted as e:
+            # Nothing reached the cluster (sign-in expired, VPN or tunnel down): keep
+            # the reviewed plan as a draft so Submit works again once it's fixed,
+            # instead of a failed run whose only way back is a new draft.
+            _IN_FLIGHT.discard(run_id)
+            self._update(
+                run_id,
+                only_if=("submitting",),
+                status="draft",
+                stage="Not submitted",
+                error=str(e)[:500],
+                submitted_at=None,
+            )
+            raise
         except Exception as e:
             _IN_FLIGHT.discard(run_id)
             self._update(

@@ -120,7 +120,7 @@ const LAB = {
       </div>
       ${live || r.status === "draft" ? `<div class="lab-stage">${live ? '<span class="spinner"></span>' : ""}<span>${esc(r.stage || r.status)}</span></div>` : ""}
       ${this.stepsHtml(r)}
-      ${r.error && !["draft"].includes(r.status) ? `<div class="lab-err">${esc(r.error)}</div>` : ""}
+      ${r.error && (r.status !== "draft" || r.stage === "Not submitted") ? `<div class="lab-err">${r.status === "draft" ? "Not submitted: " : ""}${esc(r.error)}</div>` : ""}
       ${p.question ? `<div class="lab-q"><span class="label">Question</span> ${esc(p.question)}</div>` : ""}
       ${r.scope === "selection" && r.selection ? `<details class="lab-sel"><summary class="dim">Selected passage</summary><blockquote>${esc(clip(r.selection, 1200))}</blockquote></details>` : ""}
       ${r.status === "plan_failed" && p.why_not ? `<div class="lab-q dim">${esc(p.why_not)}</div>` : ""}
