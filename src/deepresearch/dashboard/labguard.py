@@ -391,6 +391,126 @@ def _python_bodies(script: str) -> list[tuple[int, str]]:
     return out
 
 
+_BUILTINS = set(dir(__import__("builtins"))) | {"__file__", "__name__", "__doc__"}
+
+
+def undefined_names(script: str) -> list[str]:
+    """Names a Python heredoc reads but never defines (NameError at run time).
+
+    Conservative: a name assigned, imported, or bound anywhere in the body counts as
+    defined. Caught run #82, whose report f-string used d3_fp32_mlups after an hour
+    of GPU work had finished.
+    """
+    hits = []
+    for line0, body in _python_bodies(script):
+        try:
+            tree = ast.parse(body)
+        except SyntaxError:
+            continue
+        defined: set[str] = set()
+        star = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(
+                node.ctx, (ast.Store, ast.Del)
+            ):
+                defined.add(node.id)
+            elif isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                defined.add(node.name)
+            elif isinstance(node, ast.arg):
+                defined.add(node.arg)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for a in node.names:
+                    if a.name == "*":
+                        star = True
+                    defined.add((a.asname or a.name).split(".")[0])
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                defined.add(node.name)
+            elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                defined.update(node.names)
+            elif isinstance(node, ast.MatchAs) and node.name:
+                defined.add(node.name)
+        if star:
+            continue
+        seen = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and node.id not in defined
+                and node.id not in _BUILTINS
+                and node.id not in seen
+            ):
+                seen.add(node.id)
+                hits.append(f"{node.id} (line {line0 + node.lineno - 1})")
+    return hits[:5]
+
+
+# $NAME inside an unquoted heredoc is expanded by bash; under `set -u` an unset one kills
+# the job (run #83: a matplotlib label '$C_D(t)$' in `python3 - << EOF`).
+_UNQ_HEREDOC = re.compile(r"<<-?\s*([A-Za-z_]\w*)\s*[^\n]*\n(.*?)\n\1\s*$", re.S | re.M)
+_SH_ASSIGN = re.compile(
+    r"(?:^|[\s;(])(?:export\s+|local\s+|readonly\s+|declare\s+(?:-\w+\s+)*)?([A-Za-z_]\w*)=",
+    re.M,
+)
+_SH_LOOPVAR = re.compile(r"\b(?:for|read(?:\s+-\w+)*)\s+([A-Za-z_]\w*)")
+_SH_ENV = {
+    "HOME",
+    "USER",
+    "PATH",
+    "PWD",
+    "TMPDIR",
+    "HOSTNAME",
+    "SHELL",
+    "LANG",
+    "RANDOM",
+    "SECONDS",
+    "LINENO",
+    "BASH_SOURCE",
+    "OLDPWD",
+    "UID",
+    "EUID",
+    "PPID",
+    "IFS",
+    "LD_LIBRARY_PATH",
+    "PYTHONPATH",
+    "CONDA_PREFIX",
+    "VIRTUAL_ENV",
+    "MODULEPATH",
+    "OMP_NUM_THREADS",
+    "CUDA_VISIBLE_DEVICES",
+    "LAB_SMOKE",
+    "PARAM_SMOKE",
+    "LAB_RUN_ID",
+}
+
+
+def heredoc_unset_vars(script: str) -> list[str]:
+    """$VARs bash would expand inside unquoted heredocs that the script never sets."""
+    s = script or ""
+    known = set(_SH_ASSIGN.findall(s)) | set(_SH_LOOPVAR.findall(s)) | _SH_ENV
+    hits = []
+    for m in _UNQ_HEREDOC.finditer(s):
+        body = m.group(2)
+        ln = s[: m.start(2)].count("\n") + 1
+        for v in re.finditer(
+            r"(?<!\\)\$(?:\{([A-Za-z_]\w*)([^}]*)\}|([A-Za-z_]\w*))", body
+        ):
+            name = v.group(1) or v.group(3)
+            if v.group(1) and v.group(2)[:1] in (":", "-", "=", "?", "+"):
+                continue  # ${X:-default} and friends are safe under set -u
+            if (
+                name.startswith(("SLURM_", "LADDER_", "PIXI_", "CONDA_", "PARAM_"))
+                or name in known
+            ):
+                continue
+            item = f"${name} (line {ln + body[: v.start()].count(chr(10))})"
+            if item not in hits:
+                hits.append(item)
+    return hits[:5]
+
+
 def _literal_str(node: ast.AST) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
@@ -532,6 +652,26 @@ _WEAK_REF = re.compile(
 )
 
 
+# `if x <= 0.1: x = 3.5`: a computed value that looks wrong is replaced by a plausible
+# constant, so a failed calculation reports a believable number (run #80, SAMSE limit).
+_SUBSTITUTE = re.compile(
+    r"if\s+(\w+)\s*(?:<=?|==|>=?)\s*[-\d.eE]+\s*:\s*\n?\s*\1\s*=\s*(-?\d+(?:\.\d+)?)\b"
+)
+
+
+def value_substitutions(script: str) -> list[str]:
+    hits = []
+    for _, body in _python_bodies(script):
+        for m in _SUBSTITUTE.finditer(body):
+            if float(m.group(2)) == 0.0:
+                continue  # clamping to zero (rates, probabilities) is normal numerics
+            ln = body[: m.start()].count("\n") + 1
+            hits.append(
+                f"{m.group(1)} is replaced by {m.group(2)} when out of range (line ~{ln})"
+            )
+    return hits[:3]
+
+
 def weak_reference_checks(script: str) -> list[str]:
     hits = []
     for n, ln in enumerate(script.splitlines(), 1):
@@ -545,6 +685,28 @@ def weak_reference_checks(script: str) -> list[str]:
 def science_warnings(plan: dict) -> list[str]:
     script = str((plan or {}).get("script") or "")
     warns = []
+    und = undefined_names(script)
+    if und:
+        warns.append(
+            "The script's Python uses names it never defines: "
+            + ", ".join(und)
+            + ". It would stop with a NameError, possibly after the whole run."
+        )
+    unset = heredoc_unset_vars(script)
+    if unset:
+        warns.append(
+            "Bash expands these inside an unquoted heredoc but the script never sets "
+            "them: " + ", ".join(unset) + ". Under set -u the job stops there; quote "
+            "the tag (<< 'EOF') or escape the $ (e.g. in matplotlib labels)."
+        )
+    subs = value_substitutions(script)
+    if subs:
+        warns.append(
+            "A computed value is replaced by a fixed number when it comes out wrong ("
+            + "; ".join(subs)
+            + "); a failed calculation would then report a plausible result. Record "
+            "the failure (NaN, pass false) instead."
+        )
     weak = weak_reference_checks(script)
     if weak:
         warns.append(

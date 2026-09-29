@@ -666,7 +666,7 @@ def test_ladder_pinned_binary_conda_plan():
     loose = s[s.index("ladder_try pixi-loose") :].split("\n", 1)[0]
     assert "lammps=2023.08.02" in loose
     assert "ladder_try pip-venv" not in s
-    assert "while IFS= read -r line" in s and "set -o pipefail" in s
+    assert "while IFS= read -r line" in s and "set +e +o pipefail" in s
 
 
 def test_smoke_fix_interrupted_by_restart_is_failed_not_stuck(wlab):
@@ -710,3 +710,16 @@ def test_layered_venv_sees_a_module_that_is_itself_a_venv():
     s = build_sbatch(1, plan, FakeTarget())
     lay = s[s.index("ladder_try layered-venv") :].split("\n", 1)[0]
     assert "_site_module.pth" in lay and "site.getsitepackages" in lay
+
+
+def test_ladder_bad_cache_is_versioned_and_verify_has_no_pipefail():
+    """Runs #81/#83: a ladder bug marked working envs .bad forever; `lmp -h | grep -q`
+    died of SIGPIPE under pipefail."""
+    s = labm._LADDER_FUNCS
+    assert "set +e +o pipefail" in s
+    assert 'echo "$LADDER_VERSION" > "$dir/.bad"' in s and 'touch "$dir/.bad"' not in s
+    plan = dict(
+        PLAN, install={"conda": ["lammps=2023.08.02"], "channels": ["conda-forge"]}
+    )
+    sb = build_sbatch(1, plan, FakeTarget())
+    assert f"LADDER_VERSION={labm.LADDER_VERSION}" in sb

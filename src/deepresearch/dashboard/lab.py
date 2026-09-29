@@ -2380,7 +2380,9 @@ PYEOF
     local line
     while IFS= read -r line; do
       [ -z "$line" ] && continue
-      ( set +e; set -o pipefail; eval "$line" ) >> "$TMPDIR/ladder_verify.log" 2>&1 || {
+      # no pipefail: `cmd | grep -q X` exits early and cmd dies of SIGPIPE (141), a
+      # false failure that marked a working LAMMPS env bad (run #81)
+      ( set +e +o pipefail; eval "$line" ) >> "$TMPDIR/ladder_verify.log" 2>&1 || {
         echo "[LADDER] verify failed: $line"; tail -20 "$TMPDIR/ladder_verify.log"; rc=1; break; }
     done <<< "$LADDER_VERIFY"
   fi
@@ -2403,13 +2405,17 @@ ladder_try() {  # name envdir build-commands...: build once (cached), activate, 
   echo "[LADDER] trying $name"
   mkdir -p "$(dirname "$dir")"
   exec 9>"$dir.lock"; flock 9
-  if [ -f "$dir/.bad" ]; then
+  # .bad records which ladder version failed: a failure caused by a ladder bug (not the
+  # packages) must not poison the cache for later versions (runs #81, #83)
+  if [ -f "$dir/.bad" ] && [ "$(cat "$dir/.bad" 2>/dev/null)" = "$LADDER_VERSION" ]; then
     echo "[LADDER] $name failed before for this package list; skipping"; flock -u 9; return 1
   fi
+  [ -f "$dir/.bad" ] && echo "[LADDER] $name failed under an older ladder; retrying"
+  rm -f "$dir/.bad"
   if [ ! -f "$dir/.ready" ]; then
     rm -rf "$dir"
     if ! ( set -e; "$@" ) ; then
-      echo "[LADDER] $name: install failed"; mkdir -p "$dir"; touch "$dir/.bad"; flock -u 9; return 1
+      echo "[LADDER] $name: install failed"; mkdir -p "$dir"; echo "$LADDER_VERSION" > "$dir/.bad"; flock -u 9; return 1
     fi
     touch "$dir/.ready"
   else
@@ -2419,6 +2425,11 @@ ladder_try() {  # name envdir build-commands...: build once (cached), activate, 
   return 0
 }
 """
+
+
+# Changes whenever the ladder's shell code changes, so a failure recorded by an older
+# (possibly buggy) ladder is retried instead of skipped forever.
+LADDER_VERSION = hashlib.sha256(_LADDER_FUNCS.encode()).hexdigest()[:10]
 
 
 def install_ladder(
@@ -2468,6 +2479,7 @@ def install_ladder(
     ).hexdigest()[:12]
     base = f"$HOME/deep-research-lab/envs/{_slug('-'.join(sorted(conda + names)) or 'env', 40)}-{key}"
     out = _LADDER_FUNCS
+    out += f"LADDER_VERSION={LADDER_VERSION}\n"
     out += f'LADDER_KEY={shlex.quote(key)}\nLADDER_TRIED=""\n'
     out += f"LADDER_IMPORTS={shlex.quote(' '.join(imports))}\n"
     out += "LADDER_VERIFY=" + shlex.quote("\n".join(verify)) + "\n"
@@ -2616,7 +2628,7 @@ def install_ladder(
         out += (
             f'if [ -z "$LADDER_OK" ] && ladder_try {name} "{envdir}" bash -c {shlex.quote(build)}; then\n'
             f'  ( {act}; ladder_verify {py} ) && {{ {act}; LADDER_OK={name}; ladder_record {name} "{envdir}"; }} '
-            f'|| {{ echo "[LADDER] {name} did not verify"; touch "{envdir}/.bad"; }}\n'
+            f'|| {{ echo "[LADDER] {name} did not verify"; echo "$LADDER_VERSION" > "{envdir}/.bad"; }}\n'
             "fi\n"
         )
     if inst.get("apptainer"):
