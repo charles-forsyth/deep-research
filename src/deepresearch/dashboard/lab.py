@@ -2233,6 +2233,22 @@ def script_urls(plan: dict) -> list[str]:
 
 # ----------------------------------------------------------------------- install ladder
 # Import names that differ from the package name (for the automatic import check).
+# conda-forge package names that differ from the pip name. On conda-forge `gmsh` is the
+# C++ library and program only; the Python module is `python-gmsh` (run #86: the pixi
+# rung installed gmsh, then `import gmsh` failed). Pip gmsh wheels need libGLU, which
+# Rocky 8 compute nodes lack, so the conda route is the one that works.
+CONDA_NAMES = {
+    "gmsh": "python-gmsh",
+    "pytorch": "pytorch",
+    "torch": "pytorch",
+    "opencv-python": "opencv",
+    "opencv-python-headless": "opencv",
+    "tables": "pytables",
+    "rdkit-pypi": "rdkit",
+    "scikit-rf": "scikit-rf",
+}
+
+
 IMPORT_NAMES = {
     "scikit-learn": "sklearn",
     "scikit-image": "skimage",
@@ -2536,7 +2552,10 @@ def install_ladder(
                 ["python=3.12", "pip", "numpy", "scipy", "pandas", "matplotlib"] + vpk
             )
         )
-        add_names = " ".join(shlex.quote(_pkg_name(n)) for n in names)
+        add_names = " ".join(
+            shlex.quote(CONDA_NAMES.get(_pkg_name(n).lower(), _pkg_name(n)))
+            for n in names
+        )
         rungs.append(
             (
                 "pixi-conda-forge",
@@ -2552,7 +2571,17 @@ def install_ladder(
             )
         )
     elif not (pymods and not conda):
+        # a script that imports gmsh needs python-gmsh next to a bare conda `gmsh`
         pk = list(conda)
+        for c in conda:
+            alt = CONDA_NAMES.get(_pkg_name(c).lower())
+            if (
+                alt
+                and alt != _pkg_name(c)
+                and alt not in pk
+                and alt.startswith("python-")
+            ):
+                pk.append(alt)
         # a pinned old build (e.g. lammps=2023.08.02 for glibc 2.28) may not exist for a
         # new Python: don't force python=3.12 next to a pin, let the solver choose
         pinned_pkg = any(

@@ -723,3 +723,13 @@ def test_ladder_bad_cache_is_versioned_and_verify_has_no_pipefail():
     )
     sb = build_sbatch(1, plan, FakeTarget())
     assert f"LADDER_VERSION={labm.LADDER_VERSION}" in sb
+
+
+def test_gmsh_maps_to_python_gmsh_on_conda():
+    """Run #86: conda-forge gmsh has no Python module; pip gmsh needs libGLU."""
+    plan = dict(PLAN, install={"modules": ["python-sci/2026.09"], "pip": ["gmsh"]})
+    s = build_sbatch(1, plan, FakeTarget())
+    assert "pixi add python-gmsh" in s
+    plan = dict(PLAN, install={"conda": ["gmsh", "numpy"], "channels": ["conda-forge"]})
+    s = build_sbatch(1, plan, FakeTarget())
+    assert "python-gmsh" in s
