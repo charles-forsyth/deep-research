@@ -1075,8 +1075,30 @@ def validate_plan(target: SlurmSSHTarget | None, plan: dict) -> list[str]:
             + ((plan.get("install") or {}).get("pip") or [])
             if not str(x).startswith(("--", "https:"))
         ]
+        # a pinned install of something the module has is deliberate when the module's
+        # build lacks what the plan checks for (LAMMPS without GRANULAR, run #57)
+        verify_txt = " ".join(
+            str(v) for v in (plan.get("install") or {}).get("verify") or []
+        )
+        pinned = {
+            re.split(r"[=<>!\[]", str(x))[0].lower()
+            for x in (plan.get("install") or {}).get("conda") or []
+            if re.search(r"[=<>]", str(x))
+        }
         dup = sorted(
-            {p for p in pkgs if p in have and p not in ("python", "pip", "numpy")}
+            {
+                p
+                for p in pkgs
+                if p in have
+                and p not in ("python", "pip", "numpy")
+                and not (
+                    p in pinned
+                    and re.search(rf"\b{re.escape(p)}\b|lmp|grep", verify_txt)
+                )
+                and not (
+                    p == "gmsh" and "import gmsh" in verify_txt
+                )  # module has no Python API
+            }
         )
         if dup:
             warns.append(
