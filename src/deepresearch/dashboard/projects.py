@@ -568,12 +568,23 @@ def lab_findings(runs: list[dict], limit: int = LAB_NOTE_CHARS) -> str:
 
 
 def verdict_line(run: dict) -> str:
+    """The run's outcome (CONFIRMED / REFUTED / INCONCLUSIVE / BROKEN) and why, plus the
+    raw check count; summaries and audio say what a run showed, not just pass/fail."""
+    from deepresearch.dashboard.labverdict import assess
+
     v = run.get("verdict") or None
-    if not isinstance(v, dict) or "pass" not in v:
-        return "no verdict"
-    checks = v.get("checks") or []
-    ok = sum(1 for c in checks if c.get("pass"))
-    return f"{'passed' if v.get('pass') else 'failed'} ({ok}/{len(checks)} checks)"
+    a = run.get("assessment") or assess(
+        v if isinstance(v, dict) else None, str(run.get("status") or "")
+    )
+    checks = (v or {}).get("checks") or [] if isinstance(v, dict) else []
+    count = (
+        f" ({sum(1 for c in checks if c.get('pass'))}/{len(checks)} checks passed)"
+        if checks
+        else ""
+    )
+    if a:
+        return f"{a['outcome'].upper()}{count}: {a['why']}"
+    return "no verdict"
 
 
 def dossier_markdown(

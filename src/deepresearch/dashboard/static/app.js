@@ -1289,7 +1289,8 @@ function renderRight() {
     body.innerHTML = `
       <div class="dim" style="font-size:11.5px;margin-bottom:8px">Select text in the report to highlight it or attach a note.</div>
       ${s.annotations.map((a) => `
-        <div class="ann-card ${esc(a.color)}" data-id="${a.id}">
+        <div class="ann-card ${esc(a.color)}${/^Lab run #\d+ \(/.test(a.note || "") ? " lab-note" : ""}" data-id="${a.id}">
+          ${/^Lab run #\d+ \(/.test(a.note || "") ? `<div class="mono dim" style="font-size:10.5px">\u2697 attached by the Lab (the report itself is unchanged)</div>` : ""}
           <div class="q">\u201c${esc(a.quote)}\u201d</div>
           <textarea placeholder="Add a note\u2026" aria-label="Note for this highlight">${esc(a.note)}</textarea>
           <div class="acts"><span class="note-state dim" aria-live="polite"></span><button data-a="nb">\u2192 notebook</button><button data-a="copy">copy</button><button data-a="del">delete</button></div>

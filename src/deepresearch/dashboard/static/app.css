@@ -571,6 +571,16 @@ pre.lab-script { max-height: 300px; }
 .lab-warn { border: 1px solid var(--warn, #b7791f); background: rgba(183,121,31,.08); border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
 .lab-warn ul { margin: 4px 0 4px 18px; padding: 0; font-size: 12px; }
 .lab-fix-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.lab-refuted { border: 1px solid #b83280; background: rgba(184,50,128,.08); border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
+.lab-verdict ul { margin: 2px 0 6px 18px; padding: 0; }
+.lab-verdict .vk { margin-top: 4px; }
+.lab-verdict.lab-err { font: inherit; color: inherit; white-space: normal; border: 1px solid var(--red); background: rgba(220,38,38,.07); border-radius: 6px; padding: 8px 10px; }
+.lab-psrc { margin: 2px 0 0 18px; padding: 0; font-size: 12px; overflow-wrap: anywhere; }
+.outcome-badge { display: inline-block; margin-left: 4px; padding: 1px 7px; border-radius: 10px; font: 600 10.5px var(--mono); text-transform: uppercase; letter-spacing: .03em; border: 1px solid currentColor; white-space: nowrap; }
+.outcome-badge.confirmed { color: var(--ok, #2f855a); }
+.outcome-badge.refuted { color: #b83280; }
+.outcome-badge.inconclusive { color: var(--warn, #b7791f); }
+.outcome-badge.broken { color: var(--red); }
 .lab-fixed { border: 1px solid var(--ok, #2f855a); background: rgba(47,133,90,.08); border-radius: 6px; padding: 6px 10px; margin: 8px 0; }
 .lab-fixed ul { margin: 4px 0 2px 18px; padding: 0; font-size: 12px; }
 

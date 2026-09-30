@@ -63,8 +63,11 @@ real computations on an HPC cluster. Everything lives in a local SQLite history 
 - **Lab runs**: turn a claim in a report into a real computation on a Slurm cluster. Gemini
   suggests computations, writes a plan and a job script against the cluster's own catalog of
   modules and containers, and you always review and edit it (with a worst-case cost) before
-  anything is submitted. The dashboard watches the job, fetches the outputs and figures, and
-  writes a short results note on the report. A Lab runs page lists every run.
+  anything is submitted. A short pilot runs first; the dashboard watches the job, fetches the
+  outputs and figures, and judges the result as confirmed, refuted, inconclusive or broken
+  (a test that could not tell is re-planned once, for your review). The outcome is attached
+  to the report as a note (the report itself is never edited) and included in its summaries
+  and audio. A Lab runs page lists every run with its outcome.
 - **Data sources**: register web datasets, Google Drive folders and Docs, GCS buckets,
   S3/CephRDS buckets and folders in your home directory once. "+ Add source" opens a file
   browser over whatever is already signed in on your machine (rclone Drive and S3 remotes,

@@ -133,7 +133,8 @@ def test_failed_verdict_marks_stage_and_fix_teaches(lab, tmp_path):  # noqa: F81
     lab._finish(lab.get(run["id"]), lab.fake)
     done = lab.get(run["id"])
     assert done["status"] == "completed"
-    assert "known-answer check FAILED" in done["stage"]
+    assert done["stage"] == "Completed: BROKEN"  # a failed known-answer check
+    assert done["assessment"]["outcome"] == "broken"
     assert done["verdict"]["pass"] is False
     learned = g.load_learned(lab.state_dir)
     assert learned and "comment='#'" in learned[0]["text"]
