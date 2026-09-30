@@ -135,9 +135,13 @@ deep-research followup 12 "Does our data agree?" --source ceph-data
 deep-research sources discover "surface ozone europe"   # Data.gov, Zenodo, HF, AWS, Google, Earth Engine
 deep-research sources add ghcn s3://noaa-ghcn-pds --include 'ghcnd-*.txt'   # free public bucket
 deep-research sources index lab-notes   # save a search index research runs reuse
+deep-research list --json             # any command: one JSON document on stdout, logs on stderr
+deep-research start "Question" --json   # {"session_id": ..., "pid": ..., ...}
 ```
 
 A bare prompt runs `research`. `deep-research <command> --help` documents every option.
+With `--json`, stdout is exactly one JSON document and failures exit non-zero with
+`{"error": ...}`, so scripts and other tools can drive the CLI.
 
 ## Web dashboard
 

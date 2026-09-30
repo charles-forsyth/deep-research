@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 
 from rich.console import Console
@@ -13,6 +12,7 @@ from deepresearch.sources import KINDS, LEVELS, DataSource, SourceRegistry
 from deepresearch.sources.adapters import SourceError, adapter_for, local_roots
 from deepresearch.sources.model import STAGING
 from deepresearch.sources.service import check
+from deepresearch.cli.jsonout import emit
 
 console = Console(width=120)
 
@@ -164,7 +164,7 @@ def guess_kind(uri: str, auth: str = "") -> str:
 def handle(args: argparse.Namespace, reg: SourceRegistry | None = None) -> int:
     reg = reg or SourceRegistry()
     cmd = getattr(args, "sources_cmd", None)
-    as_json = getattr(args, "json", False)
+    as_json = getattr(args, "json", False) is True
     if cmd == "add":
         kind = args.kind or guess_kind(args.uri, args.auth or "")
         uri = args.uri
@@ -173,6 +173,8 @@ def handle(args: argparse.Namespace, reg: SourceRegistry | None = None) -> int:
                 uri = local_uri(uri)
             except ValueError as e:
                 print(f"[ERROR] {e}")
+                if as_json:
+                    emit({"error": str(e)})
                 return 2
         opts = {}
         if args.include:
@@ -201,8 +203,8 @@ def handle(args: argparse.Namespace, reg: SourceRegistry | None = None) -> int:
 
         out = discover(args.query, args.catalog, args.limit)
         if as_json:
-            print(json.dumps(out, indent=2, default=str))
-            return 0
+            emit(out)
+            return 0 if out["results"] or not out["errors"] else 2
         for c, err in out["errors"].items():
             console.print(f"[yellow]{c}: {err}[/yellow]")
         for r in out["results"]:
@@ -230,7 +232,7 @@ def handle(args: argparse.Namespace, reg: SourceRegistry | None = None) -> int:
     if cmd == "list":
         rows = reg.list()
         if as_json:
-            print(json.dumps([r.public() for r in rows], indent=2, default=str))
+            emit([r.public() for r in rows])
             return 0
         t = Table(title=f"Data sources ({len(rows)})")
         for col in (
@@ -268,6 +270,8 @@ def handle(args: argparse.Namespace, reg: SourceRegistry | None = None) -> int:
             s = reg.require(args.name)
         except KeyError as e:
             console.print(f"[red]{e.args[0]}[/red]")
+            if as_json:
+                emit({"error": str(e.args[0])})
             return 1
         if cmd == "index":
             from deepresearch.sources.index import build_index, drop_index
@@ -281,21 +285,33 @@ def handle(args: argparse.Namespace, reg: SourceRegistry | None = None) -> int:
                     s = build_index(reg, s, client, log=console.print)
             except Exception as e:
                 console.print(f"[red]{e}[/red]")
+                if as_json:
+                    emit({"error": str(e)})
                 return 2
             _print_one(s, as_json)
             return 0
         if cmd == "rm":
+            index_error = None
             if s.options.get("store"):
                 from deepresearch.sources.index import drop_index
 
                 try:
                     drop_index(reg, s, _genai_client())
                 except Exception as e:
+                    index_error = str(e)
                     console.print(f"[yellow]Could not delete its index: {e}[/yellow]")
             reg.delete(s.name)
             console.print(
                 f"Deleted source '{s.name}' (the data itself was not touched)"
             )
+            if as_json:
+                emit(
+                    {
+                        "deleted": s.name,
+                        "data_touched": False,
+                        "index_error": index_error,
+                    }
+                )
             return 0
         if cmd == "test":
             s = check(reg, s)
@@ -309,10 +325,20 @@ def handle(args: argparse.Namespace, reg: SourceRegistry | None = None) -> int:
             if cmd == "browse":
                 items = a.list(args.path)
                 if as_json:
-                    print(json.dumps(items, indent=2))
+                    emit(items)
                 else:
                     for i in items:
                         console.print(f"{_size(i['size']):>10}  {i['name']}")
+            elif as_json:
+                raw = a.preview(args.path, args.bytes)
+                emit(
+                    {
+                        "name": s.name,
+                        "path": args.path,
+                        "bytes": len(raw),
+                        "text": raw.decode("utf-8", "replace"),
+                    }
+                )
             else:
                 sys.stdout.write(
                     a.preview(args.path, args.bytes).decode("utf-8", "replace")
@@ -320,6 +346,8 @@ def handle(args: argparse.Namespace, reg: SourceRegistry | None = None) -> int:
                 sys.stdout.write("\n")
         except SourceError as e:
             console.print(f"[red]{e}[/red]")
+            if as_json:
+                emit({"error": str(e)})
             return 2
         return 0
     console.print(
@@ -344,7 +372,7 @@ def _print_one(s: DataSource, as_json: bool, uses: list | None = None) -> None:
     if as_json:
         if d.get("manifest"):
             d["manifest"]["entries"] = d["manifest"]["entries"][:50]
-        print(json.dumps(d, indent=2, default=str))
+        emit(d)
         return
     m = s.manifest
     colour = {"ok": "green", "unreachable": "red"}.get(s.status, "yellow")

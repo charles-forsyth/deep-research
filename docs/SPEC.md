@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.35.9 (package `deepresearch`) |
+| Applies to | deep-research v0.36.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -631,10 +631,41 @@ codes: see REQ-DASH-1.
 
 ### 9.5 Exit codes and errors
 
-Only `dashboard` returns non-zero exit codes. Every other command exits 0 whether or
-not it succeeded. Validation errors print `[ERROR] Input Validation Failed`, config
-errors (for example a missing key) print `[CONFIG ERROR]`, anything else prints
-`[CRITICAL ERROR]` (K11).
+Without `--json`, only `dashboard` returns non-zero exit codes. Every other command
+exits 0 whether or not it succeeded. Validation errors print `[ERROR] Input Validation
+Failed`, config errors (for example a missing key) print `[CONFIG ERROR]`, anything else
+prints `[CRITICAL ERROR]` (K11). With `--json`, failures exit non-zero (9.6).
+
+### 9.6 Machine-readable output (`--json`)
+
+Every command, including each `sources` subcommand, takes `--json` (v0.36.0; `sources`
+had it earlier). Implemented in `cli/jsonout.py`.
+
+- stdout carries exactly one JSON document. Everything the command would otherwise
+  print (log lines, progress dots, Rich panels) goes to stderr.
+- Failure: `{"error": "..."}` on stdout (plus context keys where useful) and exit 1;
+  exit 2 for bad input, config errors or data-source preparation errors.
+- Session objects are the `sessions` row minus `embedding`, with `files` as a list.
+  `list` and `tree` replace `result` with `result_chars`; `show` includes `result`
+  and `provenance`, and `show --recursive` nests `children` with their reports.
+- `research --json` prints the finished session after the run (non-zero with a
+  `session` key if it did not complete). `start --json` prints
+  `{session_id, pid, log, status}`; the detached worker is not given `--json`.
+- `followup --json`: `{session_id, interaction_id, prompt, sources, answer}`.
+- `search --json`: `{query, matches: [{session_id, score, prompt}], answer, model,
+  embedded}`.
+- `estimate --json`: nodes, token counts, `cost_usd` and the pricing used.
+- `cleanup --json` never prompts: without `--force` it is a dry run
+  (`would_delete`, `kept`); with `--force` it reports `deleted`, `failed`, `kept`
+  and exits 1 if any delete failed.
+- `delete --json`: `{id, deleted}`; `auth logout --json`: `{logged_out, path}`;
+  `auth login --json` still prompts for the key (on stderr) and then prints
+  `{saved}`.
+- `dashboard --json`: runs the action, then reports `{exit_code, running, healthy,
+  pid, host, port, allow_remote, version, urls}`. `--foreground` is refused.
+- `show --json` refuses `--save`.
+- Only a real boolean `--json` switches modes (`json_flag`), so callers that build an
+  args object themselves (tests, the dashboard) never change output by accident.
 
 ---
 
@@ -1095,7 +1126,7 @@ noted, confirmed by test; items fixed since are marked with the version. Each is
 | K8 | Tests | No dedicated test for: synthesis fallback (REQ-REC-3), embeddings leaving `updated_at` alone (REQ-HIS-4), cancel's cloud call and process-group kill (REQ-DASH-5, state change only). | Regressions in these paths would not be caught. |
 | K9 | Uploads | Folder uploads take only top-level files. After uploading to a store the code waits a fixed 5 s for ingestion rather than checking. | Nested files are silently skipped; large uploads may not be searchable when the run starts. |
 | K10 | Cleanup | CLI `delete` removes one row and leaves children (orphaned), annotations, meta, run_meta, usage and audio. Dashboard delete removes annotations and meta but leaves `run_meta`, `session_usage`, `audio_exports` rows and audio files. Uploaded files are never removed. | Orphan rows and disk growth. |
-| K11 | CLI | Every command except `dashboard` exits 0, including on errors. | Scripts cannot detect failure. |
+| K11 | CLI | Every command except `dashboard` exits 0, including on errors. | Scripts cannot detect failure. Fixed for `--json` output in v0.36.0 (9.6); plain output unchanged. |
 | K12 | Cost | The estimate leaves out gap analysis, synthesis, follow-ups and search grounding. Actual cost covers the session's own interaction only (a recursive root's figure leaves out its children). The estimate formula is duplicated in two modules. | Shown costs understate recursive runs. |
 | K13 | Dashboard | No authentication (by design; 14.1). Since v0.28.0 it listens on this machine only unless `--allow-remote` is given. | With `--allow-remote`, anyone on that network can use and spend. |
 | K14 | Cost | REQ-COST-4 is only met for audio. The brief dialog says "usually under a cent" without an estimate; the compare "What changed? (AI)" button, semantic search synthesis (which sends the full text of the top matches) and follow-ups show no cost before running. | Paid actions without a figure up front. |
@@ -1739,6 +1770,7 @@ drops the other's result.
 | 2026-09-29 | v0.28.1 | Lab submit: expired gcloud sign-in named plainly; a submit that never reached the cluster keeps the run as a draft (20.6). |
 | 2026-09-29 | v0.28.2 | Lab: OR-Tools plans on a Python module get an isolated venv (CP-SAT segfaulted on top of python-sci). |
 | 2026-09-29 | v0.29.0 | Lab: lessons (curated + learned) in plan/fix prompts, science guards, known-answer verdicts (20.10). |
+| 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |
 | 2026-09-29 | v0.35.7 | Sign-crossing pre-flight warning. |

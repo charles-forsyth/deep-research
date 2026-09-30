@@ -7,6 +7,17 @@ releases.
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-09-29
+
+### Added
+
+- `--json` on every command (`research`, `start`, `followup`, `list`, `show`, `search`, `tree`, `delete`, `cleanup`, `auth`, `estimate`, `dashboard`; `sources` already had it). stdout is exactly one JSON document and all log output moves to stderr, so other tools can call the CLI and parse the result. Failures print `{"error": ...}` and exit non-zero. `start --json` prints the new session id; `show --json --recursive` nests child reports; `cleanup --json` is a dry run unless `--force`. See docs/SPEC.md 9.6.
+
+### Changed
+
+- `DeepResearchAgent.follow_up()` returns the answer text (empty string on failure) instead of `None`. Existing callers ignore the return value.
+- `sources ... --json` shares the same writer, so its JSON also never mixes with log lines; `sources discover --json` now exits 2 when every catalog failed, like the plain output.
+
 ## [0.35.9] - 2026-09-29
 
 ### Added

@@ -456,7 +456,9 @@ class DeepResearchAgent:
         )
 
     @with_retry()
-    def follow_up(self, request: FollowUpRequest):
+    def follow_up(self, request: FollowUpRequest) -> str:
+        """Ask a follow-up, append it to the session, and return the answer text
+        (empty string if there was no answer or the call failed)."""
         self._log(f"[INFO] Sending follow-up to interaction: {request.interaction_id}")
         try:
             interaction = self.client.interactions.create(
@@ -479,8 +481,10 @@ class DeepResearchAgent:
                 self.session_manager.append_to_result(
                     request.interaction_id, append_text
                 )
+            return response_text or ""
         except Exception as e:
             self._log(f"[ERROR] Follow-up failed: {e}")
+            return ""
 
     @with_retry()
     def analyze_gaps(
