@@ -70,10 +70,15 @@ CURATED: list[dict[str, Any]] = [
         "<INLET_FILENAME stem>_00000.dat, not the name given; write both. Format: NMARK=, "
         "MARKER_TAG=, NROW=, NCOL=6, then x y T |U| nx ny per inlet node (run SU2_CFD once "
         "without the file and read the example_* template it writes). There is no "
-        "VISC_NUM_METHOD_FLOW or SPATIAL_ORDER_FLOW option in 8.2 (use MUSCL_FLOW= YES and "
-        "SLOPE_LIMITER_FLOW=). SU2 stops on the first unknown option and prints 'Did you mean "
+        "VISC_NUM_METHOD_FLOW or SPATIAL_ORDER_FLOW option in 8.2. Unsteady force "
+        "coefficients: set HISTORY_OUTPUT= ( ITER, RMS_RES, AERO_COEFF ) and "
+        "REF_AREA= <D x depth>, and drop the start-up transient (impulsive start gives "
+        "C_D near 30 in the first steps) before taking max/min: use the last few "
+        "shedding periods only; a symmetric start needs several seconds of physical time "
+        "at Re=100 before shedding is periodic (run #87: 4 s, C_L still one-signed). Use "
+        "MUSCL_FLOW= YES and SLOPE_LIMITER_FLOW= for second order. SU2 stops on the first unknown option and prints 'Did you mean "
         "X?': take its suggestion.",
-        "source": "draft #51, job 225, run #62/#74",
+        "source": "draft #51, job 225, run #62/#74/#87",
     },
     {
         "id": "lammps-granular",
@@ -127,10 +132,13 @@ CURATED: list[dict[str, Any]] = [
         "id": "lbm-stability",
         "match": ["lattice boltzmann", "lbm", "d2q9", "d3q19", "bgk", "mrt"],
         "text": "BGK lattice Boltzmann goes unstable as tau -> 0.5 (tau = 3 nu_lat + 0.5): "
-        "keep tau >= 0.51 by refining the grid rather than lowering nu, cap u_lat <= 0.1, "
-        "and guard density divisions (rho can hit 0 when it diverges); report "
-        "divergence as a failure, never catch it.",
-        "source": "run #70",
+        "keep tau >= 0.55 by refining the grid rather than lowering nu (plain BGK with "
+        "Zou-He boundaries blew up at tau=0.535, Ny=83, Ma=0.02; Ny=165, tau=0.57 was "
+        "stable and gave C_D within 0.4% of 5.5795), cap u_lat <= 0.1, and guard density "
+        "divisions; report divergence as a failure, never catch it. Pressure probes at a "
+        "body surface must sit on the first FLUID node: bounce-back solid nodes have rho "
+        "fixed at 1, so Delta p read there is 0.",
+        "source": "run #70, reproduced on a compute node 2026-09-29",
     },
     {
         "id": "freertos-host",
@@ -843,4 +851,81 @@ def read_verdict(run_dir: Path) -> dict | None:
     ok = v.get("pass")
     if not isinstance(ok, bool):
         ok = all(c.get("pass") is True for c in checks) if checks else None
-    return {"pass": ok, "checks": checks}
+    out: dict = {"pass": ok, "checks": checks}
+    audit = audit_verdict(checks, Path(run_dir) / "outputs")
+    if audit:
+        out["audit"] = audit
+        if ok is True and any(a.startswith(("MISMATCH", "IDENTICAL")) for a in audit):
+            out["pass"] = False  # the script's own pass flag contradicts its numbers
+    return out
+
+
+def _num(x: Any) -> float | None:
+    if isinstance(x, bool):
+        return None
+    if isinstance(x, (int, float)):
+        return float(x)
+    try:
+        return float(str(x).strip())
+    except ValueError:
+        return None
+
+
+def audit_verdict(checks: list[dict], outputs: Path | None = None) -> list[str]:
+    """Re-check a job's own verdict instead of trusting its pass flags.
+
+    - MISMATCH: numeric expected/got/tolerance say fail but the script said pass.
+    - LOOSE: tolerance is over 20% of the expected value (run #89: tau 1.78 passed
+      against 1.53 with tolerance 0.45).
+    - IDENTICAL: summary.json has two sections (arms of a comparison) with byte-identical
+      results (run #89: 'frictional' and 'inertial' regimes were the same run).
+    """
+    notes = []
+    for c in checks:
+        exp, got, tol = (
+            _num(c.get("expected")),
+            _num(c.get("got")),
+            _num(c.get("tolerance")),
+        )
+        name = str(c.get("name") or "?")[:60]
+        if exp is None or got is None or tol is None:
+            continue
+        within = abs(got - exp) <= tol * (1 + 1e-9)
+        # a threshold check ("amplitude above 0.05") legitimately passes far from
+        # `expected`; only call it a contradiction when the name gives no direction
+        onesided = re.search(
+            r"(above|below|exceed|greater|less|more than|at least|at most|min|max|>|<|"
+            r"formation|onset|present|detected)",
+            name, re.I,
+        )  # fmt: skip
+        if c.get("pass") is True and not within and not onesided:
+            notes.append(
+                f"MISMATCH {name}: |{got:g} - {exp:g}| > {tol:g} but marked pass"
+            )
+        elif exp != 0 and tol > 0.2 * abs(exp) and c.get("pass") is True:
+            notes.append(
+                f"LOOSE {name}: tolerance {tol:g} is {100 * tol / abs(exp):.0f}% of "
+                f"{exp:g}; the pass says little"
+            )
+    if outputs is not None:
+        sp = outputs / "summary.json"
+        try:
+            summ = json.loads(sp.read_text("utf-8", "replace")) if sp.exists() else None
+        except ValueError:
+            summ = None
+        if isinstance(summ, dict):
+            secs = {
+                k: json.dumps(v, sort_keys=True)
+                for k, v in summ.items()
+                if isinstance(v, dict) and len(v) >= 3
+            }
+            seen: dict[str, str] = {}
+            for k, dump in secs.items():
+                if dump in seen:
+                    notes.append(
+                        f"IDENTICAL summary sections '{seen[dump]}' and '{k}': the two "
+                        "cases produced the same numbers, so the comparison did not run"
+                    )
+                else:
+                    seen[dump] = k
+    return notes[:8]
