@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.43.2 (package `deepresearch`) |
+| Applies to | deep-research v0.44.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1670,6 +1670,34 @@ reports or notebooks. The registry stores the reference and a credential *refere
 the dashboard and Lab runs share one registry (table `data_sources` in the history DB,
 plus `data_source_uses`).
 
+
+### 20.14 Self-repair hardening (v0.44.0)
+
+Every AI call that must return a plan (pre-flight fix, pilot fix, failed-run fix, automatic
+re-plan) goes through `Lab._ask_plan`: when the reply has no parsable JSON, no complete
+plan (`script`, `resources`, `install`) or is empty, it asks once more, telling the model
+what was wrong; the retry does not use web search. Only after two unusable replies does
+the step fail, and the error says why (e.g. "its JSON did not parse"). A pilot fix that
+changes the plan without listing its changes is asked once for the list before it is
+refused.
+
+`restore_control_chars` repairs scripts where JSON escaping turned a LaTeX or regex
+backslash into a control character (`\r` from `\rangle`, form feed from `\frac`,
+backspace from `\b`); CRLF line ends are left alone. Applied to every plan from
+`_ask_plan` (run #35).
+
+`classify_failure` gained `tls` (CERTIFICATE_VERIFY_FAILED: export `SSL_CERT_FILE` to
+certifi's bundle, never disable checks), `network` (403/429/timeouts: User-Agent, long
+timeouts, backoff, cache), `api-change` (a library table lookup KeyError, a missing
+attribute or keyword: inspect what the object has) and `syntax` (lost backslashes). The
+pilot fix now passes this diagnosis to the model too (before, only the failed-run fix did).
+
+Curated pitfalls added: `https-ca-bundle`, `loc-gov-slow`, `lightkurve-quarter`,
+`latex-json-escape`. Pitfall keys containing a space, dot, colon, slash or parenthesis
+match as substrings (dotted calls such as `urllib.request.urlopen` are one token).
+
+Tests: `tests/dashboard/test_lab_selfrepair.py`.
+
 ### 21.1 Record
 
 | Field | Meaning |
@@ -2235,6 +2263,7 @@ building on the zip format.
 | 2026-09-30 | v0.43.0 | Export and import a workspace as a zip (23.8). |
 | 2026-09-30 | v0.43.1 | Top bar fits at 1200-1600 px: status chips that do not fit are hidden instead of pushing the buttons off screen. |
 | 2026-09-30 | v0.43.2 | A submit stays "in flight" until its pilot is queued, so the watcher no longer fails it as "Submit interrupted" while the warm node is being reached. |
+| 2026-09-30 | v0.44.0 | Lab self-repair: one retry on an unusable AI reply, restored LaTeX/regex backslashes, new failure classes (TLS, network, API change, syntax), curated pitfalls (20.14). |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |

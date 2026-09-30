@@ -6,6 +6,7 @@ Where the project is heading. Items are ideas, not commitments; open an issue to
 - [x] Workspace switcher in the dashboard top bar (0.41).
 - [x] Copy projects and reports into a workspace (0.42).
 - [x] Export and import a workspace as a zip (0.43).
+- [x] Lab self-repair hardening (0.44).
 - [ ] **Demo workspace**: representative projects across disciplines with Lab runs.
 - [ ] **Live collaboration** on a shared workspace (sync), building on the zip export.
 - [ ] **Browse from the CLI**: `deep-research sources browse-place drive:gd` to pick Drive files without the dashboard.

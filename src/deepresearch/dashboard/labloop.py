@@ -288,7 +288,6 @@ class LabVerdictMixin:
             PLAN_DIFF_SKIP,
             build_sbatch,
             estimate_cost,
-            extract_json,
             plan_diff,
         )
 
@@ -306,14 +305,9 @@ class LabVerdictMixin:
             p = self.results_dir / f"run_{run_id}" / "job.log"  # type: ignore[attr-defined]
             log = p.read_text("utf-8", "replace") if p.exists() else ""
         prompt = self.replan_prompt(run, assessment, log)
-        reply, cost = self._ask(prompt, search=True)  # type: ignore[attr-defined]
-        self._add_cost(run_id, cost)  # type: ignore[attr-defined]
-        out = extract_json(reply)
-        new = out.get("plan") if isinstance(out, dict) else None
-        if not isinstance(new, dict) or not all(
-            k in new for k in ("script", "resources", "install")
-        ):
-            raise ValueError("the AI returned no usable plan")
+        new, out, why = self._ask_plan(run_id, prompt, search=True)  # type: ignore[attr-defined]
+        if new is None:
+            raise ValueError(f"the AI returned no usable plan twice ({why})")
         changes = [str(c) for c in (out.get("changes") or [])][:20]  # type: ignore[union-attr]
         old = {
             k: v for k, v in (run.get("plan") or {}).items() if k not in PLAN_DIFF_SKIP

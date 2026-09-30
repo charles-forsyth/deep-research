@@ -164,6 +164,36 @@ def extract_json(text: str) -> Any:
     return _loads_lenient(body[start : end + 1])
 
 
+PLAN_KEYS = ("script", "resources", "install")
+
+
+def _usable_plan(out: Any) -> dict | None:
+    new = out.get("plan") if isinstance(out, dict) else None
+    return new if isinstance(new, dict) and all(k in new for k in PLAN_KEYS) else None
+
+
+def restore_control_chars(script: str) -> tuple[str, int]:
+    """Undo JSON escapes that turned LaTeX or regex backslashes into control characters.
+
+    A model writing `\\rangle` or `\\frac` as `\\r...`/`\\f...` in a JSON string yields a
+    carriage return or form feed in the script (run #35: a matplotlib label split across
+    lines, a Python syntax error). A bare CR, FF or backspace inside a line never belongs in
+    a job script, so put the backslash back. CRLF line ends are left alone.
+    """
+    n = 0
+    out = []
+    for ch, nxt in zip(script, script[1:] + "\n"):
+        if ch == "\r" and nxt != "\n":
+            out.append("\\r")
+            n += 1
+        elif ch in ("\f", "\b"):
+            out.append("\\f" if ch == "\f" else "\\b")
+            n += 1
+        else:
+            out.append(ch)
+    return "".join(out), n
+
+
 # --------------------------------------------------------------------------- targets
 
 
@@ -1437,6 +1467,41 @@ FAILURE_CLASSES = [
         "The computation blew up numerically (division by zero, NaN, divergence). Check "
         "stability limits (time step, relaxation time, CFL) and guard divisions; do not "
         "hide it with try/except.",
+    ),
+    (
+        "tls",
+        r"CERTIFICATE_VERIFY_FAILED|unable to get local issuer certificate|"
+        r"SSL certificate problem",
+        "HTTPS failed certificate checks: the Python from the module has no CA bundle for "
+        "urllib. Before any download, export SSL_CERT_FILE (and REQUESTS_CA_BUNDLE) to "
+        "certifi's bundle: `export SSL_CERT_FILE=$(python -c 'import certifi; "
+        "print(certifi.where())')`. Never disable certificate checks.",
+    ),
+    (
+        "network",
+        r"HTTP Error 403|HTTP Error 429|urlopen error|Connection (?:refused|reset|timed out)|"
+        r"Read timed out|Temporary failure in name resolution",
+        "A download failed (refused, rate-limited or slow). Send a browser-like User-Agent, "
+        "use timeouts of 60-120 s, retry with backoff on 429/5xx, and cache responses so a "
+        "rerun does not fetch everything again. Do not drop the data it needs.",
+    ),
+    (
+        "api-change",
+        # a KeyError alone is usually the script's own dict; only a library's table or
+        # frame lookup (astropy Row, pandas) points at a changed API (run #39)
+        r"(?:astropy|pandas|table)[^\n]*\n(?:[^\n]*\n){0,12}KeyError: '|"
+        r"AttributeError: '\w+' object has no attribute|unexpected keyword argument",
+        "A library's data or API differs from what the script assumed (a renamed column, "
+        "attribute or argument in the installed version). Print or inspect what the object "
+        "actually has (e.g. table.colnames, dir(obj)) and use that, with a fallback for the "
+        "old name; do not guess another name blindly.",
+    ),
+    (
+        "syntax",
+        r"SyntaxError: |unterminated string literal|IndentationError: ",
+        "The script has a syntax error. Check for backslashes lost in JSON escaping (LaTeX "
+        "such as \\rangle, \\frac, regex escapes): inside JSON every backslash must be "
+        "written as \\\\.",
     ),
     (
         "timeout",
@@ -2977,6 +3042,45 @@ class Lab(LabVerdictMixin):
             raise EmptyReply(getattr(reason, "name", None) or str(reason), cost)
         return resp.text, cost
 
+    def _ask_plan(
+        self, run_id: int, prompt: str, search: bool = False
+    ) -> tuple[dict | None, dict, str]:
+        """Ask for a plan JSON ({"plan", "changes", "notes"}). One retry, telling the model
+        what was wrong, when the reply has no JSON or no complete plan: a single bad reply
+        (runs #36, #38: cut-off JSON, "no usable plan") must not end the repair.
+        Returns (plan or None, the parsed reply, why the last reply was unusable)."""
+        why = ""
+        out: Any = None
+        for attempt in range(2):
+            ask = prompt
+            if attempt:
+                ask = (
+                    prompt
+                    + "\n\nYour previous reply could not be used: "
+                    + why
+                    + ". Reply again with ONLY the JSON block, complete, with every key "
+                    "of the plan (script, resources, install and the rest). Inside JSON "
+                    "strings write every backslash as \\\\ and line breaks as \\n."
+                )
+            try:
+                reply, cost = self._ask(ask, search=search and attempt == 0)
+            except EmptyReply as e:
+                self._add_cost(run_id, e.cost)
+                why = f"the reply was empty ({e.finish})"
+                continue
+            self._add_cost(run_id, cost)
+            try:
+                out = extract_json(reply)
+            except ValueError as e:
+                why = f"its JSON did not parse ({str(e)[:120]})"
+                continue
+            new = _usable_plan(out)
+            if new is not None:
+                new["script"], _ = restore_control_chars(str(new["script"]))
+                return new, out, ""
+            why = "it had no complete plan (script, resources and install are required)"
+        return None, out if isinstance(out, dict) else {}, why
+
     def target(self, name: str | None = None) -> SlurmSSHTarget | None:
         t: SlurmSSHTarget | None
         if name and name in self.targets:
@@ -3539,14 +3643,11 @@ class Lab(LabVerdictMixin):
                 problems="\n".join(f"- {w}" for w in warns),
                 plan=json.dumps(body, indent=1)[:60000],
             )
-            reply, cost = self._ask(prompt, search=False)
-            self._add_cost(run_id, cost)
-            out = extract_json(reply)
-            new = out.get("plan") if isinstance(out, dict) else None
-            if not isinstance(new, dict) or not all(
-                k in new for k in ("script", "resources", "install")
-            ):
-                notes.append("The model returned no usable plan; nothing changed.")
+            new, out, why = self._ask_plan(run_id, prompt)
+            if new is None:
+                notes.append(
+                    f"The model returned no usable plan twice ({why}); nothing changed."
+                )
                 break
             changes += [str(c) for c in out.get("changes") or []][:20]
             if out.get("notes"):
@@ -3658,32 +3759,27 @@ class Lab(LabVerdictMixin):
         new: dict | None = None
         changes: list[str] = []
         notes = ""
+        why = ""
         for attempt in range(2):
-            reply, cost = self._ask(
+            cand, out, why = self._ask_plan(
+                run_id,
                 prompt
                 if attempt == 0
                 else prompt
                 + '\n\nYour previous answer changed the plan but its "changes" list was '
                 'empty. Return the same fix again with one line per change in "changes".',
-                search=False,
             )
-            self._add_cost(run_id, cost)
-            try:
-                out = extract_json(reply)
-            except ValueError:
-                out = None
-            cand = out.get("plan") if isinstance(out, dict) else None
-            if not isinstance(cand, dict) or not all(
-                k in cand for k in ("script", "resources", "install")
-            ):
-                continue
+            if cand is None:
+                break  # already retried inside _ask_plan
             new = cand
-            changes = [str(c) for c in (out.get("changes") or [])][:20]  # type: ignore[union-attr]
-            notes = str(out.get("notes") or "")  # type: ignore[union-attr]
+            changes = [str(c) for c in (out.get("changes") or [])][:20]
+            notes = str(out.get("notes") or "")
             if changes or new == plan:
                 break  # a described fix, or an honest "nothing to fix"
         if new is None:
-            raise ValueError("the model returned no usable plan; nothing changed")
+            raise ValueError(
+                f"the model returned no usable plan twice ({why}); nothing changed"
+            )
         dropped = _dropped_options(plan, new)
         if dropped:
             # Removing an analysis option is how a fix hides an error (run #25: the model
@@ -4469,6 +4565,10 @@ class Lab(LabVerdictMixin):
             if not tgt:
                 raise ValueError("no target")
             self._fresh_catalog(tgt)
+            if not advice:
+                fclass, fadvice = classify_failure(log)
+                if fadvice:
+                    advice = f"({fclass}) {fadvice}"
             extra = (
                 f"Expected output files that were missing or empty: {', '.join(missing)}. "
                 if missing
@@ -4490,19 +4590,21 @@ class Lab(LabVerdictMixin):
                 log=_log_for_fix(log),
                 plan=json.dumps(plan, indent=1)[:60000],
             )
-            reply, cost = self._ask(prompt, search=False)
-            self._add_cost(run_id, cost)
-            out = extract_json(reply)
-            new = out.get("plan") if isinstance(out, dict) else None
-            changes = (
-                [str(c) for c in (out.get("changes") or [])][:20]
-                if isinstance(out, dict)
-                else []
-            )
-            if not isinstance(new, dict) or not all(
-                k in new for k in ("script", "resources", "install")
-            ):
-                raise ValueError("the AI returned no usable plan")
+            new, out, why = self._ask_plan(run_id, prompt)
+            changes = [str(c) for c in (out.get("changes") or [])][:20]
+            if new is None:
+                raise ValueError(f"the AI returned no usable plan twice ({why})")
+            if not changes and self._plan_core(new) != self._plan_core(plan):
+                # changed the plan but did not say what: ask once for the list
+                new2, out2, _ = self._ask_plan(
+                    run_id,
+                    prompt
+                    + '\n\nYour previous answer changed the plan but its "changes" list '
+                    'was empty. Return the same fix with one line per change in "changes".',
+                )
+                if new2 is not None and out2.get("changes"):
+                    new, out = new2, out2
+                    changes = [str(c) for c in (out2.get("changes") or [])][:20]
             if not changes or self._plan_core(new) == self._plan_core(plan):
                 raise ValueError(
                     "the AI found nothing to fix"
@@ -4534,13 +4636,8 @@ class Lab(LabVerdictMixin):
                     + "\n\nYour previous plan:\n"
                     + json.dumps(new, indent=1)[:60000]
                 )
-                reply2, cost2 = self._ask(prompt2, search=False)
-                self._add_cost(run_id, cost2)
-                out2 = extract_json(reply2)
-                new2 = out2.get("plan") if isinstance(out2, dict) else None
-                if isinstance(new2, dict) and all(
-                    k in new2 for k in ("script", "resources", "install")
-                ):
+                new2, out2, _ = self._ask_plan(run_id, prompt2)
+                if new2 is not None:
                     new2["script"], _ = labguard.escape_heredoc_unset_vars(
                         str(new2["script"])
                     )

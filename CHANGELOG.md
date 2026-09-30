@@ -7,6 +7,22 @@ releases.
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-09-30
+
+### Changed
+
+- **Lab self-repair is sturdier.** A pre-flight fix, pilot fix, failed-run fix or
+  automatic re-plan no longer gives up on one bad AI reply: it asks again once, saying
+  what was wrong (broken JSON, incomplete plan, empty reply), and only then fails, with
+  the reason in the error.
+- Plans whose LaTeX or regex backslashes were turned into control characters by JSON
+  escaping are repaired automatically (a split matplotlib label broke a physics run).
+- The fixer recognises more failures and tells the AI what to do: certificate errors on
+  HTTPS downloads, refused or rate-limited downloads, a library whose table column or
+  attribute was renamed, and syntax errors. The pilot fix now gets this diagnosis too.
+- New built-in lessons for the planner: certifi CA bundle for HTTPS on the compute nodes,
+  loc.gov being slow and picky, lightkurve 2.6 quarter column, LaTeX in plot labels.
+
 ## [0.43.2] - 2026-09-30
 
 ### Fixed
