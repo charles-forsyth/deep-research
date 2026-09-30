@@ -13,8 +13,10 @@ def _read(name: str) -> str:
 def test_every_api_call_names_the_workspace():
     app = _read("app.js")
     assert '"X-DR-Workspace": WS.get()' in app
-    # the only direct fetch() is inside api()
+    # the only direct fetch() is inside api(); workspaces.js has one more, the streamed
+    # zip import, which sends no workspace header on purpose (it creates a new one)
     assert app.count("fetch(") == 1
+    assert _read("workspaces.js").count("fetch(") == 1
 
 
 def test_links_that_cannot_send_headers_carry_ws():

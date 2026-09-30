@@ -112,6 +112,36 @@ def handle(args) -> int:
                         + ", ".join(res["sources_reused"])
                     )
             return 0
+        if cmd == "export":
+            from deepresearch.core import wszip
+
+            man = wszip.export(args.id or W.current_slug(), args.output,
+                               include_audio=args.audio, include_uploads=args.uploads)  # fmt: skip
+            man.pop("files", None)
+            if _json(args):
+                _emit(args, man)
+            else:
+                c = man["counts"]
+                print(f"Exported {man['workspace']['name']!r} to {man['path']} "
+                      f"({man['bytes'] / 1e6:.1f} MB): {c['reports']} reports, "
+                      f"{c['projects']} projects, {c['lab_runs']} Lab runs")  # fmt: skip
+            return 0
+        if cmd == "import":
+            from deepresearch.core import wszip
+
+            if args.check:
+                man = wszip.inspect(args.zip)
+                man.pop("files", None)
+                if _json(args):
+                    _emit(args, man)
+                else:
+                    print(f"OK: {man['workspace'].get('name')!r}, {man['counts']}, "
+                          f"{man['unpacked_bytes'] / 1e6:.1f} MB unpacked")  # fmt: skip
+                return 0
+            ws = wszip.import_zip(args.zip, args.name, args.slug)
+            return _done(
+                args, ws, f"Imported as workspace {ws.slug!r} ({ws.name}) at {ws.root}"
+            )
         if cmd == "delete":
             ws = W.get(args.id)
             if ws.is_main:

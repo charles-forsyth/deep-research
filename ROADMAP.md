@@ -5,7 +5,8 @@ Where the project is heading. Items are ideas, not commitments; open an issue to
 ## Next up
 - [x] Workspace switcher in the dashboard top bar (0.41).
 - [x] Copy projects and reports into a workspace (0.42).
-- [ ] **Export and import a workspace as a zip** (0.43), then a Demo workspace.
+- [x] Export and import a workspace as a zip (0.43).
+- [ ] **Demo workspace**: representative projects across disciplines with Lab runs.
 - [ ] **Live collaboration** on a shared workspace (sync), building on the zip export.
 - [ ] **Browse from the CLI**: `deep-research sources browse-place drive:gd` to pick Drive files without the dashboard.
 - [ ] **AWS S3 with credentials** in the file browser (needs an AWS profile or rclone S3 remote on this machine).
