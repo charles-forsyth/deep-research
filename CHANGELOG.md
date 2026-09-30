@@ -7,6 +7,17 @@ releases.
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-09-30
+
+### Added
+
+- **Export and import a workspace as a zip**, to share or keep a snapshot. Export .zip /
+  Import .zip in the Workspaces dialog, or `deep-research workspace export|import`.
+  Export leaves the workspace untouched and removes local sign-in references and saved
+  search-index ids from the copy; no API key or cluster settings are ever included.
+  Import always creates a new workspace and checks the zip first (file paths, links,
+  sizes, checksums against its manifest, database integrity); a bad zip adds nothing.
+
 ## [0.42.0] - 2026-09-30
 
 ### Added

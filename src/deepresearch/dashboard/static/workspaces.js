@@ -50,6 +50,8 @@ const WSUI = {
       <div class="ws-acts">
         <button class="btn small primary" data-x="new">+ New workspace</button>
         <button class="btn small" data-x="dup" title="Copy this whole workspace">Duplicate current</button>
+        <button class="btn small" data-x="export" title="Download this workspace as a .zip to share or keep">Export .zip</button>
+        <button class="btn small" data-x="import" title="Create a new workspace from a .zip">Import .zip\u2026</button>
         ${cur !== "main" ? `<button class="btn small" data-x="rename">Rename</button><button class="btn small" data-x="archive">Archive</button><button class="btn small danger" data-x="delete">Delete\u2026</button>` : ""}
       </div>`, { label: "Workspaces", cls: "ws-modal" });
     const m = $("#modal");
@@ -61,9 +63,46 @@ const WSUI = {
     m.querySelector('[data-x="close"]').onclick = () => MODAL.close();
     m.querySelector('[data-x="new"]').onclick = () => this.create();
     m.querySelector('[data-x="dup"]').onclick = () => this.duplicate();
+    m.querySelector('[data-x="export"]').onclick = () => this.exportZip();
+    m.querySelector('[data-x="import"]').onclick = () => this.importZip();
     m.querySelector('[data-x="rename"]')?.addEventListener("click", () => this.rename());
     m.querySelector('[data-x="archive"]')?.addEventListener("click", () => this.archive());
     m.querySelector('[data-x="delete"]')?.addEventListener("click", () => this.remove());
+  },
+
+  // ---- export / import (v0.43) ---------------------------------------------
+  exportZip() {
+    const cur = this.list.find((w) => w.slug === WS.get()) || { name: "Main", slug: "main" };
+    const m = this.form(`Export ${cur.name}`, `
+      <p style="font-size:12.5px">Downloads a <span class="mono">.zip</span> with this workspace's reports, projects, notes, notebooks, Lab runs and their outputs, and data sources. No API key or cluster settings are included; saved search-index ids and local sign-in references are removed from the copy.</p>
+      <label style="font-size:12.5px"><input type="checkbox" id="wx-audio"> Include generated audio (larger file)</label>`, "Download");
+    const ok = m.querySelector('[data-x="ok"]');
+    ok.onclick = () => {
+      const a = $("#wx-audio").checked ? "?audio=1" : "";
+      window.location.href = `/api/workspaces/${cur.slug}/export${a}`;
+      toast("Building the zip; the download starts when it is ready", "ok");
+      MODAL.close();
+    };
+  },
+
+  importZip() {
+    const m = this.form("Import a workspace", `
+      <p style="font-size:12.5px">Creates a <b>new</b> workspace from a <span class="mono">.zip</span> exported by deep-research. Nothing existing is changed or overwritten. The zip is checked (paths, sizes, checksums, database integrity) before anything is added.</p>
+      <div class="field"><label for="wi-file">Zip file</label><input id="wi-file" type="file" accept=".zip,application/zip"></div>
+      <div class="field"><label for="wi-name">Name <span class="dim">(optional; default from the zip)</span></label><input id="wi-name" maxlength="80"></div>`, "Import");
+    const ok = m.querySelector('[data-x="ok"]');
+    ok.onclick = () => busy(ok, async () => {
+      const f = $("#wi-file").files[0];
+      if (!f) { toast("Choose a .zip file", "err"); return; }
+      const name = $("#wi-name").value.trim();
+      const res = await fetch(`/api/workspaces/import${name ? "?name=" + encodeURIComponent(name) : ""}`, {
+        method: "POST", headers: { "Content-Type": "application/zip" }, body: f,
+      });
+      let d = null; try { d = await res.json(); } catch { /* empty */ }
+      if (!res.ok) throw new Error((d && d.error) || `${res.status} ${res.statusText}`);
+      toast(`Imported as ${d.name}`, "ok");
+      this.switchTo(d.slug);
+    });
   },
 
   // ---- copy into another workspace (v0.42) -----------------------------

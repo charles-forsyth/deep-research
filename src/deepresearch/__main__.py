@@ -383,6 +383,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Only show what would be copied"
     )
     _add_json(p)
+    p = ws_sub.add_parser("export", help="Save a workspace as a .zip to share or keep")
+    p.add_argument(
+        "id", nargs="?", help="Workspace to export (default: the current one)"
+    )
+    p.add_argument("-o", "--output", default=".", help="File or folder (default: here)")
+    p.add_argument(
+        "--audio", action="store_true", help="Include generated audio (large)"
+    )
+    p.add_argument("--uploads", action="store_true", help="Include uploaded files")
+    _add_json(p)
+    p = ws_sub.add_parser(
+        "import", help="Create a new workspace from a .zip (never overwrites one)"
+    )
+    p.add_argument("zip", help="Path to a workspace .zip")
+    p.add_argument("--name", help="Name for the new workspace (default: from the zip)")
+    p.add_argument("--id", dest="slug", help="Id for the new workspace")
+    p.add_argument(
+        "--check", action="store_true", help="Only check the zip; import nothing"
+    )
+    _add_json(p)
     p = ws_sub.add_parser(
         "delete",
         help="Move a workspace to workspaces/.trash (never main; nothing is erased)",

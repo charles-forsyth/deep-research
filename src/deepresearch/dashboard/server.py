@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import traceback
+import zipfile
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +36,7 @@ from deepresearch.dashboard.projects import ProjectStore
 from deepresearch.dashboard.store import DashboardStore
 
 MAX_BODY = 25 * 1024 * 1024  # uploads are base64 in JSON
+MAX_IMPORT = 5 * 1024**3  # workspace zips are streamed, not JSON
 LOG_DIR = Path(xdg_config_home) / "deepresearch" / "logs"
 UPLOAD_DIR = Path(xdg_config_home) / "deepresearch" / "uploads"
 AUDIO_DIR = Path(xdg_config_home) / "deepresearch" / "audio"
@@ -281,6 +283,7 @@ class Api(ProjectApi):
         r("DELETE", r"/api/workspaces/([a-z0-9-]+)", self.ws_delete)
         r("POST", r"/api/workspaces/copy/plan", self.ws_copy_plan)
         r("POST", r"/api/workspaces/copy", self.ws_copy)
+        r("GET", r"/api/workspaces/([a-z0-9-]+)/export", self.ws_export)
         r("GET", r"/api/stats", self.stats)
         r("GET", r"/api/sessions", self.list_sessions)
         r("GET", r"/api/sessions/(\d+)", self.get_session)
@@ -537,6 +540,41 @@ class Api(ProjectApi):
             return wscopy.copy(src, dst, projects, reports)
         except (W.WorkspaceError, wscopy.CopyError) as e:
             raise ApiError(400, str(e)) from e
+
+    def ws_export(self, slug, query, body):
+        """Download a workspace as a zip (built in a temp file, streamed back)."""
+        import tempfile
+
+        from deepresearch.core import workspace as W
+        from deepresearch.core import wszip
+
+        self._ws_enabled()
+        audio = (query.get("audio") or ["0"])[0] == "1"
+        with tempfile.TemporaryDirectory(prefix="drws-dl-") as tmp:
+            try:
+                man = wszip.export(slug, tmp, include_audio=audio)
+            except (W.WorkspaceError, wszip.ZipError) as e:
+                raise ApiError(400, str(e)) from e
+            p = Path(man["path"])
+            if p.stat().st_size > 2 * 1024**3:
+                raise ApiError(
+                    413,
+                    "Too large to download here; use `deep-research workspace export`",
+                )
+            data = p.read_bytes()
+        return RawResponse(data, "application/zip", p.name, inline=False)
+
+    def ws_import_file(self, path: Path, name: str | None) -> dict:
+        """Import an uploaded zip (the handler streams it to `path`)."""
+        from deepresearch.core import workspace as W
+        from deepresearch.core import wszip
+
+        self._ws_enabled()
+        try:
+            ws = wszip.import_zip(path, name or None)
+        except (W.WorkspaceError, wszip.ZipError, zipfile.BadZipFile) as e:
+            raise ApiError(400, str(e)) from e
+        return ws.to_dict()
 
     def dispatch(
         self, method: str, path: str, query: dict, body: Any,
@@ -2039,6 +2077,8 @@ def make_handler(api: Api, local_only: bool = False):
                 return self._static(url.path)
             body = None
             length = int(self.headers.get("Content-Length") or 0)
+            if method == "POST" and url.path == "/api/workspaces/import":
+                return self._import_upload(length, parse_qs(url.query))
             if length > MAX_BODY:
                 return self._json(413, {"error": "Request too large"})
             if method != "GET":
@@ -2073,6 +2113,38 @@ def make_handler(api: Api, local_only: bool = False):
             except Exception as e:
                 traceback.print_exc()
                 self._json(500, {"error": f"{type(e).__name__}: {e}"})
+
+        def _import_upload(self, length: int, q: dict) -> None:
+            """A workspace zip, streamed to a temp file (larger than MAX_BODY allows).
+            Same-origin rule as other writes; the zip is checked by wszip before use."""
+            import tempfile
+
+            origin = self.headers.get("Origin")
+            if origin and urlparse(origin).netloc.lower() != (
+                self.headers.get("Host", "").lower()
+            ):
+                return self._json(403, {"error": "Cross-origin request refused"})
+            if self.headers.get("Content-Type", "") != "application/zip":
+                return self._json(415, {"error": "Send the file as application/zip"})
+            if not 0 < length <= MAX_IMPORT:
+                return self._json(413, {"error": "Zip is empty or too large"})
+            with tempfile.NamedTemporaryFile(prefix="drws-up-", suffix=".zip") as f:
+                left = length
+                while left:
+                    chunk = self.rfile.read(min(1 << 20, left))
+                    if not chunk:
+                        return self._json(400, {"error": "Upload ended early"})
+                    f.write(chunk)
+                    left -= len(chunk)
+                f.flush()
+                try:
+                    obj = api.ws_import_file(Path(f.name), (q.get("name") or [""])[0])
+                except ApiError as e:
+                    return self._json(e.status, {"error": e.message})
+                except Exception as e:
+                    traceback.print_exc()
+                    return self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            self._json(200, obj)
 
         def _raw(self, obj: "RawResponse") -> None:
             data, total = obj.data, len(obj.data)

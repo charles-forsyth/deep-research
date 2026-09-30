@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.42.0 (package `deepresearch`) |
+| Applies to | deep-research v0.43.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -2148,9 +2148,50 @@ dst, projects, sessions)` does it.
   failed copy leaves the target's data unchanged, bad requests refused, copies
   independent).
 
-### 23.8 Planned
+### 23.8 Export and import as a zip (v0.43.0)
 
-v0.43 export and import a workspace as a zip (import always creates a new workspace).
+`core/wszip.py`. A workspace zip (`<id>-<date>.drws.zip`) holds `manifest.json`
+(format `deep-research-workspace` v1, app version, workspace name/description/colour,
+counts, what is included, sha256 and size of every file), `history.db` (consistent
+SQLite copy) and `lab/` (fetched outputs); `audio/` and `uploads/` only on request.
+
+- **Export never changes the workspace.** The DB copy is scrubbed: session `pid`,
+  data source `auth_ref` and `options.store` / `store_hash` / `db_path` (Gemini index ids
+  are tied to the exporter's API key), and audio rows when audio is left out; then
+  `VACUUM` so removed values are not left in free pages. Nothing machine-wide is ever
+  included (no `.env`, API key, `lab_targets.json`, catalogs or lessons). Written to a
+  `.part` file and renamed when complete.
+- **Import treats the zip as untrusted** and always creates a new workspace (id from the
+  name, `-2`, `-3`... if taken; an explicit `--id` that exists is refused). Before anything
+  is added: it must be a zip with a valid manifest of this format (a newer format version
+  is refused); every member name must be relative, without `..`, backslashes or NUL, and
+  under `history.db`, `manifest.json`, `lab/`, `audio/` or `uploads/`; no symlinks or
+  special files; at most 5 GB unpacked and 200,000 files; no member with a compression
+  ratio above 200; the member list must equal the manifest's; each file is unpacked into
+  a hidden `workspaces/.import-*` folder, checked against its size and sha256, and its
+  resolved path must stay inside that folder; `history.db` must pass `PRAGMA
+  integrity_check` and have a `sessions` table. Only then is the folder renamed into place
+  (atomic); on any error it is removed. After import: process ids cleared, running reports
+  become crashed, in-flight Lab runs become drafts without a job id, audio paths point at
+  the new folder (rows without a file are dropped). `workspace.json` records
+  `imported_from`, `imported_at` and `source_app_version`.
+- CLI: `workspace export [ID] [-o FILE|DIR] [--audio] [--uploads]`, `workspace import ZIP
+  [--name] [--id] [--check]` (`--check` validates only).
+- API: `GET /api/workspaces/{id}/export[?audio=1]` (zip download; over 2 GB points to the
+  CLI). `POST /api/workspaces/import[?name=]` with body `application/zip`, streamed to a
+  temp file by the HTTP handler (not JSON, up to 5 GB), same-origin rule as other writes.
+- UI: Export .zip and Import .zip... in the Workspaces dialog; import opens the new
+  workspace.
+- Tests: `tests/core/test_wszip.py` (round trip; export leaves the workspace unchanged;
+  scrub; audio optional and repointed; path traversal, absolute paths, backslashes,
+  unexpected folders; symlinks; tampered file; manifest mismatch; not a workspace zip;
+  newer format; corrupt DB; compression ratio; nothing added on any failure; dashboard
+  download and streamed upload; wrong content type 415; cross-origin 403).
+
+### 23.9 Not yet
+
+Live collaboration (syncing a shared workspace between people) is an idea for later,
+building on the zip format.
 
 ## Document history
 
@@ -2191,6 +2232,7 @@ v0.43 export and import a workspace as a zip (import always creates a new worksp
 | 2026-09-30 | v0.40.0 | Workspaces foundation (23): separate libraries, Main unmoved, `--workspace`, `workspace` commands, per-request dashboard context, per-workspace cluster folders and task names. |
 | 2026-09-30 | v0.41.0 | Workspace switcher in the top bar (23.6), subtle tint outside Main. |
 | 2026-09-30 | v0.42.0 | Copy projects and reports into another workspace (23.7). |
+| 2026-09-30 | v0.43.0 | Export and import a workspace as a zip (23.8). |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |
