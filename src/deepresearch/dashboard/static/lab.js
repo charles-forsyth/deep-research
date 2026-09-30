@@ -222,7 +222,7 @@ const LAB = {
     return String(md || "").replace(/\$([^$\n]*\\[A-Za-z][^$\n]*)\$/g, (m, inner) => inner.replace(/\\([A-Za-z]+)/g, (t, w) => map[w] ?? t).replace(/[{}]/g, "").replace(/\^(\w)/g, "^$1"));
   },
 
-  fileUrl(id, path) { return `/api/lab/${id}/file?path=${encodeURIComponent(path)}`; },
+  fileUrl(id, path) { return WS.q(`/api/lab/${id}/file?path=${encodeURIComponent(path)}`); },
   size(n) { n = +n || 0; return n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : n > 1e3 ? Math.round(n / 1e3) + " KB" : n + " B"; },
 
   wire(el, s, r) {

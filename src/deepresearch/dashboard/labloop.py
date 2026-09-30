@@ -29,7 +29,9 @@ from typing import Any
 from deepresearch.dashboard import labverdict
 
 NOTE_PREFIX = "Lab run #"
-_AUTO_REPLANNING: set[int] = set()  # run ids whose re-plan runs in this process
+_AUTO_REPLANNING: set[tuple[str, int]] = (
+    set()
+)  # run ids whose re-plan runs in this process
 
 REPLAN_PROMPT = """A computational job you planned to test a claim from a research report
 ran and was INCONCLUSIVE: the test could not tell whether the claim holds.
@@ -235,9 +237,10 @@ class LabVerdictMixin:
 
     def _maybe_auto_replan(self, run: dict, pilot: bool = False) -> bool:
         """Start the one automatic re-plan in the background. True when started."""
-        if run["id"] in _AUTO_REPLANNING or not self._auto_replan_allowed(run):
+        key = self._key(run["id"])  # type: ignore[attr-defined]
+        if key in _AUTO_REPLANNING or not self._auto_replan_allowed(run):
             return False
-        _AUTO_REPLANNING.add(run["id"])
+        _AUTO_REPLANNING.add(key)
         threading.Thread(
             target=self._auto_replan, args=(run["id"], pilot), daemon=True
         ).start()
@@ -255,7 +258,7 @@ class LabVerdictMixin:
                     error=f"automatic re-plan failed: {str(e)[:300]}",
                 )  # fmt: skip
         finally:
-            _AUTO_REPLANNING.discard(run_id)
+            _AUTO_REPLANNING.discard(self._key(run_id))  # type: ignore[attr-defined]
 
     def replan_prompt(self, run: dict, assessment: dict, log: str) -> str:
         from deepresearch.dashboard import labguard

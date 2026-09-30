@@ -8,9 +8,20 @@ from deepresearch.storage.database import DatabaseSchema
 from deepresearch.core.config import user_db_path
 
 
+def _workspace_db() -> str | None:
+    """The current workspace's DB, or None for Main (so tests that patch
+    user_db_path keep working and Main keeps its original path)."""
+    from deepresearch.core import workspace
+
+    if workspace.current_slug() == workspace.MAIN:
+        return None
+    return workspace.db_path()
+
+
 class SessionManager:
-    def __init__(self, db_path: str = user_db_path):
-        self.db_path = db_path
+    def __init__(self, db_path: str | None = None):
+        # None = the current workspace's DB (Main unless --workspace / DR_WORKSPACE)
+        self.db_path: str = db_path or _workspace_db() or user_db_path
         DatabaseSchema.init_db(self.db_path)
 
     @db_retry()

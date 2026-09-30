@@ -1,4 +1,5 @@
 import sys
+import json
 import argparse
 from pydantic import ValidationError
 
@@ -141,6 +142,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "-v", "--version", action="version", version=f"%(prog)s {get_version()}"
+    )
+
+    parser.add_argument(
+        "-W",
+        "--workspace",
+        metavar="ID",
+        help="Use this workspace (a separate library of reports, projects, notes, Lab "
+        "runs and data sources). Default: $DR_WORKSPACE, else main. See `deep-research "
+        "workspace list`.",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
@@ -323,6 +333,50 @@ def build_parser() -> argparse.ArgumentParser:
         "--upload", nargs="+", help="Files or folders you plan to upload"
     )
 
+    parser_ws = subparsers.add_parser(
+        "workspace",
+        help="List, create, rename, archive or delete workspaces",
+        description=(
+            "Workspaces are separate libraries: each has its own reports, projects, "
+            "notes, notebooks, Lab runs, data sources and audio. 'main' is the original "
+            "library in ~/.config/deepresearch and is never moved. Others live in "
+            "~/.config/deepresearch/workspaces/<id>/. The Gemini key, cluster settings "
+            "and the Lab's learned lessons are shared. Pick one for any command with "
+            "--workspace ID (or DR_WORKSPACE=ID)."
+        ),
+    )
+    ws_sub = parser_ws.add_subparsers(dest="ws_command")
+    p = ws_sub.add_parser("list", help="List workspaces with their size and counts")
+    p.add_argument("--all", action="store_true", help="Include archived workspaces")
+    _add_json(p)
+    p = ws_sub.add_parser("create", help="Create a new, empty workspace")
+    p.add_argument("name", help="Display name, e.g. 'Demo'")
+    p.add_argument("--id", dest="slug", help="Id (default: from the name)")
+    p.add_argument("--description", default="")
+    _add_json(p)
+    p = ws_sub.add_parser("duplicate", help="Copy a whole workspace under a new name")
+    p.add_argument("source", help="Workspace id to copy (only read)")
+    p.add_argument("name", help="Name of the copy")
+    p.add_argument("--id", dest="slug")
+    _add_json(p)
+    p = ws_sub.add_parser("rename", help="Change a workspace's display name")
+    p.add_argument("id")
+    p.add_argument("name")
+    _add_json(p)
+    for verb, h in (("archive", "Hide a workspace from the switcher (keeps it)"),
+                    ("unarchive", "Show an archived workspace again")):  # fmt: skip
+        p = ws_sub.add_parser(verb, help=h)
+        p.add_argument("id")
+        _add_json(p)
+    p = ws_sub.add_parser(
+        "delete",
+        help="Move a workspace to workspaces/.trash (never main; nothing is erased)",
+    )
+    p.add_argument("id")
+    p.add_argument("--yes", action="store_true", help="Do not ask to confirm")
+    _add_json(p)
+    _add_json(parser_ws)
+
     parser_dash = subparsers.add_parser(
         "dashboard",
         help="Run the web dashboard (research workstation) in the background",
@@ -468,16 +522,36 @@ def main():
         "estimate",
         "dashboard",
         "sources",
+        "workspace",
+        "-W",
+        "--workspace",
         "-h",
         "--help",
         "-v",
         "--version",
     }
 
-    if len(sys.argv) > 1 and sys.argv[1] not in known_commands:
-        sys.argv.insert(1, "research")
+    # a leading --workspace/-W (with its value) comes before the command
+    first = 1
+    while len(sys.argv) > first and sys.argv[first] in ("-W", "--workspace"):
+        first += 2
+    if len(sys.argv) > first and sys.argv[first].startswith("--workspace="):
+        first += 1
+    if len(sys.argv) > first and sys.argv[first] not in known_commands:
+        sys.argv.insert(first, "research")
 
     args = parser.parse_args()
+
+    if getattr(args, "workspace", None):
+        from deepresearch.core import workspace
+
+        try:
+            workspace.use(args.workspace)
+        except workspace.WorkspaceError as e:
+            print(f"[ERROR] {e}", file=sys.stderr)
+            if _json_flag(args):
+                print(json.dumps({"error": str(e)}))
+            sys.exit(2)
 
     if not args.command:
         parser.print_help()
@@ -524,6 +598,12 @@ def _dispatch(parser: argparse.ArgumentParser, args, as_json: bool) -> None:
             handle_auth(args)
         elif args.command == "estimate":
             handle_estimate(args)
+        elif args.command == "workspace":
+            from deepresearch.cli.workspaces import handle as handle_ws
+
+            code = handle_ws(args)
+            if code:
+                sys.exit(code)
         elif args.command == "sources":
             from deepresearch.cli.sources import handle as handle_sources
 

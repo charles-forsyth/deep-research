@@ -511,7 +511,9 @@ class InternalAdapter(SourceAdapter):
         from deepresearch.core.config import user_db_path
         from deepresearch.dashboard.store import DashboardStore
 
-        db = self.s.options.get("db_path") or user_db_path
+        from deepresearch.core.session import _workspace_db
+
+        db = self.s.options.get("db_path") or _workspace_db() or user_db_path
         ref = int(str(self.s.uri).split(":")[-1])
         if self.s.kind == "report":
             import sqlite3

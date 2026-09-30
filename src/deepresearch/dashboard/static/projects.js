@@ -333,7 +333,7 @@ const PROJ = {
       const f = e.target.value; e.target.value = ""; if (!f) return;
       if (f.startsWith("brief:")) return this.brief(p, f.slice(6), reload);
       if (f === "audio") return this.audio(p);
-      if (f === "zip") { window.location.href = `/api/projects/${p.id}/export?format=zip`; return toast("Building the research package\u2026"); }
+      if (f === "zip") { window.location.href = WS.q(`/api/projects/${p.id}/export?format=zip`); return toast("Building the research package\u2026"); }
       if (f === "html" || f === "print") {
         const o = await api(`/api/projects/${p.id}/export?format=md`);
         const html = standaloneHtml(p.title, `<article class="md">${renderMd(o.content)}</article>`);

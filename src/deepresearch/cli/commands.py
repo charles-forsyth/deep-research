@@ -26,6 +26,21 @@ from deepresearch.cli.jsonout import json_flag as _json_flag
 console = Console(width=120)
 
 
+def _db() -> str:
+    """The current workspace's history DB (Main: the module's user_db_path)."""
+    from deepresearch.core.session import _workspace_db
+
+    return _workspace_db() or user_db_path
+
+
+def _logs_dir() -> str:
+    from deepresearch.core import workspace
+
+    if workspace.current_slug() == workspace.MAIN:
+        return os.path.join(xdg_config_home, "deepresearch", "logs")
+    return str(workspace.get().logs_dir)
+
+
 def detach_process(args_list: list[str], log_path: str) -> int:
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     with open(log_path, "a") as log_file:
@@ -57,7 +72,7 @@ def _source_uploads(args) -> list[str] | None:
     from deepresearch.sources.index import index_state, stores_for
     from deepresearch.sources.usage import research_uploads, resolve
 
-    reg = SourceRegistry(user_db_path)
+    reg = SourceRegistry(_db())
     srcs = resolve(reg, names)
     client = None
     if any(index_state(s) != "none" for s in srcs):
@@ -78,7 +93,7 @@ def _record_source_use(args, session_id) -> None:
         return
     from deepresearch.sources import SourceRegistry
 
-    reg = SourceRegistry(user_db_path)
+    reg = SourceRegistry(_db())
     for n in names:
         s = reg.get(n)
         if s:
@@ -312,9 +327,7 @@ def handle_start(args):
     child_args += ["--depth", str(args.depth)]
     child_args += ["--breadth", str(args.breadth)]
 
-    log_file = os.path.join(
-        xdg_config_home, "deepresearch", "logs", f"session_{sid}.log"
-    )
+    log_file = os.path.join(_logs_dir(), f"session_{sid}.log")
     pid = detach_process(child_args, log_file)
     mgr.update_session_pid(sid, pid)
 
@@ -350,9 +363,7 @@ def handle_followup(args):
         from deepresearch.sources.usage import ask_prompt, resolve
 
         try:
-            prompt = ask_prompt(
-                args.prompt, resolve(SourceRegistry(user_db_path), names)
-            )
+            prompt = ask_prompt(args.prompt, resolve(SourceRegistry(_db()), names))
         except Exception as e:
             print(f"[ERROR] {e}")
             if as_json:
@@ -425,7 +436,7 @@ def _show_json(args, mgr: SessionManager) -> None:
     from deepresearch.sources.provenance import session_provenance
 
     d = session_dict(session, result=True)
-    d["provenance"] = session_provenance(user_db_path, dict(session))
+    d["provenance"] = session_provenance(_db(), dict(session))
     if args.recursive:
         d["children"] = [
             _tree_node(mgr, c, result=True) for c in mgr.get_children(session["id"])
@@ -489,7 +500,7 @@ def handle_show(args):
     else:
         from deepresearch.sources.provenance import session_provenance
 
-        prov = session_provenance(user_db_path, dict(session))
+        prov = session_provenance(_db(), dict(session))
         used = ", ".join(
             f"{d['name']}@{(d['manifest_hash'] or '')[:8]}" for d in prov["sources"]
         )
@@ -526,11 +537,10 @@ def handle_show(args):
 def handle_repair(args):
     """Restore reports that were saved with only their last part."""
     from deepresearch.core import repair
-    from deepresearch.core.config import user_db_path
 
     cfg = DeepResearchConfig()
     client = genai.Client(api_key=cfg.api_key)
-    db = SessionManager().db_path or user_db_path
+    db = SessionManager().db_path or _db()
     plans = repair.scan(db, client, ids=args.ids or None)
     fixed = repair.apply(db, plans) if args.apply else 0
     resynth: list[int] = []
@@ -722,7 +732,7 @@ def _protected_stores() -> set[str]:
 
         return {
             str(s.options.get("store"))
-            for s in SourceRegistry(user_db_path).list(include_temporary=True)
+            for s in SourceRegistry(_db()).list(include_temporary=True)
             if s.options.get("store")
         }
     except Exception:

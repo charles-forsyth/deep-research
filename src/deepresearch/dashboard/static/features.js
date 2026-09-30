@@ -238,10 +238,10 @@ const AUDIO = {
   player(a, title) {
     let p = $("#audio-player");
     if (!p) { p = document.createElement("div"); p.id = "audio-player"; document.body.appendChild(p); }
-    const url = `/api/audio/${a.id}/file`;
+    const url = WS.q(`/api/audio/${a.id}/file`);
     p.innerHTML = `<div class="ap-title"><b>${a.mode === "summary" ? "Summary" : "Full report"}</b> \u00b7 ${esc(clip(title || "", 60))} \u00b7 ${esc(a.voice)} \u00b7 ${AUDIO.fmt(a.seconds)}${a.cost_usd != null ? ` \u00b7 $${(+a.cost_usd).toFixed(2)}` : ""}</div>
       <audio controls autoplay preload="auto" src="${url}"></audio>
-      <div class="ap-acts"><a class="btn small" href="${url}?download=1" download>Download</a>${a.script ? '<button class="btn small" data-ap="script">Script</button>' : ""}<button class="btn small" data-ap="min" title="Minimize">\u2013</button><button class="btn small" data-ap="x" title="Close">\u00d7</button></div>`;
+      <div class="ap-acts"><a class="btn small" href="${url}${url.includes("?") ? "&" : "?"}download=1" download>Download</a>${a.script ? '<button class="btn small" data-ap="script">Script</button>' : ""}<button class="btn small" data-ap="min" title="Minimize">\u2013</button><button class="btn small" data-ap="x" title="Close">\u00d7</button></div>`;
     p.classList.remove("min");
     p.querySelector('[data-ap="min"]').onclick = (e) => { e.stopPropagation(); p.classList.toggle("min"); };
     p.querySelector(".ap-title").onclick = () => p.classList.remove("min");

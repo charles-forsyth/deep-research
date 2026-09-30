@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.39.0 (package `deepresearch`) |
+| Applies to | deep-research v0.40.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -37,6 +37,7 @@ in [section 17](#17-known-gaps-and-limitations).
 20. [Lab runs](#20-lab-runs)
 21. [Data sources](#21-data-sources)
 22. [Projects](#22-projects)
+23. [Workspaces](#23-workspaces)
 
 ---
 
@@ -1993,6 +1994,109 @@ project's centroid (cosine >= 0.72).
   they finished) are not clustered until a search or project Ask embeds them.
 - The CLI has no `projects` command yet; projects are managed in the dashboard.
 
+## 23. Workspaces
+
+Added in v0.40.0 (design: nexus `2026-09-30_Deep_Research_Workspaces_Design.md`). Module
+`core/workspace.py`; CLI `cli/workspaces.py`.
+
+A workspace is a separate library: its own reports and follow-ups, projects, notes,
+notebooks, Lab runs and their outputs, data sources, audio and cost history. Used for a
+clean demo library, per-collaboration libraries, and (later) sharing by zip.
+
+### 23.1 Layout; Main is never moved
+
+| Workspace | Folder | DB |
+|---|---|---|
+| `main` | `~/.config/deepresearch/` (unchanged since before v0.40.0) | `history.db` there |
+| any other id | `~/.config/deepresearch/workspaces/<id>/` | `workspaces/<id>/history.db` |
+
+Each non-Main folder holds `workspace.json` (name, colour, archived, created_at,
+description), `history.db`, `lab/`, `audio/`, `uploads/`, `logs/`. Main's metadata (only
+written once it is changed) is `workspaces/main.json`, so Main's own folder is not
+touched. Shared by all workspaces: `.env` (Gemini key), `lab_targets.json`,
+`catalog-*.json`, `lab_pitfalls.json` (learned lessons), `dashboard.pid`,
+`dashboard_remote`, `logs/dashboard.log`.
+
+- Ids: 1-40 characters `[a-z0-9-]`, not starting or ending with `-`; `main` is reserved.
+  Creating never reuses an existing folder.
+- Main cannot be deleted, archived or given away. Deleting any other workspace moves its
+  folder to `workspaces/.trash/<id>-<timestamp>`; nothing is erased.
+- Duplicate: a consistent SQLite copy (online backup API) plus `lab/` and `audio/`; audio
+  paths are rewritten to the copy's folder; the source is only read. A failed duplicate
+  moves the half-made copy to the trash.
+
+### 23.2 Which workspace is used
+
+- CLI: global `-W/--workspace ID` before the command (validated; an unknown id exits 2 and
+  creates nothing), else `DR_WORKSPACE`, else `main`. `workspace.use()` sets
+  `DR_WORKSPACE` so detached children (`start`, background research) inherit it.
+  `SessionManager()`, `SourceRegistry()`, `DashboardStore()` and the internal report and
+  notebook sources default to the current workspace's DB; Main keeps `user_db_path`.
+  Session logs go to the workspace's `logs/`.
+- Dashboard (`serve()` runs with `workspaces=True`): each request names its workspace in
+  the `X-DR-Workspace` header (links that cannot send headers use `?ws=`); default Main.
+  `Api` keeps one `WorkspaceContext` per workspace (DB, SessionManager, DashboardStore,
+  Features with that workspace's audio folder, Lab with its results folder, SourceRegistry,
+  ProjectStore, log and upload folders) and a thread-local selects it per request, so
+  every handler runs unchanged in any workspace. An unknown id is 404; an archived one 409.
+  Tests and embedded servers built with `Api(db)` stay single-library (Main only).
+- Research started from the dashboard in a workspace is spawned as
+  `deep-research --workspace <id> research ... --adopt-session N`, so it writes to the
+  workspace it began in whatever the dashboard shows later. Follow-ups use the request's
+  DB (`DeepResearchAgent(db_path=...)`).
+- The client stores the chosen workspace in `localStorage["dr.workspace"]`, sends the
+  header on every `api()` call, adds `?ws=` to audio, Lab file and project zip links, and
+  keeps open tabs per workspace (`dr.tabs.v1@<id>`).
+
+### 23.3 Lab runs across workspaces (collision rules)
+
+- Cluster folders: Main keeps `<remote_root>/run_<id>`; another workspace's runs live in
+  `<remote_root>/ws-<id>/run_<n>` (`ScopedTarget`, a per-workspace view of the shared
+  `SlurmSSHTarget`: same SSH connection, catalog and warm worker). Before v0.40.0 a second
+  history DB restarted run ids at 1 and could reuse Main's folders (the 2026-09-26 run_1
+  overwrite); that cannot happen between workspaces now.
+- Warm-node task names get the workspace (`demo-full-3`, `demo-smoke-3-1`); Slurm job names
+  too (`lab-demo-3-...`). Main's names are unchanged.
+- The process-wide in-flight sets (`_IN_FLIGHT`, `_SMOKE_FIXING`, `_AUTO_REPLANNING`) are
+  keyed by (workspace, run id).
+- On start the dashboard resumes a Lab watcher for every non-archived workspace with runs
+  in flight (`Api.start_watchers`), so jobs keep being watched and written up in a
+  workspace nobody is viewing.
+- Installed environments (`envs/`) and staged data (`data/<name>-<hash>`, content
+  addressed) stay shared on the cluster.
+- Data source indexes: the Gemini File Search store is always found by its id
+  (`options.store`), so two workspaces with a source of the same name never share or delete
+  each other's index; the display name gains the workspace (`deep-research-source-<ws>-<name>`)
+  outside Main.
+
+### 23.4 CLI and API
+
+| CLI | API | |
+|---|---|---|
+| `workspace list [--all] [--json]` | `GET /api/workspaces` | name, colour, counts (reports, projects, Lab runs, sources), size, archived, current, active Lab runs |
+| `workspace create NAME [--id ID]` | `POST /api/workspaces` `{name, id?, color?, description?}` | new empty workspace |
+| `workspace duplicate SRC NAME [--id]` | `POST /api/workspaces/{id}/duplicate` | full copy |
+| `workspace rename ID NAME` / `archive` / `unarchive` | `PATCH /api/workspaces/{id}` `{name?, color?, archived?, description?}` | |
+| `workspace delete ID [--yes]` | `DELETE /api/workspaces/{id}` `{confirm: id}` | to trash; refused for Main and while Lab runs are active |
+
+`GET /api/health` reports the request's `workspace`.
+
+### 23.5 Tests
+
+`tests/core/test_workspaces.py`: Main is the default and creating another leaves every
+file in Main's folder byte-identical; id rules; Main protected; delete moves to trash;
+CLI objects and `--workspace`; unknown ids refused and never created; scoped cluster
+folders, task and job names, keyed in-flight sets; dashboard requests see only their
+workspace; research spawned in a workspace carries `--workspace` and logs there; single-
+library mode; duplicate leaves the source unchanged and rewrites audio paths.
+`tests/conftest.py` clears `DR_WORKSPACE` around every test.
+
+### 23.6 Planned
+
+v0.41 top-bar switcher (subtle tint outside Main); v0.42 copy projects and reports into
+another workspace; v0.43 export and import a workspace as a zip (import always creates a
+new workspace).
+
 ## Document history
 
 | Date | Version | Change |
@@ -2029,6 +2133,7 @@ project's centroid (cosine >= 0.72).
 | 2026-09-30 | v0.38.1 | Phone layout fix: app column capped at the screen width; phone rules for Lab runs, Data sources, project stats, launch dialog. |
 | 2026-09-30 | v0.38.2 | Report text is every `model_output` part joined (was only the last); `deep-research repair`; audio cache keyed on text hash; summary audio scales with length; Lab write-ups in summaries, briefs and audio. |
 | 2026-09-30 | v0.39.0 | Lab outcomes (confirmed/refuted/inconclusive/broken), check kinds, parameter sources, notes on the report, pilot gate, one automatic re-plan (20.13). |
+| 2026-09-30 | v0.40.0 | Workspaces foundation (23): separate libraries, Main unmoved, `--workspace`, `workspace` commands, per-request dashboard context, per-workspace cluster folders and task names. |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |

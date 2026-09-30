@@ -53,12 +53,18 @@ def _final_text(interaction) -> str:
 
 class DeepResearchAgent:
     def __init__(
-        self, config: DeepResearchConfig | None = None, logger=None, quiet: bool = False
+        self,
+        config: DeepResearchConfig | None = None,
+        logger=None,
+        quiet: bool = False,
+        db_path: str | None = None,
     ):
         self.config = config or DeepResearchConfig()
         self.client = genai.Client(api_key=self.config.api_key)
         self.file_manager = FileManager(self.client)
-        self.session_manager = SessionManager()
+        # db_path: the dashboard's follow-ups pass the request's workspace DB; the CLI
+        # leaves it None (the process's workspace)
+        self.session_manager = SessionManager(db_path) if db_path else SessionManager()
         self.logger = logger or setup_logger(quiet)
         self.quiet = quiet
 
