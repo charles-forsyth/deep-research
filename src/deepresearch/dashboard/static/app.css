@@ -44,7 +44,10 @@ body::before { /* faint engineering grid */
   background-size: 28px 28px;
   mask-image: radial-gradient(ellipse at center, #000 40%, transparent 85%);
 }
-#app { position: relative; z-index: 1; display: grid; grid-template-rows: 52px 1fr 24px; height: 100vh; }
+#app { position: relative; z-index: 1; display: grid; grid-template-rows: 52px 1fr 24px; grid-template-columns: minmax(0, 1fr); height: 100vh; height: 100dvh; }
+/* the one column is the screen width: a wide child (top bar, table) must shrink,
+   wrap or scroll inside itself, never widen the whole app past the screen */
+#app > * { min-width: 0; }
 button { font: inherit; color: inherit; cursor: pointer; }
 input, textarea, select { font: inherit; color: var(--text); }
 ::selection { background: rgba(34, 211, 238, .28); }
@@ -483,6 +486,8 @@ html, body { overflow-x: hidden; }
   .runs-view .runs-table td, .runs-view .runs-table th { padding: 7px 4px; }
   .runs-view .runs-table .status-badge { font-size: 9.5px; padding: 1px 5px; }
   .btn-new .lbl, #btn-new .lbl { display: none; }
+  .top-actions { flex: none; }
+  .brand > div { min-width: 0; overflow: hidden; }
   .top-actions { gap: 6px; }
   .statusbar { gap: 12px; }
   .statusbar span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -885,4 +890,45 @@ mark.find.cur { background: var(--amber); color: #111; box-shadow: 0 0 0 2px var
   .fb-list { max-height: 45vh; } .fb-prev { max-height: 30vh; }
   .fb-row { grid-template-columns: 18px 20px minmax(0, 1fr) 60px; } .fb-dt { display: none; }
   .fb-foot { flex-wrap: wrap; }
+}
+
+/* ---- v0.38.1 phones: nothing wider than the screen ---- */
+@media (max-width: 480px) {
+  .brand-name { font-size: 12px; letter-spacing: .08em; }
+  .top-actions .btn { padding: 6px 9px; }
+}
+@media (max-width: 380px) {
+  .brand > div { display: none; } /* just the mark on the narrowest phones */
+}
+
+@media (max-width: 600px) {
+  /* Lab runs: let the title wrap instead of being cut at the screen edge */
+  .runs-table { table-layout: fixed; }
+  .runs-table th:first-child, .runs-table td:first-child { width: 42px; }
+  .runs-table th:nth-child(2), .runs-table td:nth-child(2) { width: 92px; }
+  .runs-table td:nth-child(3) { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+  .runs-table td:nth-child(3) * { white-space: normal !important; overflow: visible !important; text-overflow: clip !important; max-width: none !important; }
+  /* Data sources table: drop Staging/Level/Location (on each source's page), keep Name/Kind/Status/Files */
+  .src-table { table-layout: fixed; }
+  .src-table th:nth-child(1), .src-table td:nth-child(1) { width: auto; }
+  .src-table th:nth-child(2), .src-table td:nth-child(2) { width: 64px; overflow-wrap: anywhere; }
+  .src-table th:nth-child(3), .src-table td:nth-child(3) { width: 58px; }
+  .src-table th:nth-child(4), .src-table td:nth-child(4) { width: 40px; }
+  .src-table td:first-child b { overflow-wrap: anywhere; }
+  .src-table td { padding: 7px 4px; }
+  /* project stats: 3 per row with room for "data sources" */
+  .proj-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .proj-stats .k { white-space: normal; overflow: visible; font-size: 9.5px; letter-spacing: .04em; }
+  /* launch dialog: depth and breadth stacked */
+  .row { flex-direction: column; gap: 4px; }
+  .row > * { flex: none; }
+  input::placeholder, textarea::placeholder { text-overflow: ellipsis; }
+  /* file browser rows: bigger tap targets */
+  .fb-row { min-height: 40px; }
+  #fb-up { padding: 7px 12px; }
+}
+@media (max-width: 600px) {
+  .src-table th { padding: 6px 4px; }
+  .src-view, .runs-view, .proj-view { padding-bottom: 48px; }
+  .statusbar .sb-right { overflow: hidden; text-overflow: ellipsis; }
 }

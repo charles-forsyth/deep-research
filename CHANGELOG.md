@@ -7,6 +7,13 @@ releases.
 
 ## [Unreleased]
 
+## [0.38.1] - 2026-09-30
+
+### Fixed
+
+- **Phones: every page was cut off on the right.** The app shell's one grid column grew to its widest child (the top bar, 430 px on a 390 px phone) and `overflow: hidden` then clipped the right edge of every page: the top bar's + button, stats, cards, the status bar, and the start of report lines. The column is now capped at the screen width (`minmax(0, 1fr)`). A headless-browser audit of 10 views at 320, 360, 390, 430 and 768 px found clipping in 30 views before and none after.
+- Phones: Lab run titles wrap instead of being cut mid-word; the Data sources table keeps Name, Kind, Status and Files with sensible widths; project stats show "data sources" in full; Depth and Breadth stack in the launch dialog; larger tap targets in the file browser; room to scroll the last row clear of the status bar.
+
 ## [0.38.0] - 2026-09-30
 
 ### Added
