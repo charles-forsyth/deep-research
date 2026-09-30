@@ -51,6 +51,47 @@ CURATED: list[dict[str, Any]] = [
         "source": "runs #23, #24, #25",
     },
     {
+        "id": "https-ca-bundle",
+        # keys with a space or a dot/colon match as substrings (dotted calls such as
+        # urllib.request.urlopen are one "word" to the tokenizer)
+        "match": ["urllib.", "urlopen(", "requests.get", "https://", "download"],
+        "text": "The python-sci module's urllib has no CA bundle on the compute nodes "
+        "(CERTIFICATE_VERIFY_FAILED, run #38). Any job that downloads over HTTPS must first "
+        "`export SSL_CERT_FILE=$(python -c 'import certifi; print(certifi.where())')` and "
+        "REQUESTS_CA_BUNDLE=$SSL_CERT_FILE. Never disable verification.",
+        "source": "run #38",
+    },
+    {
+        "id": "loc-gov-slow",
+        "match": [
+            "loc.gov",
+            "chronicling",
+            "chroniclingamerica",
+            "library of congress",
+        ],
+        "text": "loc.gov answers slowly (30+ s per JSON request) and refuses bare clients "
+        "(HTTP 403): send a browser-like User-Agent, 90 s timeouts, at most 1 request per "
+        "second, backoff on 429, and cache every response. chroniclingamerica.loc.gov "
+        "redirects to www.loc.gov/collections/chronicling-america/ (use fo=json).",
+        "source": "runs #37, #38, #40",
+    },
+    {
+        "id": "lightkurve-quarter",
+        "match": ["lightkurve", "kepler", "tess", "mast"],
+        "text": "lightkurve 2.6 search results have no 'quarter' column; the quarter is in "
+        "'mission' (\"Kepler Quarter 01\"). Read it from there (regex) or use "
+        "search_lightcurve(..., quarter=N) instead of filtering the table (run #39).",
+        "source": "run #39",
+    },
+    {
+        "id": "latex-json-escape",
+        "match": ["matplotlib", "latex", "set_ylabel", "set_xlabel", "set_title"],
+        "text": "LaTeX in plot labels (\\rangle, \\frac, \\beta) must be written with doubled "
+        "backslashes inside the plan JSON; a single \\r or \\f becomes a control character "
+        "and splits the line (SyntaxError, run #35). Plain text labels avoid the problem.",
+        "source": "run #35",
+    },
+    {
         "id": "vllm-version",
         "match": ["vllm"],
         "text": "The GPU driver limits vLLM: check the installed version's flags with "
@@ -271,8 +312,9 @@ def matching(text: str, state_dir: Path | None, limit: int = 8) -> list[dict]:
         keys = [str(k).lower() for k in p.get("match") or []]
         if not keys:
             continue
-        # multi-word keys ("finite volume") match as substrings, single words as words
-        if any((k in low) if " " in k else (k in words) for k in keys):
+        # multi-word keys ("finite volume") and keys with punctuation ("urllib.",
+        # "https://") match as substrings, plain single words as words
+        if any((k in low) if re.search(r"[ .:(/]", k) else (k in words) for k in keys):
             out.append(p)
     return out[:limit]
 
