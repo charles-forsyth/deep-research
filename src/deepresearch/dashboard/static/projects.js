@@ -65,6 +65,35 @@ const PROJ = {
   openSorter() { openTab({ key: "sorter", kind: "sorter", title: "Sort inbox" }); },
 
   // ------------------------------------------------------------------ create / edit
+  // ---- claims board (v0.45) -------------------------------------------------
+  claimsCard(cb) {
+    if (!cb || !cb.total) return "";
+    const c = cb.counts;
+    const chip = (k, label) => c[k] ? `<span class="outcome-badge ${k}">${c[k]} ${label}</span>` : "";
+    const val = (x) => x == null ? "\u2013" : typeof x === "number" ? (Math.abs(x) >= 1000 || Number.isInteger(x) ? String(x) : (+x.toPrecision(4)).toString()) : clip(String(x), 90);
+    const row = (cl) => {
+      const main = cl.checks.filter((k) => k.kind === "claim");
+      const rest = cl.checks.filter((k) => k.kind !== "claim");
+      const line = (k) => `<li class="${k.pass === true ? "ok" : k.pass === false ? "bad" : ""}"><span class="mono">${esc(k.name)}</span> <span class="dim">expected</span> ${esc(val(k.expected))} <span class="dim">got</span> ${esc(val(k.got))}</li>`;
+      const tries = cl.attempts.length > 1 ? ` \u00b7 ${cl.attempts.length} attempts` : "";
+      return `<details class="claim ${esc(cl.outcome)}">
+        <summary><span class="outcome-badge ${esc(cl.outcome)}">${esc(cl.outcome)}</span>
+          <span class="claim-q">${esc(clip(oneLine(cl.question), 220))}</span>
+          <span class="mono dim claim-meta">Lab #${cl.run_id} \u00b7 report #${cl.session_id}${tries}</span></summary>
+        <div class="claim-body">
+          <div class="dim" style="font-size:12px">${esc(cl.why)}</div>
+          ${main.length ? `<ul class="claim-checks">${main.map(line).join("")}</ul>` : ""}
+          ${rest.length ? `<div class="dim" style="font-size:11px;margin-top:4px">Checks that make the result trustworthy</div><ul class="claim-checks minor">${rest.map(line).join("")}</ul>` : ""}
+          <div style="margin-top:6px"><a href="#" data-open="${cl.session_id}" class="linkbtn">Open the report</a>${cl.attempts.length > 1 ? ` <span class="dim" style="font-size:11px">\u00b7 attempts: ${cl.attempts.map((a) => `#${a.run_id} ${esc(a.outcome)}`).join(", ")}</span>` : ""}</div>
+        </div></details>`;
+    };
+    return `<div class="card proj-claims">
+      <div class="card-h"><h3>Claims tested</h3><span class="grow"></span>${chip("confirmed", "confirmed")}${chip("refuted", "refuted")}${chip("inconclusive", "inconclusive")}${chip("pending", "pending")}${chip("broken", "broken")}</div>
+      <div class="dim" style="font-size:11.5px;margin-bottom:4px">What the Lab runs checked in these reports. Refuted claims come first: they are the ones to correct or discuss.</div>
+      ${cb.claims.map(row).join("")}
+    </div>`;
+  },
+
   settingsForm(p = {}) {
     const tgt = (LAB.targetsList || [])[0];
     const parts = Object.entries(tgt?.partitions || {});
@@ -209,6 +238,8 @@ const PROJ = {
         <div class="dock-inner"><textarea id="pa-q" rows="1" placeholder="e.g. What do these reports disagree about?"></textarea><button class="btn primary" data-a="ask">Ask</button></div>
         <div id="pa-out"></div>
       </div>
+
+      ${this.claimsCard(d.claims)}
 
       <div class="proj-grid">
         <div class="card"><div class="card-h"><h3>Reports</h3><span class="grow"></span>${d.running ? `<span class="chip live"><span class="dot"></span>${d.running} running</span>` : ""}</div>

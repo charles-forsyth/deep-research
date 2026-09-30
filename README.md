@@ -176,7 +176,9 @@ with. Each project has an AI summary, "Ask this project" (answers only from its 
 reports and sources), briefs (executive, slides, email, grant section, lay summary,
 literature review), an AI voice overview, and exports: a Markdown/HTML/PDF dossier,
 BibTeX and CSV citations, JSON, and a research package (.zip) that opens as an Obsidian
-folder and carries Lab results and RO-Crate metadata. Reports in no project sit in the
+folder and carries Lab results and RO-Crate metadata. A **claims board** lists every
+question the project's Lab runs tested, marked confirmed, refuted, inconclusive, pending
+or broken, with the checks behind each. Reports in no project sit in the
 Inbox; "sort inbox" suggests groups from your tags and from similar reports, and files
 nothing until you accept. See [docs/SPEC.md section 22](docs/SPEC.md#22-projects).
 

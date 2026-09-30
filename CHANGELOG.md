@@ -7,6 +7,16 @@ releases.
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-09-30
+
+### Added
+
+- **Claims board** on project pages: every question the project's Lab runs tested, marked
+  confirmed, refuted, inconclusive, pending or broken, refuted first. Expand a claim to
+  see the checks (expected vs got) and the checks that make the result trustworthy.
+  Reruns and re-plans of the same question are grouped, and the best result leads. The
+  dossier and research package include the board too.
+
 ## [0.44.0] - 2026-09-30
 
 ### Changed

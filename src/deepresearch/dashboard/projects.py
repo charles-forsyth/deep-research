@@ -635,6 +635,11 @@ def dossier_markdown(
             )
         out.append("")
     if lab_runs:
+        from deepresearch.dashboard.claims import board, board_md
+
+        cb = board_md(board(lab_runs, {r["id"]: r for r in reports}))
+        if cb:
+            out += [cb]
         out += ["## Lab runs", ""]
         for run in lab_runs:
             plan = run.get("plan") or {}

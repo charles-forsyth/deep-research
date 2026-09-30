@@ -13,6 +13,7 @@ import threading
 import traceback
 
 from deepresearch.dashboard import projects as pj
+from deepresearch.dashboard.claims import board as claims_board
 
 
 class ProjectApi:
@@ -231,6 +232,9 @@ class ProjectApi:
             ],
             "citations": len(cites),
             "top_citations": cites[:12],
+            "claims": claims_board(
+                b["lab_runs"], {r["id"]: r for r in b["reports"] + b["children"]}
+            ),
         }
 
     def projects_patch(self, pid, query, body):
