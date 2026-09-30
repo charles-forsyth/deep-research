@@ -761,6 +761,15 @@ def weak_reference_checks(script: str) -> list[str]:
 def science_warnings(plan: dict) -> list[str]:
     script = str((plan or {}).get("script") or "")
     warns = []
+    if re.search(r"np\.diff\(\s*np\.sign\(", script) and not re.search(
+        r"np\.sign\([^)]*\)\s*\[[^\]]*!=\s*0|nonzero|diff\s*!=\s*0|abs\([^)]*\)\s*>",
+        script,
+    ):
+        warns.append(
+            "Crossing detection with np.diff(np.sign(...)) counts a step from exactly 0 "
+            "(e.g. both curves zero below threshold) as a crossing (run #71 reported "
+            "T*=0.045 instead of ~0.25). Drop zero entries before looking for sign changes."
+        )
     mt = mathtext_escapes(script)
     if mt:
         warns.append(
