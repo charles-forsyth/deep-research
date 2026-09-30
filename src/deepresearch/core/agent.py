@@ -29,15 +29,26 @@ MAX_POLL_ERRORS = 30
 
 
 def _final_text(interaction) -> str:
-    """Final model text from an Interaction (steps schema, google-genai >= 2.0)."""
-    text = getattr(interaction, "output_text", None)
-    if text:
-        return str(text)
-    for step in reversed(getattr(interaction, "steps", None) or []):
+    """The whole report text from an Interaction (steps schema, google-genai >= 2.0).
+
+    Long reports arrive as several `model_output` steps (part 1, part 2, ...), and
+    the SDK's `output_text` holds only the LAST one. Joining every model_output step
+    in order is the full report; using `output_text` alone silently dropped the
+    first half or more of long reports (found 2026-09-30, fixed in v0.38.2).
+    """
+    parts: list[str] = []
+    for step in getattr(interaction, "steps", None) or []:
         if getattr(step, "type", None) == "model_output":
-            parts = [getattr(c, "text", "") for c in (step.content or [])]
-            return "".join(p for p in parts if p)
-    return ""
+            text = "".join(
+                getattr(c, "text", "") or ""
+                for c in (getattr(step, "content", None) or [])
+            )
+            if text:
+                parts.append(text)
+    if parts:
+        return "".join(parts)
+    out = getattr(interaction, "output_text", None)
+    return str(out) if out else ""
 
 
 class DeepResearchAgent:

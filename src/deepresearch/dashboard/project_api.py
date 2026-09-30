@@ -551,14 +551,22 @@ class ProjectApi:
     def _project_text(self, pid: int) -> tuple[str, str]:
         b = self._bundle(pid)
         p = b["project"]
-        if p.get("summary"):
-            return p["title"], p["summary"]
+        labs = pj.lab_findings(b["lab_runs"])
+        lab_block = f"\n\n## Lab results\n\n{labs}" if labs else ""
+        stale = bool(
+            p.get("summary_at") and self.projects.last_change(p["id"]) > p["summary_at"]
+        )
+        if p.get("summary") and not stale:
+            # the summary already weighs the Lab runs; add their write-ups so the
+            # voice overview can say what each computation showed
+            return p["title"], p["summary"] + lab_block
+        budget = max(8000, 300_000 // max(1, len(b["reports"])))
         parts = [
             f"## Session #{r['id']}: {pj.one_line(r['prompt'], 200)}\n\n"
-            + pj.strip_sources(r.get("result") or "")[:20000]
+            + pj.strip_sources(r.get("result") or "")[:budget]
             for r in b["reports"]
         ]
-        return p["title"], "\n\n".join(parts)
+        return p["title"], "\n\n".join(parts) + lab_block
 
     def projects_brief(self, pid, query, body):
         """Executive brief, slides, email, grant section, lay summary or literature

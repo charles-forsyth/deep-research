@@ -523,6 +523,61 @@ def handle_show(args):
         console.print(f"[bold green][INFO][/] Report saved to {args.save}")
 
 
+def handle_repair(args):
+    """Restore reports that were saved with only their last part."""
+    from deepresearch.core import repair
+    from deepresearch.core.config import user_db_path
+
+    cfg = DeepResearchConfig()
+    client = genai.Client(api_key=cfg.api_key)
+    db = SessionManager().db_path or user_db_path
+    plans = repair.scan(db, client, ids=args.ids or None)
+    fixed = repair.apply(db, plans) if args.apply else 0
+    resynth: list[int] = []
+    if args.apply and getattr(args, "resynthesize", False):
+        agent = DeepResearchAgent(config=cfg, quiet=True)
+        resynth = repair.resynthesize(
+            db,
+            plans,
+            agent,
+            log=(lambda m: None) if _json_flag(args) else console.print,
+        )
+    todo = [p for p in plans if p["action"] == "repair"]
+    counts: dict[str, int] = {}
+    for p in plans:
+        counts[p["action"]] = counts.get(p["action"], 0) + 1
+    if _json_flag(args):
+        emit(
+            {
+                "applied": bool(args.apply),
+                "repaired": fixed,
+                "resynthesized": resynth,
+                "counts": counts,
+                "sessions": [
+                    {
+                        k: v
+                        for k, v in p.items()
+                        if k not in ("new", "full_main", "tail")
+                    }
+                    for p in plans
+                ],
+            }
+        )
+        return
+    for p in todo:
+        console.print(
+            f"  #{p['id']}: {p['before']:,} -> {p['after']:,} characters"
+            + (" (follow-ups kept)" if p.get("kept_followups") else "")
+        )
+    console.print(
+        f"[bold]{len(todo)} report(s) {'repaired' if args.apply else 'need repair'}[/]; "
+        + ", ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
+        + ("" if args.apply or not todo else "\nRun again with --apply to write them.")
+    )
+    if resynth:
+        console.print(f"Re-synthesized: {', '.join('#' + str(i) for i in resynth)}")
+
+
 def handle_delete(args):
     mgr = SessionManager()
     success = mgr.delete_session(args.id)

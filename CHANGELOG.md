@@ -7,6 +7,19 @@ releases.
 
 ## [Unreleased]
 
+## [0.38.2] - 2026-09-30
+
+### Fixed
+
+- **Long reports were saved with only their last part.** Deep Research returns long reports as several `model_output` steps; the SDK's `output_text` holds only the last one, and that is what was stored. Every multi-part report since about 2026-09-26 lost its first half or more (one kept 12%). Reports, the reader, search, exports, summaries and audio all read the stored text, so the audio "full read" and summary only covered the end of the report. The whole report is now the joined text of every part.
+- New `deep-research repair [IDS] [--apply] [--resynthesize] [--json]` restores damaged reports while Google still keeps the interaction (appended follow-ups are kept; embeddings are cleared so search re-indexes). `--resynthesize` rebuilds recursive reports whose synthesis started from a cut main report (children first). Dry run by default. On this machine: 29 reports restored, 10 recursive reports re-synthesized.
+- Audio is re-made when the report text changes (the cache now keys on a hash of the text), so a repaired report does not keep playing its old, short clip.
+
+### Changed
+
+- The audio summary scales with the report: 2-3 minutes for short reports, up to about 5 for long ones, and is told to cover every section.
+- Lab results are part of the story: a report's summary audio and briefs, the project AI summary, and the project voice overview now include each Lab run's write-up (what it computed and showed), not just its pass/fail line. Lab runs attach to reports; they never edit them.
+
 ## [0.38.1] - 2026-09-30
 
 ### Fixed

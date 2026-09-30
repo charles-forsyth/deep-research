@@ -547,6 +547,26 @@ def citations_csv(cites: list[dict]) -> str:
 # ---------------------------------------------------------------- dossier
 
 
+LAB_NOTE_CHARS = 6_000  # per Lab run write-up fed to summaries and audio
+
+
+def lab_findings(runs: list[dict], limit: int = LAB_NOTE_CHARS) -> str:
+    """Plain-text Lab findings for summaries and audio: each run's title, status,
+    verdict and its written-up result (outputs, what it showed), newest first."""
+    out = []
+    for x in runs:
+        if x.get("status") not in ("completed", "failed"):
+            continue
+        title = (x.get("plan") or {}).get("title") or "untitled"
+        note = strip_sources(x.get("result_md") or "").strip()
+        out.append(
+            f"--- Lab run #{x['id']} on Session #{x.get('session_id')}: {title} "
+            f"(status {x['status']}; verdict {verdict_line(x)}) ---\n"
+            + (note[:limit] if note else "(no write-up)")
+        )
+    return "\n\n".join(out)
+
+
 def verdict_line(run: dict) -> str:
     v = run.get("verdict") or None
     if not isinstance(v, dict) or "pass" not in v:
@@ -774,12 +794,7 @@ def summary_prompt(project: dict, reports: list[dict], lab_runs: list[dict]) -> 
             parts.append(
                 f"--- Session #{r['id']}: {one_line(r['prompt'], 300)} ---\n{body}"
             )
-    labs = [
-        f"- Lab run #{x['id']} on Session #{x['session_id']}: "
-        f"{(x.get('plan') or {}).get('title') or 'untitled'}; status {x['status']}; "
-        f"verdict {verdict_line(x)}"
-        for x in lab_runs
-    ]
+    labs = [lab_findings(lab_runs)] if lab_findings(lab_runs) else []
     return (
         "You are writing the overview page of a research project that contains the "
         "reports below. Write Markdown with these sections:\n"
@@ -799,7 +814,11 @@ def summary_prompt(project: dict, reports: list[dict], lab_runs: list[dict]) -> 
             if project.get("description")
             else ""
         )
-        + ("\nLAB RUNS:\n" + "\n".join(labs) + "\n" if labs else "")
+        + (
+            "\nLAB RUNS (computational checks and their write-ups):\n" + labs[0] + "\n"
+            if labs
+            else ""
+        )
         + "\nREPORTS:\n"
         + "\n\n".join(parts)
     )
