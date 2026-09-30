@@ -84,6 +84,34 @@ def handle(args) -> int:
         if cmd in ("archive", "unarchive"):
             ws = W.update(args.id, archived=cmd == "archive")
             return _done(args, ws, f"{cmd.capitalize()}d {ws.slug!r}")
+        if cmd == "copy":
+            from deepresearch.core import wscopy
+
+            if args.dry_run:
+                cp = wscopy.plan(W.get(args.src).db_path, args.project, args.report)
+                if _json(args):
+                    _emit(args, {"dry_run": True, **cp.counts(), "plan": cp.__dict__})
+                else:
+                    print(
+                        f"Would copy from {args.src!r} to {args.dst!r}: "
+                        + ", ".join(f"{v} {k}" for k, v in cp.counts().items())
+                    )
+                return 0
+            res = wscopy.copy(args.src, args.dst, args.project, args.report)
+            if _json(args):
+                _emit(args, res)
+            else:
+                c = res["counts"]
+                print(
+                    f"Copied into {args.dst!r}: "
+                    + ", ".join(f"{v} {k}" for k, v in c.items())
+                )
+                if res["sources_reused"]:
+                    print(
+                        "Reused existing data sources: "
+                        + ", ".join(res["sources_reused"])
+                    )
+            return 0
         if cmd == "delete":
             ws = W.get(args.id)
             if ws.is_main:
@@ -103,7 +131,7 @@ def handle(args) -> int:
             else:
                 print(f"Moved {ws.slug!r} to {dest} (nothing was erased)")
             return 0
-    except W.WorkspaceError as e:
+    except (W.WorkspaceError, ValueError) as e:
         if _json(args):
             _emit(args, {"error": str(e)})
         else:

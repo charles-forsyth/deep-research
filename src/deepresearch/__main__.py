@@ -369,6 +369,21 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("id")
         _add_json(p)
     p = ws_sub.add_parser(
+        "copy",
+        help="Copy projects or reports (with sub-reports, notes, Lab runs and outputs, "
+        "data sources) from one workspace into another",
+    )
+    p.add_argument(
+        "--from", dest="src", default="main", help="Source workspace (default main)"
+    )
+    p.add_argument("--to", dest="dst", required=True, help="Target workspace")
+    p.add_argument("--project", type=int, action="append", default=[], metavar="ID")
+    p.add_argument("--report", type=int, action="append", default=[], metavar="ID")
+    p.add_argument(
+        "--dry-run", action="store_true", help="Only show what would be copied"
+    )
+    _add_json(p)
+    p = ws_sub.add_parser(
         "delete",
         help="Move a workspace to workspaces/.trash (never main; nothing is erased)",
     )

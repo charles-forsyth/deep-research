@@ -184,6 +184,7 @@ const PROJ = {
         <div class="proj-actions">
           <button class="btn primary" data-a="research">+ New research here</button>
           <button class="btn" data-a="add">Add reports</button>
+          ${typeof WSUI !== "undefined" && WSUI.enabled ? `<button class="btn" data-a="ws-copy" title="Copy this project with its reports, notes, Lab runs and data sources into another workspace">\u29C9 Copy to workspace\u2026</button>` : ""}
           <select class="btn" data-a="export" aria-label="Export project">
             <option value="">Export\u2026</option>
             <optgroup label="Documents"><option value="md">Dossier (Markdown)</option><option value="html">Dossier (standalone HTML)</option><option value="print">Print / PDF</option></optgroup>
@@ -253,6 +254,7 @@ const PROJ = {
     v.querySelector('[data-a="alllab"]')?.addEventListener("click", (e) => { v.querySelectorAll(".proj-lab.more").forEach((x) => (x.hidden = false)); e.target.remove(); });
     v.querySelector('[data-a="research"]').onclick = () => openLaunch({ project_id: p.id, data_sources: d.sources.map((s) => s.name) });
     v.querySelector('[data-a="add"]').onclick = () => this.addReportsDialog(p, reload);
+    v.querySelector('[data-a="ws-copy"]')?.addEventListener("click", () => WSUI.copyDialog({ projects: [p.id], label: `Project: ${p.title}` }));
     v.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = () => busy(b, async () => {
       await api(`/api/projects/${p.id}/items`, { method: "DELETE", body: { kind: "session", ids: [+b.dataset.rm] } });
       await Promise.all([this.load(), loadSessions()]); reload();

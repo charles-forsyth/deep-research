@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.41.0 (package `deepresearch`) |
+| Applies to | deep-research v0.42.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -2111,10 +2111,46 @@ workspaces are listed folded, with Unarchive.
 - Tests: `tests/dashboard/test_workspace_ui.py` (header on every call, `?ws=` on links,
   tabs per workspace, switcher loaded after app.js, tint changes no background).
 
-### 23.7 Planned
+### 23.7 Copy into another workspace (v0.42.0)
 
-v0.42 copy projects and reports into another workspace; v0.43 export and import a
-workspace as a zip (import always creates a new workspace).
+`core/wscopy.py`. `plan(src_db, projects, sessions)` lists what a copy brings; `copy(src,
+dst, projects, sessions)` does it.
+
+- Selection: projects (their report, source and notebook memberships) and/or reports (a
+  sub-report pulls in its root). Every report brings its whole tree (sub-reports and
+  follow-ups), session meta (stars, tags), token usage, launch meta, highlights and notes,
+  Lab suggestions, and its Lab runs with their fetched output folders. Data sources: those
+  the reports and Lab runs used (provenance rows and plan `data_sources`) and project
+  members.
+- Ids are renumbered in the target and every link follows: parent_id, lab_runs.session_id
+  and rerun_of, plan.auto_replan_of, project_items (with home flags), data_source_uses,
+  run_meta.rerun_of. "Session #N" and "Lab run #N" in project summaries, notebooks, Lab
+  write-ups and notes are rewritten; report text is never changed.
+- A data source whose name already exists in the target is reused, never overwritten
+  (reported as `sources_reused`). Copied sources drop `options.store`, `store_hash` and
+  `db_path` (the Gemini index is rebuilt on first use in the target).
+- A Lab run still in flight in the source is copied as a draft (no job id) so the target
+  never watches a job it did not submit; a running report is copied as crashed. Process ids
+  are cleared. Audio is not copied.
+- The source DB is opened read-only (`mode=ro`). The target is written in one
+  `BEGIN IMMEDIATE` transaction; Lab output folders are copied before commit and removed
+  again on any error, so a failed copy leaves the target's data as it was. Target and
+  source must differ; the target must exist and not be archived.
+- CLI: `deep-research workspace copy --to ID [--from ID] [--project N]... [--report N]...
+  [--dry-run] [--json]`. API: `POST /api/workspaces/copy/plan` and `POST
+  /api/workspaces/copy` `{from?, to, projects, reports}`.
+- UI: "Copy to..." on a top-level report's toolbar and "Copy to workspace..." on a project
+  page open a dialog: pick a workspace or create one, see what will be copied, copy, then
+  stay or open the target. The buttons appear only when workspaces are enabled (WSUI is
+  initialised before the first page renders).
+- Tests: `tests/core/test_wscopy.py` (whole tree, remapped ids and text, source DB and
+  files unchanged, in-flight runs as drafts, outputs copied, same-named source reused,
+  failed copy leaves the target's data unchanged, bad requests refused, copies
+  independent).
+
+### 23.8 Planned
+
+v0.43 export and import a workspace as a zip (import always creates a new workspace).
 
 ## Document history
 
@@ -2154,6 +2190,7 @@ workspace as a zip (import always creates a new workspace).
 | 2026-09-30 | v0.39.0 | Lab outcomes (confirmed/refuted/inconclusive/broken), check kinds, parameter sources, notes on the report, pilot gate, one automatic re-plan (20.13). |
 | 2026-09-30 | v0.40.0 | Workspaces foundation (23): separate libraries, Main unmoved, `--workspace`, `workspace` commands, per-request dashboard context, per-workspace cluster folders and task names. |
 | 2026-09-30 | v0.41.0 | Workspace switcher in the top bar (23.6), subtle tint outside Main. |
+| 2026-09-30 | v0.42.0 | Copy projects and reports into another workspace (23.7). |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |

@@ -279,6 +279,8 @@ class Api(ProjectApi):
         r("PATCH", r"/api/workspaces/([a-z0-9-]+)", self.ws_update)
         r("POST", r"/api/workspaces/([a-z0-9-]+)/duplicate", self.ws_duplicate)
         r("DELETE", r"/api/workspaces/([a-z0-9-]+)", self.ws_delete)
+        r("POST", r"/api/workspaces/copy/plan", self.ws_copy_plan)
+        r("POST", r"/api/workspaces/copy", self.ws_copy)
         r("GET", r"/api/stats", self.stats)
         r("GET", r"/api/sessions", self.list_sessions)
         r("GET", r"/api/sessions/(\d+)", self.get_session)
@@ -502,6 +504,39 @@ class Api(ProjectApi):
         with self._ctx_lock:
             self._contexts.pop(slug, None)
         return {"deleted": slug, "moved_to": str(dest)}
+
+    def _copy_args(self, body) -> tuple[str, str, list[int], list[int]]:
+        body = body or {}
+        src = str(body.get("from") or self.current_workspace)
+        dst = str(body.get("to") or "")
+        projects = [int(x) for x in body.get("projects") or []]
+        reports = [int(x) for x in body.get("reports") or []]
+        if not dst:
+            raise ApiError(400, "Pick a workspace to copy into")
+        return src, dst, projects, reports
+
+    def ws_copy_plan(self, query, body):
+        from deepresearch.core import workspace as W
+        from deepresearch.core import wscopy
+
+        self._ws_enabled()
+        src, dst, projects, reports = self._copy_args(body)
+        try:
+            cp = wscopy.plan(W.get(src).db_path, projects, reports)
+        except (W.WorkspaceError, wscopy.CopyError) as e:
+            raise ApiError(400, str(e)) from e
+        return {"from": src, "to": dst, "counts": cp.counts()}
+
+    def ws_copy(self, query, body):
+        from deepresearch.core import workspace as W
+        from deepresearch.core import wscopy
+
+        self._ws_enabled()
+        src, dst, projects, reports = self._copy_args(body)
+        try:
+            return wscopy.copy(src, dst, projects, reports)
+        except (W.WorkspaceError, wscopy.CopyError) as e:
+            raise ApiError(400, str(e)) from e
 
     def dispatch(
         self, method: str, path: str, query: dict, body: Any,
