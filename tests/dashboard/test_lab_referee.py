@@ -181,3 +181,33 @@ def test_auto_review_runs_after_planning_and_never_fails_the_draft(lab, monkeypa
     monkeypatch.setattr(lab, "_check_urls", lambda rid, tgt, plan: [])
     lab.make_plan(run["id"], "prompt")
     assert lab.get(run["id"])["status"] == "draft"
+
+
+def test_auto_review_retries_once_then_records_why(lab, monkeypatch):
+    run = lab.create(1, "document", "x", plan=dict(PLAN))
+    calls = []
+
+    def flaky(rid):
+        calls.append(rid)
+        raise RuntimeError("503 model overloaded")
+
+    monkeypatch.setattr(lab, "review", flaky)
+    monkeypatch.setattr(lab._stop, "wait", lambda s: None)
+    lab._auto_review(run["id"])
+    assert len(calls) == 2
+    p = lab.get(run["id"])["plan"]
+    assert "503 model overloaded" in p["review_error"] and "review" not in p
+    assert lab.get(run["id"])["status"] == "draft"
+
+
+def test_auto_review_second_try_succeeds_and_a_review_clears_the_error(
+    lab, monkeypatch
+):
+    run = lab.create(1, "document", "x", plan=dict(PLAN, review_error="old"))
+    monkeypatch.setattr(lab._stop, "wait", lambda s: None)
+    _ask(
+        lab, [EmptyReply("STOP", 0.0), "nope", json.dumps(REVIEW)]
+    )  # 1st review: 2 bad replies
+    lab._auto_review(run["id"])
+    p = lab.get(run["id"])["plan"]
+    assert p["review"]["verdict"] == "flawed" and "review_error" not in p
