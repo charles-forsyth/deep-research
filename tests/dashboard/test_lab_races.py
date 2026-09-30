@@ -151,6 +151,27 @@ def test_watcher_leaves_an_in_flight_submit_alone(lab):
     assert lab.get(run["id"])["status"] == "queued"
 
 
+def test_watcher_leaves_a_submit_alone_while_its_pilot_is_being_queued(lab):
+    """Queueing the pilot on the warm node takes seconds (ssh). The run is still
+    "submitting" then, and the watcher must not fail it as left over (v0.43.2)."""
+    run = lab.create(1, "document", "x", plan=dict(PLAN))
+    seen: list[str] = []
+
+    def slow_smoke(run_id, tgt, plan, round_no, original, rounds=None):
+        time.sleep(0.3)  # warm_enqueue + _keep_warm over ssh
+        lab.poll(lab.get(run_id))  # the watcher wakes up meanwhile
+        seen.append(lab.get(run_id)["status"])
+        lab._update(run_id, only_if=("submitting",), status="smoke", stage="Pilot")
+
+    lab._smoke_applies = lambda tgt, plan: True
+    lab.tgt.upload = lambda run_id, files, fresh=False: None
+    lab._start_smoke = slow_smoke
+    lab.submit(run["id"])
+    assert seen == ["submitting"]  # not "failed: Submit interrupted"
+    assert lab.get(run["id"])["status"] == "smoke"
+    assert not labmod._IN_FLIGHT  # released once the pilot is queued
+
+
 def test_cancel_during_submit_scancels_the_job_it_gets_back(lab):
     run = lab.create(1, "document", "x", plan=dict(PLAN))
     t = threading.Thread(target=lab.submit, args=(run["id"],))

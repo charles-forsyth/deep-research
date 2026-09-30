@@ -7,6 +7,14 @@ releases.
 
 ## [Unreleased]
 
+## [0.43.2] - 2026-09-30
+
+### Fixed
+
+- Lab: a run could be marked "Submit interrupted" while its pilot was still being queued
+  on the warm node (a slow ssh step), because it stopped counting as in flight too early
+  and the watcher took it for a submit left over from a stopped dashboard.
+
 ## [0.43.1] - 2026-09-30
 
 ### Fixed
