@@ -455,6 +455,6 @@ def test_zip_includes_small_lab_outputs_and_skips_big_ones(app, monkeypatch):  #
     assert "lab-project/lab/run_7/outputs/verdict.json" in names
     assert not any("big.csv" in n or "model.bin" in n for n in names)
     st, got = call("GET", f"/api/projects/{p['id']}")
-    assert got["lab_runs"][0]["verdict"] == "passed (1/1 checks)"
+    assert got["lab_runs"][0]["verdict"].startswith("CONFIRMED (1/1 checks passed)")
     st, out = call("GET", f"/api/projects/{p['id']}/export?format=md")
     assert "Lab run #7: Allee test" in out["content"] and "[PASS] k" in out["content"]

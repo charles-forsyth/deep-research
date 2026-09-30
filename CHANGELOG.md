@@ -7,6 +7,35 @@ releases.
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-09-30
+
+### Added
+
+- **Lab outcomes instead of pass/fail.** A finished Lab run is CONFIRMED, REFUTED,
+  INCONCLUSIVE or BROKEN, with a one-line reason. Checks are grouped as validation (the
+  model is sane), informative (the test can tell) and claim (the report's claim). Runs #79
+  and #78 used to say FAILED; they now say INCONCLUSIVE (both arms at 0%, or identical
+  numbers), and #98 says REFUTED (a sound test, the claim did not hold). Old runs get an
+  outcome from inferred check kinds. New module `dashboard/labverdict.py`.
+- **Notes on the report.** A finished run attaches one note to its report (green, magenta
+  or amber by outcome) on the passage it tested. The report itself is never edited. The
+  outcome and write-up also feed the report brief and summary audio, the project summary,
+  dossier and voice overview.
+- **The smoke test is now a pilot.** The pilot computes the same checks on a small
+  sample; if they show the test cannot discriminate, the full run is not started.
+- **One automatic re-plan.** An inconclusive run (or pilot) is re-planned once by the AI,
+  which must change the design (regime, literature-calibrated parameters, matched arms,
+  informative checks) without changing the claim. The result is a draft for review;
+  nothing is submitted automatically. New module `dashboard/labloop.py`.
+- **Parameter sources.** Plans carry `parameter_sources` (a citation or "assumed: why" per
+  parameter), shown in plan review.
+
+### Changed
+
+- Planner rules: label every check's kind, test claims two-sided with sign and size, match
+  the arms, calibrate from the literature and print the regime.
+- Stage after completion is "Completed: OUTCOME"; the write-up leads with the outcome.
+
 ## [0.38.2] - 2026-09-30
 
 ### Fixed

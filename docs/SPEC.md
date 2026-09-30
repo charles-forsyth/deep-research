@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.38.2 (package `deepresearch`) |
+| Applies to | deep-research v0.39.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1442,6 +1442,8 @@ catalog endpoints. Live checks are listed in the v0.19.0 and v0.20.0 changelogs.
 | L2 | Mostly closed in v0.20.0: the planner sees the live catalog and every plan is checked against it before submit. Still possible: wrong command-line flags or a package that fails to install from conda/pip (not in the catalog). | A wasted run; fixed by editing and rerunning. |
 | L3 | No sweeps, result comparison or cluster-side caching of outputs yet. | Reruns are one at a time. |
 | L4 | Watching requires the dashboard to be running; no notification when a job ends. | You see results the next time the report is open. |
+| L5 | Outcomes of pre-v0.39.0 runs rest on inferred check kinds (names and `expected` strings). A check named like a claim but meant as validation can be misfiled. | A run may show REFUTED where BROKEN fits; the card says "check kinds inferred". |
+| L6 | The pilot gate needs the pilot to compute the informative checks (`LAB_SMOKE=1`). Plans written before v0.39.0 usually do not, so their pilots only check that the script runs. | Saturation is then caught only after the full run (and re-planned once). |
 
 ### 20.9 Cluster catalog
 
@@ -1486,8 +1488,9 @@ Added in v0.29.0 (Lab plan v3, nexus `2026-09-29_Deep_Research_Lab_Plan_v3.md`).
 - **Pitfalls in every prompt.** The plan, Fix-with-AI and fix-failed prompts get a
   "Rules learned from earlier runs" block: five general rules (compute every reported
   number, download reference data instead of typing it, read tool output folders instead
-  of guessing file names, write `outputs/verdict.json` for known-answer checks, support
-  `LAB_SMOKE=1`) plus the software-specific lessons whose keywords appear in the request,
+  of guessing file names, write `outputs/verdict.json` with a `kind` per check, support
+  `LAB_SMOKE=1` as a pilot that writes the same checks), the four design rules of 20.13
+  (`labverdict.PLANNER_RULES`) plus the software-specific lessons whose keywords appear in the request,
   report excerpt or plan. Curated lessons live in code; learned ones in
   `<state_dir>/lab_pitfalls.json`.
 - **Learning.** When a run created by Fix with AI from a failed run completes, its
@@ -1499,12 +1502,13 @@ Added in v0.29.0 (Lab plan v3, nexus `2026-09-29_Deep_Research_Lab_Plan_v3.md`).
   (8+ precise numbers under a name like `ghia`, `ref`, `benchmark`, or 12+ under any name).
   Found in the AI drafts of runs #49, #50 and #51; none of the 44 earlier runs is flagged
   except those three.
-- **Verdict.** A job may write `outputs/verdict.json` (`checks[]` with name, expected, got,
-  tolerance, pass; overall `pass`). The watcher stores it in `lab_runs.verdict`; a failed
-  verdict sets the stage to "Completed, known-answer check FAILED", the write-up must lead
-  with it, and the run view shows the checks.
+- **Verdict.** A job may write `outputs/verdict.json` (`checks[]` with name, kind,
+  expected, got, tolerance, pass; overall `pass`). The watcher stores it in
+  `lab_runs.verdict`. Since v0.39.0 the verdict is judged into an outcome (20.13) instead of
+  pass/fail: the stage is "Completed: CONFIRMED|REFUTED|INCONCLUSIVE|BROKEN", the write-up
+  leads with the outcome, and the run view groups the checks by kind.
 
-### 20.11 Warm node, smoke test, install ladder, probes, matching
+### 20.11 Warm node, pilot (smoke test), install ladder, probes, matching
 
 Added in v0.33.0 (Lab plan v3 releases 2-5).
 
@@ -1518,7 +1522,8 @@ Added in v0.33.0 (Lab plan v3 releases 2-5).
   that can't finish before the job's limit marks the worker draining, and the dashboard starts
   a fresh one. Exits after `idle_min` (20) idle minutes. `SlurmSSHTarget.ensure_warm()` starts
   one unless a non-draining worker is running or one is pending.
-- **Smoke test.** `submit()` on a CPU plan with a warm-capable target uploads the run folder
+- **Pilot (smoke test; renamed in the UI in v0.39.0, still `smoke` in code and data).**
+  `submit()` on a CPU plan with a warm-capable target uploads the run folder
   and queues `smoke-<run>-<round>`: `run.sbatch` copied to `run_N/smoke/` and run with
   `LAB_SMOKE=1` under `timeout` (`smoke_min`, 15). Status `smoke`. Pass = exit 0 and every
   `expected_outputs` pattern has a non-empty match (a clean timeout with no error lines also
@@ -1526,6 +1531,8 @@ Added in v0.33.0 (Lab plan v3 releases 2-5).
   ("review the changes"). Fail: RUNFIX prompt with the smoke log, new plan re-uploaded
   (folder kept), next round; after `SMOKE_MAX_ROUNDS` (3) the run fails with the smoke log as
   `job.log`. `plan.smoke = false` or a GPU plan skips it. Rounds are kept in `lab_runs.smoke`.
+  A passing pilot is then gated on its own checks (20.13): if `run_N/smoke/outputs/verdict.json`
+  assesses INCONCLUSIVE, the full run is not dispatched.
 - **Dispatch.** Single-node CPU runs on the warm partition with a time limit up to
   `max_full_min` (120) run on the warm node as exclusive task `full-<run>` (job id
   `warm:full-<run>`; status, cancel and elapsed come from the spool). Others: `sbatch` of the
@@ -1577,6 +1584,80 @@ Added in v0.34.0.
 - **Weak reference checks** (`labguard.weak_reference_checks`, v0.35.0): `grep -q <word|number> <downloaded file>` or `'<n>' in content` next to a download is a science warning.
 - **Containers**: an `install.apptainer` entry that is a path or ends in `.sif` must exist
   and is exported as `IMG_<NAME>` in place; only registry references are pulled.
+
+### 20.13 Outcomes, notes on the report, pilot gate, automatic re-plan
+
+Added in v0.39.0 (nexus `2026-09-29_Deep_Research_Lab_Verdict_Redesign_Notes.md`). Modules
+`dashboard/labverdict.py` (pure functions) and `dashboard/labloop.py` (`LabVerdictMixin`,
+mixed into `Lab`).
+
+Why: run #79 "failed" because both arms saturated at 0% extinction (the test could not
+tell) and run #78 "failed" because diffusion and discrete agreed exactly; the fair rerun
+#98 "failed" because the claim was false. All three showed the same red FAILED.
+
+- **Check kinds.** `validation` (the model or data is sane: known values, Monte Carlo vs
+  exact, boundaries), `informative` (the test can discriminate: baseline arm neither ~0%
+  nor ~100%, positive control, right regime, no clipped rates) and `claim` (the report's
+  claim, tested two-sided). The planner is told to label every check and to include an
+  informative check whenever it compares arms. Checks without a kind (every run before
+  v0.39.0) get one inferred from the name and `expected` (`check_kind()`), and the result
+  says so (`inferred: true`).
+- **Outcome** (`assess(verdict, status)`), first match wins:
+
+| Outcome | When |
+|---|---|
+| BROKEN | the job failed, or a validation check failed |
+| INCONCLUSIVE | an informative check failed; or the audit found IDENTICAL arms; or every failed claim check shows no difference at all (its first two numbers equal, or a single number that is exactly 0) |
+| REFUTED | a claim check failed, with validation and informative checks passing |
+| CONFIRMED | every claim check passed; or there are no claim checks and every known-answer check passed (a reproduction) |
+
+  The outcome is derived on every read (`Lab._row` adds `assessment`: outcome, why,
+  inferred, checks grouped by kind), never stored, so old runs get one. Against the 61
+  finished runs on 2026-09-30: 39 broken (30 failed jobs, 9 failed validation), 14
+  confirmed, 5 refuted, 3 inconclusive (#78, #79, #105), matching a manual review of #78,
+  #79, #97 and #98.
+- **Planner rules** (`PLANNER_RULES`, in every plan/fix prompt): label kinds; test the claim
+  two-sided with sign and size and the two compared values first in `got`; match the arms
+  (only the tested factor differs); calibrate from the literature and print derived regime
+  quantities. The plan JSON gains `parameter_sources` (`{name: citation | "assumed: why"}`),
+  shown in plan review ("assumed" in red; a missing table is called out on drafts).
+- **Notes on the report, never edits.** When a run completes, `_attach_note()` adds one
+  annotation to its report (the same table a reader's highlights use), anchored on the
+  highlighted passage for a selection run or on the report sentence that best matches the
+  run's question and title (rare words weighted). The note reads "Lab run #N (title):
+  OUTCOME. why" plus the write-up's **Result** paragraph. Colour: green confirmed, magenta
+  refuted, amber inconclusive or broken. A later write-up refreshes the same note (matched
+  by the "Lab run #N (" prefix) instead of adding another. The report text is never
+  changed. The Notes tab marks these "attached by the Lab".
+- **Summaries and audio.** `projects.lab_findings()` and `verdict_line()` carry the outcome
+  line ("REFUTED (2/3 checks passed): ...") and each run's write-up into the report brief
+  and summary audio (`_doc(with_lab=True)`), the project AI summary, dossier and voice
+  overview (section 22).
+- **Pilot gate.** After a pilot passes (exit 0, outputs present), `_pilot_gate()` reads
+  `run_N/smoke/outputs/verdict.json` from the cluster and assesses it. INCONCLUSIVE stops
+  the run before the full job: status back to `draft`, `smoke.pilot` holds the assessment,
+  and the one automatic re-plan starts. A pilot that is BROKEN or REFUTED on its small
+  sample still goes on to the full run (small samples are noisy; the full run decides).
+- **One automatic re-plan.** An INCONCLUSIVE outcome (full run or pilot) starts
+  `_auto_replan()` in a background thread: `REPLAN_PROMPT` (with web search) gets the
+  reason, the checks, the write-up, the log tail, the cluster description, the lessons and
+  the plan, and must change the design (regime, literature-calibrated parameters with
+  `parameter_sources`, matched arms, informative checks, a pilot that computes them) without
+  changing the claim. After a full run the result is a new draft (`rerun_of` = the run,
+  `plan.auto_replan_of`, stage "Re-planned by AI after inconclusive run #N: review, then
+  submit"). After a pilot the same run's plan is replaced (`plan.auto_replanned`,
+  `plan_before_fix` for Undo). Either way nothing is submitted: a person reviews the diff
+  and submits. "Once" is enforced from the data: never for a plan that is itself an
+  automatic re-plan or was already re-planned after its pilot, and never when a run with
+  `auto_replan_of` = this run exists. A failed re-plan leaves the draft with the error.
+- **UI.** Run cards and the Lab runs list show an outcome pill next to the status; the
+  verdict box is titled "Outcome: X" with the reason and the checks under Validation /
+  Informative / Claim; pilot rounds are labelled "Pilot", and a stopped pilot shows its
+  outcome and "The full run was not started".
+- **Tests.** `tests/dashboard/test_labverdict.py` (17): the real verdicts of #78, #79, #97
+  and #98; declared kinds; the note (added, coloured, refreshed, report unchanged); one and
+  only one re-plan; refuted and confirmed not re-planned; the pilot gate stopping and
+  passing; outcomes in `lab_findings`.
 
 ## 21. Data sources
 
@@ -1947,6 +2028,7 @@ project's centroid (cosine >= 0.72).
 | 2026-09-30 | v0.38.0 | File browser for adding sources (21.9): this computer, Google Drive (search, shared drives), GCS by project, S3/CephRDS; new source kind `gdrive` (Docs as Markdown, Sheets as CSV). |
 | 2026-09-30 | v0.38.1 | Phone layout fix: app column capped at the screen width; phone rules for Lab runs, Data sources, project stats, launch dialog. |
 | 2026-09-30 | v0.38.2 | Report text is every `model_output` part joined (was only the last); `deep-research repair`; audio cache keyed on text hash; summary audio scales with length; Lab write-ups in summaries, briefs and audio. |
+| 2026-09-30 | v0.39.0 | Lab outcomes (confirmed/refuted/inconclusive/broken), check kinds, parameter sources, notes on the report, pilot gate, one automatic re-plan (20.13). |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |

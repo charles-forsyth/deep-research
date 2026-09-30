@@ -105,7 +105,7 @@ const LAB = {
   runHtml(r) {
     const p = r.plan || {};
     const live = ["planning", "submitting", "smoke", "queued", "running", "fetching", "analyzing"].includes(r.status);
-    const badge = { draft: "review", plan_failed: "failed", planning: "planning", submitting: "running", smoke: "smoke test", queued: "queued", running: "running", fetching: "running", analyzing: "running" }[r.status] || r.status;
+    const badge = { draft: "review", plan_failed: "failed", planning: "planning", submitting: "running", smoke: "pilot", queued: "queued", running: "running", fetching: "running", analyzing: "running" }[r.status] || r.status;
     // SVG can carry scripts, so it is listed as a download, never shown inline
     const images = (r.files || []).filter((f) => !f.skipped && /\.(png|jpe?g|gif|webp)$/i.test(f.path));
     const others = (r.files || []).filter((f) => !images.includes(f));
@@ -113,6 +113,7 @@ const LAB = {
     <div class="lab-run ${esc(r.status)}" data-run="${r.id}">
       <div class="lab-run-h">
         <span class="status-badge ${esc(badge)}">${esc(badge)}</span>
+        ${this.outcomeBadge(r)}
         <b>#${r.id} ${esc(p.title || (r.scope === "selection" ? "Selected passage" : "Whole report"))}</b>
         <span class="grow"></span>
         ${r.job_id ? `<span class="mono dim lab-meta">${this.metaText(r)}</span>` : ""}
@@ -125,7 +126,7 @@ const LAB = {
       ${r.scope === "selection" && r.selection ? `<details class="lab-sel"><summary class="dim">Selected passage</summary><blockquote>${esc(clip(r.selection, 1200))}</blockquote></details>` : ""}
       ${r.status === "plan_failed" && p.why_not ? `<div class="lab-q dim">${esc(p.why_not)}</div>` : ""}
       ${this.smokeHtml(r)}
-      ${this.verdictHtml(r.verdict)}
+      ${this.verdictHtml(r.verdict, r.assessment)}
       ${r.result_md ? `<div class="lab-result md">${renderMd(this.plainMath(r.result_md))}</div>` : ""}
       ${images.length ? `<div class="lab-imgs">${images.map((f) => `<a href="${this.fileUrl(r.id, f.path)}" target="_blank" rel="noopener"><img src="${this.fileUrl(r.id, f.path)}" alt="${esc(f.path)}" loading="lazy"></a>`).join("")}</div>` : ""}
       ${others.length ? `<div class="lab-files">${others.map((f) => f.skipped
@@ -183,26 +184,38 @@ const LAB = {
     const p = r.plan || {};
     const bits = [];
     if (sm && Array.isArray(sm.rounds) && sm.rounds.length) {
-      bits.push(`<span class="label">Smoke test</span> ` + sm.rounds.map((x) => `round ${x.round}: ${x.passed ? "passed" : `<b>failed</b>${x.class && x.class !== "script" ? ` (${esc(({install: "software setup", container: "container image", "tool-crash": "program crashed", "missing-feature": "missing feature", glibc: "binary too new for the nodes", numerical: "numerical blow-up", timeout: "time limit", oom: "out of memory"})[x.class] || x.class)})` : ""}`}${x.rc != null ? ` (exit ${x.rc}${x.seconds != null ? `, ${x.seconds}s` : ""})` : ""}${(x.missing || []).length ? `, missing ${esc(x.missing.join(", "))}` : ""}${x.note ? ` <span class="dim">${esc(x.note)}</span>` : ""}`).join("; "));
+      bits.push(`<span class="label">Pilot</span> ` + sm.rounds.map((x) => `round ${x.round}: ${x.passed ? "passed" : `<b>failed</b>${x.class && x.class !== "script" ? ` (${esc(({install: "software setup", container: "container image", "tool-crash": "program crashed", "missing-feature": "missing feature", glibc: "binary too new for the nodes", numerical: "numerical blow-up", timeout: "time limit", oom: "out of memory"})[x.class] || x.class)})` : ""}`}${x.rc != null ? ` (exit ${x.rc}${x.seconds != null ? `, ${x.seconds}s` : ""})` : ""}${(x.missing || []).length ? `, missing ${esc(x.missing.join(", "))}` : ""}${x.note ? ` <span class="dim">${esc(x.note)}</span>` : ""}`).join("; "));
     }
+    if (sm && sm.pilot) bits.push(`<span class="label">Pilot result</span> <b>${esc(String(sm.pilot.outcome || "").toUpperCase())}</b>: ${esc(sm.pilot.why || "")} The full run was not started.`);
     if ((p.fix_concerns || []).length && r.status === "draft") bits.push(`<span class="label">Check before running</span> ${p.fix_concerns.map(esc).join("; ")}`);
     if (p.partition_switched) bits.push(`<span class="label">Partition</span> ${esc(p.partition_switched)}`);
     if (String(r.job_id || "").startsWith("warm:")) bits.push(`<span class="label">Ran on</span> the warm Lab node (no node boot)`);
     if (!bits.length) return "";
     return `<div class="lab-q dim" style="font-size:11.5px">${bits.join("<br>")}</div>`;
   },
-  verdictHtml(v) {
-    // outputs/verdict.json: the job's own known-answer checks
+  outcomeBadge(r) {
+    const a = r.assessment;
+    if (!a || !a.outcome) return "";
+    const tip = { confirmed: "The claim held, with validation and design checks passing", refuted: "A real negative result: the checks were sound and the claim did not hold", inconclusive: "The test could not tell (e.g. both arms saturated); not evidence either way", broken: "A validation check or the job failed, so the numbers are not findings" }[a.outcome] || "";
+    return `<span class="outcome-badge ${esc(a.outcome)}" title="${esc(tip)}">${esc(a.outcome)}</span>`;
+  },
+  verdictHtml(v, a) {
+    // outputs/verdict.json: the job's own checks, grouped by kind, with the outcome
     if (!v || !Array.isArray(v.checks)) return "";
-    const ok = v.pass === true, bad = v.pass === false;
-    const rows = v.checks.slice(0, 12).map((c) => `<li>${c.pass === true ? "pass" : c.pass === false ? "<b>FAIL</b>" : "?"}: ${esc(c.name || "")}${c.expected !== undefined ? ` (expected ${esc(JSON.stringify(c.expected))}, got ${esc(JSON.stringify(c.got))})` : ""}</li>`).join("");
+    const row = (c) => `<li>${c.pass === true ? "pass" : c.pass === false ? "<b>FAIL</b>" : "?"}: ${esc(c.name || "")}${c.expected !== undefined ? ` (expected ${esc(JSON.stringify(c.expected))}, got ${esc(JSON.stringify(c.got))})` : ""}</li>`;
+    const labels = { validation: "Validation (the model is sane)", informative: "Informative (the test can tell)", claim: "Claim (the report's claim itself)" };
+    const groups = a && a.groups ? Object.entries(labels).filter(([k]) => (a.groups[k] || []).length)
+      .map(([k, t]) => `<div class="vk"><span class="dim" style="font-size:11px">${t}</span><ul>${a.groups[k].slice(0, 12).map(row).join("")}</ul></div>`).join("")
+      : `<ul>${v.checks.slice(0, 12).map(row).join("")}</ul>`;
     // the dashboard re-checks the job's own verdict: contradictions, loose tolerances,
     // comparison arms that produced identical numbers
     const audit = Array.isArray(v.audit) && v.audit.length
-      ? `<span class="label">Our re-check of this verdict:</span><ul>${v.audit.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>`
+      ? `<span class="label">Our re-check of this verdict:</span><ul>${v.audit.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`
       : "";
-    const warnOnly = ok && audit;
-    return `<div class="${bad ? "lab-err" : warnOnly ? "lab-warn" : "lab-fixed"}"><span class="label">Known-answer checks: ${ok ? (warnOnly ? "passed, but see the re-check" : "all passed") : bad ? "FAILED, treat the numbers below with care" : "no overall verdict"}</span><ul>${rows}</ul>${audit}</div>`;
+    const o = a && a.outcome;
+    const cls = { confirmed: audit ? "lab-warn" : "lab-fixed", refuted: "lab-refuted", inconclusive: "lab-warn", broken: "lab-err" }[o] || (v.pass === false ? "lab-err" : "lab-fixed");
+    const head = o ? `<span class="label">Outcome: ${esc(o.toUpperCase())}</span><div style="font-size:12px;margin:2px 0 4px">${esc(a.why || "")}${a.inferred ? ' <span class="dim">(check kinds inferred from their names)</span>' : ""}</div>` : `<span class="label">Checks: no overall verdict</span>`;
+    return `<div class="${cls} lab-verdict">${head}${groups}${audit}</div>`;
   },
   plainMath(md) {
     const map = { theta: "\u03b8", alpha: "\u03b1", beta: "\u03b2", gamma: "\u03b3", delta: "\u03b4", Delta: "\u0394", lambda: "\u03bb", mu: "\u03bc", pi: "\u03c0", sigma: "\u03c3", phi: "\u03c6", psi: "\u03c8", omega: "\u03c9", le: "\u2264", leq: "\u2264", ge: "\u2265", geq: "\u2265", approx: "\u2248", times: "\u00d7", pm: "\u00b1", neq: "\u2260", infty: "\u221e", sqrt: "\u221a", cdot: "\u00b7", rightarrow: "\u2192", to: "\u2192" };
@@ -380,6 +393,7 @@ const LAB = {
       <h4 class="lab-h" id="lr-sec-3">3. Settings</h4>
       <div class="lab-sec"><span class="label">Parameters</span>
         <div class="lab-params">${Object.entries(params).map(([k, v]) => { const val = typeof v === "object" ? JSON.stringify(v) : String(v); return `<label ${val.length > 22 ? 'style="grid-column:span 2"' : ""}><span class="mono">${esc(k)}</span><input data-param="${esc(k)}" value="${esc(val)}" title="${esc(val)}" ${editable ? "" : "disabled"}></label>`; }).join("") || '<span class="dim">none</span>'}</div></div>
+      ${Object.keys(p.parameter_sources || {}).length ? `<div class="lab-sec"><span class="label">Where the parameters come from</span><ul class="lab-psrc">${Object.entries(p.parameter_sources).map(([k, v]) => `<li><span class="mono">${esc(k)}</span>: <span class="${/^assumed/i.test(String(v)) ? "bad" : "dim"}">${esc(String(v))}</span></li>`).join("")}</ul></div>` : (editable ? `<div class="lab-sec dim" style="font-size:11.5px">No parameter sources given: values may be unjustified.</div>` : "")}
       <div class="lab-sec"><span class="label">Resources</span>
         <div class="lab-params res">
           <label><span class="mono">partition</span><select id="lr-part" ${editable ? "" : "disabled"}>${Object.entries(parts).map(([k, v]) => `<option value="${esc(k)}" ${k === res.partition ? "selected" : ""}>${esc(k)} \u00b7 ${esc(v.cpus ? v.cpus + " cores" : (v.machine || ""))}${v.gpus ? " + " + v.gpus + " GPU" : ""}${v.spot ? " \u00b7 spot" : ""} \u00b7 $${v.usd_per_hour}/h</option>`).join("") || `<option>${esc(res.partition || "")}</option>`}</select></label>
@@ -519,11 +533,11 @@ const LAB = {
       $("#runs-count").textContent = `${shown.length} of ${runs.length}`;
       $("#runs-body").innerHTML = shown.length ? `<table class="runs-table"><thead><tr><th>#</th><th>Status</th><th>What</th><th>Report</th><th>Where</th><th title="worst case: nodes x time limit x list price">Max cost</th><th>Updated</th></tr></thead><tbody>${shown.map((r) => {
         const p = r.plan || {};
-        const badge = { draft: "review", plan_failed: "failed", submitting: "running", smoke: "smoke test", fetching: "running", analyzing: "running" }[r.status] || r.status;
+        const badge = { draft: "review", plan_failed: "failed", submitting: "running", smoke: "pilot", fetching: "running", analyzing: "running" }[r.status] || r.status;
         const cost = r.estimate_usd != null ? "\u2264 $" + (+r.estimate_usd).toFixed(2) : "";
         return `<tr data-sid="${r.session_id}" data-rid="${r.id}">
           <td class="mono">${r.id}</td>
-          <td><span class="status-badge ${esc(badge)}">${esc(badge)}</span></td>
+          <td><span class="status-badge ${esc(badge)}">${esc(badge)}</span>${LAB.outcomeBadge(r)}</td>
           <td><div class="runs-title">${esc(p.title || (r.scope === "selection" ? "Selected passage" : "Whole report"))}</div>${(() => {
             // the badge already says the status; only show a stage line that adds something
             const line = r.error ? clip(r.error, 140) : (r.stage || "");

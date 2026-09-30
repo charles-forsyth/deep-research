@@ -31,7 +31,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from deepresearch.dashboard import labguard
+from deepresearch.dashboard import labguard, labverdict
+from deepresearch.dashboard.labloop import LabVerdictMixin
 
 PLAN_MODEL = "gemini-3.8-flash"  # default; GEMINI_FOLLOWUP_MODEL overrides it
 # gemini-3.8-flash list prices, USD per 1M tokens (thinking billed as output).
@@ -1750,11 +1751,12 @@ strings write every backslash as \\\\ (regexes, LaTeX, Windows paths) and line b
 "software": [{{"name": "...", "source": "module|conda-forge|bioconda|pip|apptainer|spack", "version": "optional", "why": "..."}}],
 "inputs": ["data or structures used, with URLs where downloaded"],
 "parameters": {{"name": value}},
+"parameter_sources": {{"name": "citation (author year, or URL), or 'assumed: why'"}},
 "resources": {{"partition": "...", "nodes": 1, "ntasks_per_node": null, "time_limit": "HH:MM:SS", "gpus": 0}},
 "install": {{"modules": [], "conda": ["package", ...], "channels": ["conda-forge"], "pip": ["package", "--extra-index-url https://...", ...], "apptainer": ["docker://image:tag"], "spack": ["only for compiled codes that are neither modules nor on conda-forge"], "verify": ["one-line shell checks that prove the software works, e.g. \"SU2_CFD --help | head -1\" or \"python -c 'import rdkit'\""]}},
 "script": "bash commands to run after install (no #SBATCH lines, no install commands). Parameters from 'parameters' are exported as env vars named PARAM_<NAME> in upper case; use them.",
 "expected_outputs": ["outputs/..."],
-"success_criteria": "how to tell the run worked",
+"success_criteria": "how to tell the run worked, and what result would count against the claim",
 "caveats": "limits of what this computation can show"}}"""
 
 ANALYZE_PROMPT = """You ran a computational job to answer a question raised by a research report.
@@ -1765,7 +1767,8 @@ APPROACH: {approach}
 PARAMETERS: {params}
 SUCCESS CRITERIA: {criteria}
 JOB STATE: {state} (Slurm exit {exit_code}, elapsed {elapsed})
-KNOWN-ANSWER CHECKS (outputs/verdict.json): {verdict}
+CHECKS (outputs/verdict.json): {verdict}
+OUTCOME (from the checks): {outcome}
 
 OUTPUT FILES:
 {files}
@@ -1776,9 +1779,12 @@ TEXT OUTPUTS (truncated):
 LOG TAIL:
 {log}
 
-Rules: report only what the outputs and log show. Quote the key numbers exactly. If a
-known-answer check failed, say so in the first sentence of **Result** and do not present the
-other numbers as findings. Take
+Rules: report only what the outputs and log show. Quote the key numbers exactly. Start
+**Result** with the OUTCOME word (CONFIRMED, REFUTED, INCONCLUSIVE or BROKEN) and what it
+means: REFUTED is a real negative result about the report's claim; INCONCLUSIVE means the
+test could not tell (say why, e.g. both arms saturated) and is not evidence either way;
+BROKEN means a validation check or the job failed, so do not present the other numbers as
+findings. Take
 counts of inputs (samples, sequences, structures, cases) from the input or log lines that
 state them, not from derived structures (a tree also has internal nodes, a mesh has cells). No LaTeX
 (the reader does not render it): write symbols in plain Unicode, e.g. θ, ≤, √2, ×10⁻³. If the job
@@ -1867,8 +1873,8 @@ stage() {{ echo "$1" >> "$SLURM_SUBMIT_DIR/stage.txt"; echo "[STAGE] $1"; }}
 export -f stage
 trap 'rc=$?; if [ $rc -ne 0 ]; then stage "Failed (exit $rc)"; fi' EXIT
 echo "[INFO] job $SLURM_JOB_ID on $(hostname), $SLURM_CPUS_ON_NODE CPUs, $(date -u +%FT%TZ)"
-export LAB_SMOKE="${{LAB_SMOKE:-0}}"  # 1 = cut-down smoke test (see plan)
-[ "$LAB_SMOKE" = 1 ] && echo "[INFO] SMOKE TEST: cut-down run"
+export LAB_SMOKE="${{LAB_SMOKE:-0}}"  # 1 = cut-down pilot run (see plan)
+[ "$LAB_SMOKE" = 1 ] && echo "[INFO] PILOT: cut-down run"
 {site_header}{exports}
 
 stage "Installing software"
@@ -2775,7 +2781,7 @@ def plan_diff(before: dict, after: dict, max_lines: int = 400) -> dict:
 NODE_FAIL_WARN = 3  # node failures before the queue label suggests another partition
 
 
-class Lab:
+class Lab(LabVerdictMixin):
     def __init__(
         self,
         db_path: str,
@@ -2965,6 +2971,12 @@ class Lab:
                 d[k] = json.loads(d[k]) if d.get(k) else None
             except ValueError:
                 pass
+        # the outcome (confirmed/refuted/inconclusive/broken) is derived, never stored,
+        # so runs from before v0.39.0 get one too
+        d["assessment"] = labverdict.assess(
+            d.get("verdict") if isinstance(d.get("verdict"), dict) else None,
+            str(d.get("status") or ""),
+        )
         return d
 
     def runs_for(self, session_id: int) -> list[dict]:
@@ -3781,7 +3793,7 @@ class Lab:
                 run_id,
                 only_if=("smoke",),
                 status="cancelled",
-                stage="Cancelled during the smoke test",
+                stage="Cancelled during the pilot",
                 finished_at=_now(),
             )
         elif run["status"] == "submitting" and not run.get("job_id"):
@@ -4125,7 +4137,7 @@ class Lab:
             run_id,
             only_if=("submitting", "smoke"),
             status="smoke",
-            stage=f"Smoke test (round {round_no}): "
+            stage=f"Pilot (round {round_no}): "
             + (
                 "warm Lab node booting"
                 if state.startswith(("started", "pending"))
@@ -4177,7 +4189,7 @@ class Lab:
                     run_id,
                     only_if=("smoke",),
                     status="failed",
-                    stage="Smoke test lost",
+                    stage="Pilot lost",
                     error="The smoke-test task disappeared from the warm node's queue "
                     "(the node may have been reclaimed). Submit again to retry.",
                     finished_at=_now(),
@@ -4188,7 +4200,7 @@ class Lab:
                 self._update(
                     run_id,
                     only_if=("smoke",),
-                    stage=f"Smoke test (round {n}): "
+                    stage=f"Pilot (round {n}): "
                     + (
                         "warm Lab node booting"
                         if state.startswith(("started", "pending"))
@@ -4202,7 +4214,7 @@ class Lab:
                 run_id,
                 only_if=("smoke",),
                 node=t["node"],
-                stage=f"Smoke test (round {n}) on {t['node']}"
+                stage=f"Pilot (round {n}) on {t['node']}"
                 + (f": {st[-1]}" if st else ""),
             )
             return
@@ -4233,6 +4245,26 @@ class Lab:
             }
         ]
         if passed:
+            # the pilot's own checks: a design that cannot discriminate (both arms
+            # saturated) stops here instead of spending the full run to learn nothing
+            gate = self._pilot_gate(run, tgt)
+            if gate:
+                sm["pilot"] = gate
+                self._update(
+                    run_id,
+                    only_if=("smoke",),
+                    status="draft",
+                    stage="Pilot: the test cannot discriminate; "
+                    + (
+                        "AI is re-planning the design"
+                        if self._auto_replan_allowed(run)
+                        else "change the design, then submit"
+                    ),
+                    smoke=sm,
+                    submitted_at=None,
+                )
+                self._maybe_auto_replan(self.get(run_id) or run, pilot=True)
+                return
             same = self._plan_core(plan) == sm.get("original")
             if same:
                 try:
@@ -4242,7 +4274,7 @@ class Lab:
                         run_id,
                         only_if=("smoke",),
                         status="failed",
-                        stage="Submit failed after the smoke test",
+                        stage="Submit failed after the pilot",
                         error=str(e)[:500],
                         smoke=sm,
                         finished_at=_now(),
@@ -4252,7 +4284,7 @@ class Lab:
                     run_id,
                     only_if=("smoke",),
                     status="queued",
-                    stage=f"Smoke test passed (round {n}); "
+                    stage=f"Pilot passed (round {n}); "
                     + (
                         "queued on the warm Lab node"
                         if job.startswith("warm:")
@@ -4267,13 +4299,13 @@ class Lab:
                     run_id,
                     only_if=("smoke",),
                     status="draft",
-                    stage=f"Smoke test passed after {n - 1} AI fix(es): review the changes, then submit",
+                    stage=f"Pilot passed after {n - 1} AI fix(es): review the changes, then submit",
                     smoke=sm,
                     submitted_at=None,
                 )
             return
         if n >= self.SMOKE_MAX_ROUNDS:
-            self._fail_smoke(run, sm, log, f"Smoke test failed {n} times", fadvice)
+            self._fail_smoke(run, sm, log, f"Pilot failed {n} times", fadvice)
             return
         # the same failure class twice in a row means the AI is not getting anywhere
         prev = [r.get("class") for r in sm["rounds"][:-1]]
@@ -4282,14 +4314,14 @@ class Lab:
         ):
             self._fail_smoke(
                 run, sm, log,
-                f"Smoke test failed ({fclass}); not handed to the AI again", fadvice,
+                f"Pilot failed ({fclass}); not handed to the AI again", fadvice,
             )  # fmt: skip
             return
         sm["fixing"] = True
         if not self._update(
             run_id,
             only_if=("smoke",),
-            stage=f"Smoke test failed (round {n}, exit {rc}"
+            stage=f"Pilot failed (round {n}, exit {rc}"
             + (f", missing {', '.join(missing[:3])}" if missing else "")
             + "); AI is fixing it",
             smoke=sm,
@@ -4477,7 +4509,7 @@ class Lab:
         except Exception as e:
             run = self.get(run_id) or run
             self._fail_smoke(
-                run, sm, log, f"Smoke test failed; AI fix failed ({str(e)[:160]})"
+                run, sm, log, f"Pilot failed; AI fix failed ({str(e)[:160]})"
             )
 
     def warm_status(self, name: str | None = None) -> dict:
@@ -4704,14 +4736,15 @@ class Lab:
         note, cost = self._analyze(run, dest, final)
         self._add_cost(run["id"], cost)
         stage = "Completed" if final == "completed" else f"Ended: {state or 'unknown'}"
-        if final == "completed" and verdict and verdict.get("pass") is False:
-            stage = "Completed, known-answer check FAILED"
-        elif final == "completed" and verdict and verdict.get("audit"):
-            stage = (
-                "Completed; review the verdict ("
-                + verdict["audit"][0].split(" ")[0].lower()
-                + " check)"
-            )
+        outcome = labverdict.assess(verdict, final) if final == "completed" else None
+        if outcome:
+            stage = f"Completed: {outcome['outcome'].upper()}"
+            if verdict and verdict.get("audit") and outcome["outcome"] == "confirmed":
+                stage += (
+                    "; review the verdict ("
+                    + verdict["audit"][0].split(" ")[0].lower()
+                    + " check)"
+                )
         changed = self._update(
             run["id"],
             only_if=("analyzing",),
@@ -4722,6 +4755,10 @@ class Lab:
         )
         if changed and final == "completed":
             self._learn_from_fix(run)
+            done = self.get(run["id"]) or run
+            self._attach_note(done)
+            if outcome and outcome["outcome"] == "inconclusive":
+                self._maybe_auto_replan(done)
 
     def _learn_from_fix(self, run: dict) -> None:
         """A completed AI fix of a failed run becomes a lesson for future plans."""
@@ -4789,6 +4826,9 @@ class Lab:
             verdict=json.dumps(run.get("verdict"))[:3000]
             if run.get("verdict")
             else "none written",
+            outcome=labverdict.outcome_line(
+                {"verdict": run.get("verdict"), "status": final}
+            ),
         )
         try:
             return self._ask(prompt, search=False)

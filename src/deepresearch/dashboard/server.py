@@ -1487,6 +1487,12 @@ class Api(ProjectApi):
                         },
                     },
                     "session_title": (r.get("session_prompt") or "")[:160],
+                    # outcome only (no check details) for the list's badge
+                    "assessment": {
+                        "outcome": (v.get("assessment") or {}).get("outcome")
+                    }
+                    if v.get("assessment")
+                    else None,
                 }
             )
         return {"runs": out}

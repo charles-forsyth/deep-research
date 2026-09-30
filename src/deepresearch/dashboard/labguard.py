@@ -211,11 +211,14 @@ GENERAL_RULES = [
     "output folder and read what exists; fail with a clear message if the expected file is "
     "missing.",
     "Where a known answer exists (a benchmark, an analytic limit, a published value), check "
-    'it and write outputs/verdict.json: {"checks": [{"name": ..., "expected": ..., '
-    '"got": ..., "tolerance": ..., "pass": true|false}], "pass": true|false}.',
-    "Support a smoke mode: when LAB_SMOKE=1, run a cut-down version (smallest grid, fewest "
-    "cases or iterations, seconds not minutes) that still exercises every step and writes "
-    "every expected output file.",
+    'it and write outputs/verdict.json: {"checks": [{"name": ..., "kind": '
+    '"validation"|"informative"|"claim", "expected": ..., "got": ..., "tolerance": ..., '
+    '"pass": true|false}], "pass": true|false}.',
+    "Support a pilot mode: when LAB_SMOKE=1, run a cut-down version (smallest grid, fewest "
+    "cases or replicates, seconds not minutes) that still exercises every step, writes "
+    "every expected output file and writes outputs/verdict.json with the same checks. The "
+    "pilot's informative checks decide whether the full run is worth it, so compute them "
+    "in pilot mode too, with bounds loose enough for the small sample.",
     "When a computation fails (a fit with too few points, NaN, no convergence), record the "
     "failure (NaN or null, pass false) and say so. Never return a reference or expected "
     "value as a fallback: a failed calculation would then look like agreement.",
@@ -277,8 +280,11 @@ def matching(text: str, state_dir: Path | None, limit: int = 8) -> list[dict]:
 def prompt_block(text: str, state_dir: Path | None) -> str:
     """The lessons section for a planning or fixing prompt."""
     hits = matching(text, state_dir)
+    from deepresearch.dashboard.labverdict import PLANNER_RULES
+
     lines = ["Rules learned from earlier runs on this cluster (follow them):"]
     lines += [f"- {r}" for r in GENERAL_RULES]
+    lines += [f"- {r}" for r in PLANNER_RULES]
     if hits:
         lines.append("Software-specific lessons:")
         lines += [f"- {p['text']}" for p in hits]
