@@ -1139,6 +1139,17 @@ def validate_plan(target: SlurmSSHTarget | None, plan: dict) -> list[str]:
     warns += check_script(str(plan.get("script") or ""))
     warns += labguard.science_warnings(plan)
     warns += missing_import_warnings(plan)
+    script = str(plan.get("script") or "")
+    if (
+        "SU2_CFD" in script
+        and re.search(r"^TIME_DOMAIN\s*=\s*YES", script, re.M)
+        and not re.search(r"^MAX_TIME\s*=", script, re.M)
+    ):
+        warns.append(
+            "SU2 unsteady run without MAX_TIME: SU2 stops at 1 s of physical time by "
+            "default, whatever TIME_ITER says (run #92 ran 201 of 2000 steps). Add "
+            "MAX_TIME= <total time> to the config."
+        )
     inst = plan.get("install") or {}
     builds_python = bool(inst.get("pip") or inst.get("conda")) or any(
         str(m).split("/")[0] in PYTHON_ENV_MODULES for m in inst.get("modules") or []

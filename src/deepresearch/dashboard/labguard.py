@@ -76,7 +76,9 @@ CURATED: list[dict[str, Any]] = [
         "C_D near 30 in the first steps) before taking max/min: use the last few "
         "shedding periods only; a symmetric start needs several seconds of physical time "
         "at Re=100 before shedding is periodic (run #87: 4 s, C_L still one-signed). Use "
-        "MUSCL_FLOW= YES and SLOPE_LIMITER_FLOW= for second order. SU2 stops on the first unknown option and prints 'Did you mean "
+        "MUSCL_FLOW= YES and SLOPE_LIMITER_FLOW= for second order. SU2 also stops at "
+        "MAX_TIME (default 1 s of physical time) whatever TIME_ITER says: set MAX_TIME= "
+        "<total time> (run #87/#92 stopped at t=1 s, 201 of 2000 steps). SU2 stops on the first unknown option and prints 'Did you mean "
         "X?': take its suggestion.",
         "source": "draft #51, job 225, run #62/#74/#87",
     },
@@ -99,7 +101,11 @@ CURATED: list[dict[str, Any]] = [
         "pour needs gravity along -y (fix grav gravity 1.0 vector 0 -1 0); `lattice ... "
         "units box` is not valid syntax (lattice takes a scale; `region`/`create_atoms` take "
         "units box). thermo_style resets thermo_modify: put `thermo_modify lost ignore` AFTER "
-        "thermo_style, or grains leaving an open boundary stop the run with 'Lost atoms'.",
+        "thermo_style, or grains leaving an open boundary stop the run with 'Lost atoms'. "
+        "But `lost ignore` also hides a system that falls apart: in run #89 the atom count "
+        "fell to 6 (fewer than the 41 substrate atoms), both friction cases then gave "
+        "identical output, and the verdict still passed. Print the final atom count and "
+        "fail when it is far below substrate + grains poured.",
         "source": "runs #57/#81/#84, checked on a compute node 2026-09-29",
     },
     {
