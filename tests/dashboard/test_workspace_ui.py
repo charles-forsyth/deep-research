@@ -51,3 +51,14 @@ def test_tint_is_subtle():
     assert rule, "workspace tint rule missing"
     # only the border line and a faint shadow change; no background fill or banner
     assert "background" not in rule.group(1)
+
+
+def test_topbar_status_chips_shrink_instead_of_pushing_buttons_off():
+    css = _read("app.css")
+    block = css[css.index(".telemetry {") : css.index("}", css.index(".telemetry {"))]
+    assert (
+        "min-width: 0" in block
+        and "overflow: hidden" in block
+        and "flex-wrap: wrap" in block
+    )
+    assert ".top-actions { flex: none; }" in css

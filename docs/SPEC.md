@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.43.0 (package `deepresearch`) |
+| Applies to | deep-research v0.43.1 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -2233,6 +2233,7 @@ building on the zip format.
 | 2026-09-30 | v0.41.0 | Workspace switcher in the top bar (23.6), subtle tint outside Main. |
 | 2026-09-30 | v0.42.0 | Copy projects and reports into another workspace (23.7). |
 | 2026-09-30 | v0.43.0 | Export and import a workspace as a zip (23.8). |
+| 2026-09-30 | v0.43.1 | Top bar fits at 1200-1600 px: status chips that do not fit are hidden instead of pushing the buttons off screen. |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |
