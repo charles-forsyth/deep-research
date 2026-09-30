@@ -171,6 +171,29 @@ const LAB = {
   },
 
   // Write-ups are asked for plain Unicode; turn stray inline TeX ($\theta$, $\le$) into symbols.
+  refereeHtml(r, p, editable) {
+    const rv = p.review;
+    if (!editable && !rv) return "";
+    if (!rv) {
+      return `<div class="lab-referee none"><span class="label">Referee</span> <span class="dim" style="font-size:11.5px">Not reviewed yet: a second AI pass asks whether this test could ever fail, or ever pass.</span> <button class="btn small" data-x="review">Run referee</button></div>`;
+    }
+    const stale = r.review_stale;
+    const f = rv.findings || [];
+    const cls = rv.verdict === "sound" ? "ok" : rv.verdict === "flawed" ? "bad" : "warn";
+    const label = { sound: "looks sound", concerns: "has concerns", flawed: "flawed" }[rv.verdict] || rv.verdict;
+    const kind = (k) => ({ cannot_fail: "cannot fail", cannot_pass: "cannot pass", wrong_question: "wrong question", weak_control: "weak control", parameter: "parameter", other: "other" })[k] || k;
+    return `<div class="lab-referee ${cls}${stale ? " stale" : ""}">
+      <div class="lab-fix-row referee-head"><span class="label">Referee: ${esc(label)}</span>
+        <span class="chip" title="The referee never changes or blocks the plan">advice only</span>
+        ${stale ? '<span class="chip bad" title="The plan changed after the referee read it">OUT OF DATE</span>' : ""}
+        <span class="grow"></span>
+        ${editable ? `<button class="btn small" data-x="review">${stale ? "Review again" : "\u21BB Re-run"}</button>` : ""}</div>
+      ${rv.summary ? `<div class="dim" style="font-size:12px;margin-top:2px">${esc(rv.summary)}</div>` : ""}
+      ${f.length ? `<ul class="referee-findings">${f.map((x) => `<li class="${esc(x.severity)}"><span class="sev">${esc(x.severity)}</span> <b>${esc(kind(x.kind))}</b>${x.where ? ` <span class="mono dim">${esc(x.where)}</span>` : ""}: ${esc(x.problem)}${x.suggestion ? `<div class="dim">Suggested: ${esc(x.suggestion)}</div>` : ""}</li>`).join("")}</ul>` : ""}
+      ${editable && !stale && f.some((x) => x.severity !== "low") ? `<div class="lab-fix-row">${(p.warnings || []).length ? "" : '<button class="btn small primary" data-x="fix">Fix with AI</button>'}<span class="dim" style="font-size:11px">passes the high and medium findings to the fixer; you review the result before anything runs. Or submit as is.</span></div>` : ""}
+    </div>`;
+  },
+
   concernsHtml(p) {
     // what an AI fix did that needs a person's eyes (fallback to a reference value, changed
     // verdict tolerances, a swapped formula variable, a removed library, a big rewrite)
@@ -378,6 +401,7 @@ const LAB = {
       <div class="modal-head"><h3>${editable ? "Review lab run" : "Lab run"} #${r.id}: ${esc(p.title || "")}</h3><button class="icon-btn modal-x" data-x="0" aria-label="Close">\u2715</button></div>
       <nav class="lab-toc">${["What and why", "Software and data", "Settings", "Result check", "Script"].map((t, i) => `<a href="#" data-sec="${i + 1}">${i + 1}. ${t}</a>`).join("")}</nav>
       <div class="lab-q"><span class="label">Question</span> ${esc(p.question || "")}</div>
+      ${this.refereeHtml(r, p, editable)}
       ${(p.warnings || []).length ? `<div class="lab-warn"><span class="label">Checked against the cluster: ${p.warnings.length} problem${p.warnings.length > 1 ? "s" : ""}</span><ul>${p.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul><div class="lab-fix-row">${editable ? `<button class="btn" data-x="fix" title="The AI fixes only what is flagged, then the plan is checked again. Nothing is submitted.">Fix with AI</button>` : ""}<span class="dim" style="font-size:11px">${editable ? "or edit the plan (modules, partition, GPUs) yourself, or submit anyway." : ""}</span></div></div>` : ""}
       ${!p.plan_before_fix && (p.fix_changes || []).length && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">AI fix of failed run #${esc(r.rerun_of || "")}</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "checks pass"}</span></div><ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>${this.concernsHtml(p)}${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(p.fix_notes.replace(/REVIEW: [^.]*\. ?/g, ""))}</div>` : ""}${this.diffHtml(p.fix_diff)}</div>` : ""}
       ${p.plan_before_fix && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">Fixed by AI and re-checked</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "no warnings"}</span> <button class="btn" data-x="undofix">Undo fix</button></div>${(p.fix_changes || []).length ? `<ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}${this.concernsHtml(p)}${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(p.fix_notes.replace(/REVIEW: [^.]*\. ?/g, ""))}</div>` : ""}${this.diffHtml(p.fix_diff)}</div>` : ""}
@@ -447,8 +471,18 @@ const LAB = {
       return n;
     };
     snapshot = formState();
-    const fixBtn = $('#modal [data-x="fix"]');
-    if (fixBtn) fixBtn.onclick = () => busy(fixBtn, async () => {
+    const revBtn = $('#modal [data-x="review"]');
+    if (revBtn) revBtn.onclick = () => busy(revBtn, async () => {
+      revBtn.innerHTML = '<span class="spinner"></span> Reviewing';
+      if (formState() !== snapshot) await save(); // judge what is on screen
+      const n = await api(`/api/lab/${r.id}/review`, { method: "POST" });
+      const rv = (n.plan && n.plan.review) || {};
+      toast(rv.verdict === "sound" ? "Referee: the test looks sound" : `Referee: ${rv.verdict}, ${(rv.findings || []).length} finding(s)`, rv.verdict === "sound" ? "ok" : "err");
+      snapshot = formState();
+      this.review(el, s, n);
+    });
+    // there can be two Fix buttons (pre-flight warnings, referee); both run the same fix
+    document.querySelectorAll('#modal [data-x="fix"]').forEach((fixBtn) => (fixBtn.onclick = () => busy(fixBtn, async () => {
       fixBtn.innerHTML = '<span class="spinner"></span> Fixing';
       const n = await api(`/api/lab/${r.id}/fix`, { method: "POST" });
       const f = n.fix || {};
@@ -456,7 +490,7 @@ const LAB = {
       snapshot = formState(); // the old form is replaced; nothing to discard
       this.review(el, s, n);
       this.refresh(document.querySelector("#lab-panel"), s);
-    });
+    })));
     const undoBtn = $('#modal [data-x="undofix"]');
     if (undoBtn) undoBtn.onclick = () => busy(undoBtn, async () => {
       const n = await api(`/api/lab/${r.id}/undo-fix`, { method: "POST" });

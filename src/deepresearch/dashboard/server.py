@@ -338,6 +338,7 @@ class Api(ProjectApi):
         r("POST", r"/api/lab/(\d+)/rerun", self.lab_rerun)
         r("POST", r"/api/lab/(\d+)/replan", self.lab_replan)
         r("POST", r"/api/lab/(\d+)/fix", self.lab_fix)
+        r("POST", r"/api/lab/(\d+)/review", self.lab_review)
         r("POST", r"/api/lab/(\d+)/undo-fix", self.lab_undo_fix)
         r("POST", r"/api/lab/(\d+)/fix-failed", self.lab_fix_failed)
         r("GET", r"/api/lab/(\d+)/log", self.lab_log)
@@ -1665,6 +1666,9 @@ class Api(ProjectApi):
         from deepresearch.sources.provenance import lab_provenance
 
         run["provenance"] = lab_provenance(self.db_path, run)
+        plan = run.get("plan") or {}
+        if isinstance(plan, dict) and plan.get("review"):
+            run["review_stale"] = self.lab.review_stale(plan)
         return run
 
     def lab_targets(self, query, body):
@@ -1916,6 +1920,13 @@ class Api(ProjectApi):
             plan=plan,
         )
         return self._lab_view(new)
+
+    def lab_review(self, rid, query, body):
+        self._lab_run(rid)
+        try:
+            return self._lab_view(self.lab.review(int(rid)))
+        except ValueError as e:
+            raise ApiError(409, str(e)) from e
 
     def lab_fix(self, rid, query, body):
         self._lab_run(rid)

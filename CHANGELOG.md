@@ -7,6 +7,17 @@ releases.
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-09-30
+
+### Added
+
+- **Lab referee.** Every new Lab plan gets a second AI read before you submit it, as a
+  sceptical referee: could this test ever fail, could it ever pass, does it test the
+  report's claim or an easier one, are the controls real. Findings show in the review
+  dialog by severity, marked "advice only" (nothing is changed or blocked). "Fix with AI"
+  hands the high and medium findings to the fixer, and the review turns "out of date"
+  when the plan changes. About a cent per plan; set DR_LAB_REVIEW=0 to turn it off.
+
 ## [0.45.0] - 2026-09-30
 
 ### Added
