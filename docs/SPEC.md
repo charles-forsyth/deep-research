@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.48.0 (package `deepresearch`) |
+| Applies to | deep-research v0.48.1 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1751,6 +1751,12 @@ pilot) so the referee does not flag them.
   workspaces) calls `ensure_warm` every 5 minutes, also when no Lab runs exist, and
   survives an unreachable cluster. The warm Stop button pauses the keeper until Start;
   `GET /api/lab/warm` reports `always_on` and `keeper_paused`.
+- v0.48.1: the planner prompt names the default partition and says single-node CPU work
+  on it runs on the always-on warm node; the catalog's "Default." wording for another
+  partition is dropped. Pre-flight suggests the default partition for single-node CPU
+  plans that picked another one (multi-node and GPU plans keep theirs). The two Python
+  package checks ("already provides" / "nothing installs") now share one list, which
+  includes requests and certifi for python-sci (they had disagreed, run #42).
 - Cost: one computehigh node around the clock (~$1.87/hour list, about $45/day,
   before credits).
 - Tests: `tests/dashboard/test_warm_always_on.py` (catalog vs config default, keeper,
@@ -2374,6 +2380,7 @@ building on the zip format.
 | 2026-09-30 | v0.47.0 | `deep-research projects` CLI (22.10). |
 | 2026-09-30 | v0.47.1 | Automatic referee retries once and records why it did not run (20.15). |
 | 2026-09-30 | v0.48.0 | Default partition from lab_targets.json wins over the catalog; always-on warm node (20.16). |
+| 2026-09-30 | v0.48.1 | Planner steered to the default/warm partition; one Python package list for both pre-flight checks (20.16). |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |

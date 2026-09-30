@@ -7,6 +7,16 @@ releases.
 
 ## [Unreleased]
 
+## [0.48.1] - 2026-09-30
+
+### Fixed
+
+- Lab plans kept choosing the `standard` partition because the cluster catalog's text
+  called it the default; the planner now hears that computehigh is the default and has
+  the always-on warm node, and pre-flight suggests it for single-node CPU jobs.
+- Two pre-flight checks disagreed about whether python-sci provides `requests`, so the
+  fixer added and removed it in turn. They now share one package list.
+
 ## [0.48.0] - 2026-09-30
 
 ### Changed
