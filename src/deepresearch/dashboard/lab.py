@@ -3793,8 +3793,13 @@ class Lab(LabVerdictMixin):
                 tgt.upload(run_id, files, fresh=True)
                 for src in sources:
                     self.sources.record_use(src, "lab_run", run_id)
-                _IN_FLIGHT.discard(self._key(run_id))
-                self._start_smoke(run_id, tgt, plan, round_no=1, original=plan)
+                # Stay in flight until the pilot is queued and the run says "smoke":
+                # queueing it is slow (ssh), and meanwhile the watcher must not take
+                # the still-"submitting" run for one a stopped dashboard left behind.
+                try:
+                    self._start_smoke(run_id, tgt, plan, round_no=1, original=plan)
+                finally:
+                    _IN_FLIGHT.discard(self._key(run_id))
                 self.ensure_watcher()
                 return self.get(run_id) or {}
             job = self._dispatch(run_id, tgt, plan, files)
