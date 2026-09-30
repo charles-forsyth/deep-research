@@ -183,3 +183,15 @@ def test_escape_heredoc_unset_vars():
     assert labguard.heredoc_unset_vars(new) == []
     quoted = s.replace("<< EOF", "<< 'EOF'")
     assert labguard.escape_heredoc_unset_vars(quoted) == (quoted, [])
+
+
+def test_mathtext_escapes():
+    from deepresearch.dashboard import labguard
+
+    bad = "python3 - <<'EOF'\nlabel = 'Pile ($\\tau \\approx 1.34$)'\nEOF\n"
+    assert labguard.mathtext_escapes(bad)
+    assert labguard.mathtext_escapes(bad.replace("= '", "= r'")) == []
+    fbad = (
+        "python3 - <<'EOF'\nt = 1.3\nlabel = f'Pile ($\\tau \\approx {t:.2f}$)'\nEOF\n"
+    )
+    assert labguard.mathtext_escapes(fbad)

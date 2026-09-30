@@ -2287,6 +2287,7 @@ IMPORT_NAMES = {
     "numba": "numba",
     "sympy": "sympy",
     "scikit-rf": "skrf",
+    "python-gmsh": "gmsh",
 }
 # conda-only tools with no Python import: never import-checked
 NO_IMPORT = {
@@ -4137,12 +4138,18 @@ class Lab:
     def _poll_smoke(self, run: dict, tgt) -> None:
         sm = dict(run.get("smoke") or {})
         if sm.get("fixing") and run["id"] not in _SMOKE_FIXING:
-            # the dashboard restarted while the AI was fixing it: nothing will finish it
-            self._fail_smoke(
-                run, sm, str((sm.get("rounds") or [{}])[-1].get("log_tail") or ""),
-                "Smoke test interrupted (the dashboard restarted during the AI fix)",
-                "Submit again to retry.",
-            )  # fmt: skip
+            # the dashboard restarted while the AI was fixing it (run #88): resume the fix
+            # from the saved log instead of failing a run nobody did anything wrong with
+            last = (sm.get("rounds") or [{}])[-1]
+            _SMOKE_FIXING.add(run["id"])
+            threading.Thread(
+                target=self._smoke_fix,
+                args=(
+                    run["id"], str(last.get("log_tail") or ""), last.get("rc"),
+                    list(last.get("missing") or []), "",
+                ),
+                daemon=True,
+            ).start()  # fmt: skip
             return
         if sm.get("fixing") or not sm.get("task"):
             return

@@ -7,6 +7,17 @@ releases.
 
 ## [Unreleased]
 
+## [0.35.6] - 2026-09-29
+
+### Fixed
+
+- A smoke fix interrupted by a dashboard restart resumes from the saved log instead of failing the run (run #88).
+- The install import check knows `python-gmsh` imports as `gmsh` (run #87).
+
+### Added
+
+- Pre-flight catches matplotlib math text in normal (not raw) strings, where `\\tau` and `\\approx` turn into control characters (run #88), including in f-strings.
+
 ## [0.35.5] - 2026-09-29
 
 ### Fixed

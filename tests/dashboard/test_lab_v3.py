@@ -669,15 +669,26 @@ def test_ladder_pinned_binary_conda_plan():
     assert "while IFS= read -r line" in s and "set +e +o pipefail" in s
 
 
-def test_smoke_fix_interrupted_by_restart_is_failed_not_stuck(wlab):
+def test_smoke_fix_interrupted_by_restart_is_resumed(wlab, monkeypatch):
+    """Run #88: a dashboard restart mid-fix used to fail the run; now the fix resumes."""
     run = _draft(wlab)
     wlab.submit(run["id"])
     sm = dict(wlab.get(run["id"])["smoke"], fixing=True)
+    sm["rounds"] = [{"round": 1, "rc": 1, "log_tail": "boom", "missing": []}]
     wlab._update(run["id"], smoke=sm)  # as left by a dashboard that died mid-fix
     labm._SMOKE_FIXING.discard(run["id"])
+    called = []
+    monkeypatch.setattr(wlab, "_smoke_fix", lambda *a: called.append(a))
     wlab.poll(wlab.get(run["id"]))
-    f = wlab.get(run["id"])
-    assert f["status"] == "failed" and "restarted" in f["stage"]
+    import time as _t
+
+    for _ in range(50):
+        if called:
+            break
+        _t.sleep(0.02)
+    assert called and called[0][0] == run["id"] and called[0][1] == "boom"
+    assert wlab.get(run["id"])["status"] == "smoke"
+    labm._SMOKE_FIXING.discard(run["id"])
 
 
 def test_pixi_hook_runs_without_nounset():
