@@ -7,6 +7,14 @@ releases.
 
 ## [Unreleased]
 
+## [0.43.1] - 2026-09-30
+
+### Fixed
+
+- Top bar on laptop-width screens (about 1200-1600 px): with the workspace switcher the
+  "+ New research" and Commands buttons ran off the right edge. Status chips that do not
+  fit are now hidden instead.
+
 ## [0.43.0] - 2026-09-30
 
 ### Added

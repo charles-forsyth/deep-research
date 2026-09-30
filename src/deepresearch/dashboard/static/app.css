@@ -71,7 +71,14 @@ input, textarea, select { font: inherit; color: var(--text); }
 .brand-name { font: 600 13px var(--mono); letter-spacing: .28em; color: #e8f6fb; }
 .brand-sub { font: 10px var(--mono); color: var(--dim); letter-spacing: .12em; text-transform: uppercase; }
 @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .45 } }
-.telemetry { display: flex; gap: 6px; flex: 1; justify-content: center; }
+.telemetry {
+  display: flex; gap: 6px; flex: 1 1 0; min-width: 0; justify-content: center;
+  /* chips that do not fit wrap onto a hidden second line instead of pushing the
+     buttons off the edge (v0.43.1) */
+  flex-wrap: wrap; height: 26px; overflow: hidden; align-items: center;
+}
+.top-actions { flex: none; }
+@media (max-width: 1600px) { .brand { min-width: 0; } }
 /* ---- workspace switcher (v0.41): quiet by design; outside Main only a thin tinted
    line under the top bar and a coloured dot, no banners ---- */
 .ws-switch { display: inline-flex; align-items: center; gap: 7px; max-width: 220px; padding: 4px 10px; border: 1px solid var(--line-2); border-radius: 999px; background: rgba(18, 25, 38, .6); color: var(--text); font: 11.5px var(--mono); cursor: pointer; white-space: nowrap; }
