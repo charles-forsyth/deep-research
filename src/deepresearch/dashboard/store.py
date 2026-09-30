@@ -20,9 +20,11 @@ def _now() -> str:
 
 
 class DashboardStore:
-    def __init__(self, db_path: str = user_db_path):
-        self.db_path = db_path
-        DatabaseSchema.init_db(db_path)
+    def __init__(self, db_path: str | None = None):
+        from deepresearch.core.session import _workspace_db
+
+        self.db_path: str = db_path or _workspace_db() or user_db_path
+        DatabaseSchema.init_db(self.db_path)
         with self._conn() as conn:
             conn.executescript(
                 """

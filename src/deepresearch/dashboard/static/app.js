@@ -21,8 +21,16 @@ const ago = (iso) => {
 };
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
+// Workspace this tab shows (switcher, v0.41). Stored per browser; every request says it.
+const WS = {
+  get() { return localStorage.getItem("dr.workspace") || "main"; },
+  set(slug) { localStorage.setItem("dr.workspace", slug || "main"); },
+  // for links that cannot send a header (<img>, <audio>, downloads)
+  q(url) { const w = WS.get(); return w === "main" ? url : url + (url.includes("?") ? "&" : "?") + "ws=" + encodeURIComponent(w); },
+  key(k) { const w = WS.get(); return w === "main" ? k : `${k}@${w}`; },
+};
 async function api(path, opts = {}) {
-  const init = { method: opts.method || "GET", headers: {} };
+  const init = { method: opts.method || "GET", headers: { "X-DR-Workspace": WS.get() } };
   // The server refuses non-JSON writes (cross-site protection), even bodyless ones.
   if (init.method !== "GET") init.headers["Content-Type"] = "application/json";
   if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
@@ -258,7 +266,7 @@ function renderSessionList() {
 // ---------------------------------------------------------------- tabs
 function currentTab() { return S.tabs.find((t) => t.key === S.active); }
 function saveTabs() {
-  localStorage.setItem(LS_TABS, JSON.stringify({ tabs: S.tabs.filter((t) => t.kind !== "launch"), active: S.active }));
+  localStorage.setItem(WS.key(LS_TABS), JSON.stringify({ tabs: S.tabs.filter((t) => t.kind !== "launch"), active: S.active }));
 }
 function openTab(tab) {
   if (!S.booted) S.bootNav = true;
@@ -1569,7 +1577,7 @@ window.addEventListener("beforeunload", (e) => { if (NB.dirty) { NB.saveNow(); e
   // draws early), keep it instead of restoring saved tabs over it.
   if (!S.tabs.length) {
     try {
-      const saved = JSON.parse(localStorage.getItem(LS_TABS) || "null");
+      const saved = JSON.parse(localStorage.getItem(WS.key(LS_TABS)) || "null");
       if (saved?.tabs?.length) { S.tabs = saved.tabs; S.active = saved.active; }
     } catch { /* ignore */ }
   }

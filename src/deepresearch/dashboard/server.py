@@ -187,29 +187,27 @@ def _safe_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:120] or "upload"
 
 
-class Api(ProjectApi):
-    """Route table + handlers. Kept separate from the HTTP plumbing for tests."""
+class WorkspaceContext:
+    """Everything a request needs from one workspace: its DB and the stores, Lab and
+    features bound to it, plus its folders for logs, uploads and audio."""
 
-    def __init__(
-        self,
-        db_path: str = user_db_path,
-        spawn: Callable = detach,
-        lab: Lab | None = None,
-    ):
-        self.db_path = db_path
-        self.sessions = SessionManager(db_path)
-        self.store = DashboardStore(db_path)
-        self.spawn = spawn
-        self._embed_lock = threading.Lock()
-        self.fx = Features(db_path, self._config, AUDIO_DIR)
-        self.lab = lab or Lab(db_path, self._config, STATE_DIR)
+    def __init__(self, slug: str, db_path: str, config, lab: Lab | None = None,
+                 log_dir: Path | None = None, upload_dir: Path | None = None,
+                 audio_dir: Path | None = None, results_dir: Path | None = None):  # fmt: skip
         from deepresearch.sources import SourceRegistry
 
+        self.slug = slug
+        self.db_path = db_path
+        self.log_dir = log_dir
+        self.upload_dir = upload_dir
+        self.sessions = SessionManager(db_path)
+        self.store = DashboardStore(db_path)
+        self.fx = Features(db_path, config, audio_dir or AUDIO_DIR)
+        self.lab = lab or Lab(
+            db_path, config, STATE_DIR, results_dir=results_dir, workspace=slug
+        )
         self.sources = SourceRegistry(db_path)
         self.projects = ProjectStore(db_path)
-        self._jobs: dict[int, dict] = {}
-        self._job_seq = 0
-        self._jobs_lock = threading.Lock()
         with sqlite3.connect(db_path, timeout=10) as conn:
             conn.executescript(
                 """
@@ -220,9 +218,67 @@ class Api(ProjectApi):
                 );
                 """
             )
+
+
+_CTX = threading.local()  # the workspace of the request this thread is serving
+
+_CTX_ATTRS = ("db_path", "sessions", "store", "fx", "lab", "sources", "projects")
+
+
+def _ctx_prop(name: str):
+    def get(self):
+        ctx = getattr(_CTX, "ctx", None) or self._main
+        return getattr(ctx, name)
+
+    def set_(self, value):
+        # tests (and the scratch server) replace these on the Api; that means Main
+        setattr(self._main, name, value)
+
+    return property(get, set_)
+
+
+class Api(ProjectApi):
+    """Route table + handlers. Kept separate from the HTTP plumbing for tests.
+
+    Workspaces: `self.db_path`, `self.sessions`, `self.store`, `self.fx`, `self.lab`,
+    `self.sources` and `self.projects` resolve to the workspace of the request being
+    served (header X-DR-Workspace; default Main), so every handler works unchanged in
+    any workspace. Main's context is the one built from the constructor arguments.
+    """
+
+    db_path = _ctx_prop("db_path")  # type: ignore[assignment]
+    sessions = _ctx_prop("sessions")  # type: ignore[assignment]
+    store = _ctx_prop("store")  # type: ignore[assignment]
+    fx = _ctx_prop("fx")  # type: ignore[assignment]
+    lab = _ctx_prop("lab")  # type: ignore[assignment]
+    sources = _ctx_prop("sources")  # type: ignore[assignment]
+    projects = _ctx_prop("projects")  # type: ignore[assignment]
+
+    def __init__(
+        self,
+        db_path: str = user_db_path,
+        spawn: Callable = detach,
+        lab: Lab | None = None,
+        workspaces: bool = False,
+    ):
+        # workspaces=False (tests, scratch server): Main only, exactly as before
+        self._main = WorkspaceContext("main", db_path, self._config, lab=lab)
+        self._contexts: dict[str, WorkspaceContext] = {"main": self._main}
+        self._ctx_lock = threading.Lock()
+        self._workspaces = workspaces
+        self.spawn = spawn
+        self._embed_lock = threading.Lock()
+        self._jobs: dict[int, dict] = {}
+        self._job_seq = 0
+        self._jobs_lock = threading.Lock()
         self.routes: list[tuple[str, re.Pattern, Callable]] = []
         r = self._route
         r("GET", r"/api/health", self.health)
+        r("GET", r"/api/workspaces", self.ws_list)
+        r("POST", r"/api/workspaces", self.ws_create)
+        r("PATCH", r"/api/workspaces/([a-z0-9-]+)", self.ws_update)
+        r("POST", r"/api/workspaces/([a-z0-9-]+)/duplicate", self.ws_duplicate)
+        r("DELETE", r"/api/workspaces/([a-z0-9-]+)", self.ws_delete)
         r("GET", r"/api/stats", self.stats)
         r("GET", r"/api/sessions", self.list_sessions)
         r("GET", r"/api/sessions/(\d+)", self.get_session)
@@ -302,7 +358,163 @@ class Api(ProjectApi):
     def _route(self, method: str, pattern: str, fn: Callable) -> None:
         self.routes.append((method, re.compile(f"^{pattern}$"), fn))
 
+    # ---- workspaces ------------------------------------------------------
+    def context(self, slug: str | None) -> WorkspaceContext:
+        """The context for a workspace id (created on first use)."""
+        s = (slug or "main").strip().lower() or "main"
+        if s == "main" or not self._workspaces:
+            if s != "main":
+                raise ApiError(400, "Workspaces are not enabled on this server")
+            return self._main
+        with self._ctx_lock:
+            ctx = self._contexts.get(s)
+            if ctx:
+                return ctx
+            from deepresearch.core import workspace as W
+
+            try:
+                ws = W.get(s)
+            except W.WorkspaceError as e:
+                raise ApiError(404, str(e)) from e
+            if ws.archived:
+                raise ApiError(409, f"Workspace {s!r} is archived")
+            W.init_db(ws)
+            ctx = WorkspaceContext(
+                ws.slug, ws.db_path, self._config,
+                log_dir=ws.logs_dir, upload_dir=ws.uploads_dir,
+                audio_dir=ws.audio_dir, results_dir=ws.lab_dir,
+            )  # fmt: skip
+            # share the cluster targets (one SSH connection, one warm node)
+            ctx.lab.targets = self._main.lab.targets
+            self._contexts[s] = ctx
+            return ctx
+
+    def start_watchers(self) -> None:
+        """Resume Lab watching in every workspace with runs still in flight."""
+        self._main.lab.ensure_watcher()
+        if not self._workspaces:
+            return
+        from deepresearch.core import workspace as W
+
+        for ws in W.list_all(include_archived=False):
+            if ws.is_main or not Path(ws.db_path).exists():
+                continue
+            try:
+                self.context(ws.slug).lab.ensure_watcher()
+            except Exception:
+                traceback.print_exc()
+
+    @property
+    def current_workspace(self) -> str:
+        ctx = getattr(_CTX, "ctx", None) or self._main
+        return ctx.slug
+
+    def _log_dir(self) -> Path:
+        ctx = getattr(_CTX, "ctx", None) or self._main
+        return ctx.log_dir or LOG_DIR
+
+    def _upload_dir(self) -> Path:
+        ctx = getattr(_CTX, "ctx", None) or self._main
+        return ctx.upload_dir or UPLOAD_DIR
+
+    # ---- workspace API ------------------------------------------------------
+    def _ws_enabled(self) -> None:
+        if not self._workspaces:
+            raise ApiError(400, "Workspaces are not enabled on this server")
+
+    def ws_list(self, query, body):
+        from deepresearch.cli.workspaces import stats
+        from deepresearch.core import workspace as W
+
+        if not self._workspaces:
+            return {"enabled": False, "current": "main", "workspaces": []}
+        out = []
+        for ws in W.list_all(include_archived=True):
+            active = 0
+            ctx = self._contexts.get(ws.slug)
+            if ctx:
+                active = len(ctx.lab.active())
+            out.append({**ws.to_dict(), **stats(ws), "active_lab_runs": active})
+        return {"enabled": True, "current": self.current_workspace, "workspaces": out}
+
+    def ws_create(self, query, body):
+        from deepresearch.core import workspace as W
+
+        self._ws_enabled()
+        body = body or {}
+        try:
+            ws = W.create(
+                str(body.get("name") or ""),
+                body.get("id") or None,
+                color=str(body.get("color") or "teal"),
+                description=str(body.get("description") or ""),
+            )
+        except W.WorkspaceError as e:
+            raise ApiError(400, str(e)) from e
+        return ws.to_dict()
+
+    def ws_update(self, slug, query, body):
+        from deepresearch.core import workspace as W
+
+        self._ws_enabled()
+        body = body or {}
+        try:
+            ws = W.update(
+                slug,
+                name=body.get("name"),
+                color=body.get("color"),
+                archived=body.get("archived"),
+                description=body.get("description"),
+            )
+        except W.WorkspaceError as e:
+            raise ApiError(400, str(e)) from e
+        if ws.archived:
+            with self._ctx_lock:
+                self._contexts.pop(ws.slug, None)
+        return ws.to_dict()
+
+    def ws_duplicate(self, slug, query, body):
+        from deepresearch.core import workspace as W
+
+        self._ws_enabled()
+        body = body or {}
+        try:
+            ws = W.duplicate(slug, str(body.get("name") or ""), body.get("id") or None)
+        except W.WorkspaceError as e:
+            raise ApiError(400, str(e)) from e
+        return ws.to_dict()
+
+    def ws_delete(self, slug, query, body):
+        from deepresearch.core import workspace as W
+
+        self._ws_enabled()
+        if (body or {}).get("confirm") != slug:
+            raise ApiError(400, 'Send {"confirm": "<id>"} to delete a workspace')
+        ctx = self._contexts.get(slug)
+        if ctx and ctx.lab.active():
+            raise ApiError(
+                409, "This workspace has Lab runs in progress; cancel them first"
+            )
+        try:
+            dest = W.trash(slug)
+        except W.WorkspaceError as e:
+            raise ApiError(400, str(e)) from e
+        with self._ctx_lock:
+            self._contexts.pop(slug, None)
+        return {"deleted": slug, "moved_to": str(dest)}
+
     def dispatch(
+        self, method: str, path: str, query: dict, body: Any,
+        workspace: str | None = None,
+    ) -> tuple[int, Any]:  # fmt: skip
+        prev = getattr(_CTX, "ctx", None)
+        _CTX.ctx = self.context(workspace)
+        try:
+            return self._dispatch(method, path, query, body)
+        finally:
+            _CTX.ctx = prev
+
+    def _dispatch(
         self, method: str, path: str, query: dict, body: Any
     ) -> tuple[int, Any]:
         for m, pat, fn in self.routes:
@@ -363,7 +575,12 @@ class Api(ProjectApi):
 
     def health(self, query, body):
         key = bool(os.getenv("GEMINI_API_KEY"))
-        out = {"ok": True, "version": __version__, "api_key": key}
+        out = {
+            "ok": True,
+            "version": __version__,
+            "api_key": key,
+            "workspace": self.current_workspace,
+        }
         if (query.get("check") or ["0"])[0] == "1":
             out["api_key_valid"] = self._key_valid()
         return out
@@ -415,7 +632,7 @@ class Api(ProjectApi):
             for c in self.sessions.get_children(int(sid))
         ]
         s["annotations"] = self.store.list_annotations(int(sid))
-        s["log_available"] = (LOG_DIR / f"session_{sid}.log").exists()
+        s["log_available"] = (self._log_dir() / f"session_{sid}.log").exists()
         s["stall"] = self._stall(s)
         s["run"] = self._run_meta(int(sid))
         from deepresearch.sources.provenance import session_provenance
@@ -445,7 +662,7 @@ class Api(ProjectApi):
         """
         if s.get("status") != "running":
             return None
-        log = LOG_DIR / f"session_{s['id']}.log"
+        log = self._log_dir() / f"session_{s['id']}.log"
         pid = s.get("pid")
         alive = True
         if pid:
@@ -602,7 +819,9 @@ class Api(ProjectApi):
                 full = ask_prompt(prompt, srcs)
             except Exception as e:
                 raise ApiError(400, str(e)) from e
-        agent = DeepResearchAgent(config=self._config(), quiet=True)
+        agent = DeepResearchAgent(
+            config=self._config(), quiet=True, db_path=self.db_path
+        )
         before = self._session(sid).get("result") or ""
         agent.follow_up(
             FollowUpRequest(
@@ -620,7 +839,7 @@ class Api(ProjectApi):
         return {"result": after, "appended": after[len(before) :]}
 
     def session_log(self, sid, query, body):
-        path = LOG_DIR / f"session_{sid}.log"
+        path = self._log_dir() / f"session_{sid}.log"
         if not path.exists():
             return {"text": "", "size": 0, "exists": False}
         offset = int((query.get("offset") or ["0"])[0])
@@ -714,7 +933,7 @@ class Api(ProjectApi):
             raise ApiError(400, "depth must be 1-5 and breadth 1-10")
         uploads = [str(p) for p in body.get("uploads") or []]
         for p in uploads:
-            if not Path(p).resolve().is_relative_to(UPLOAD_DIR.resolve()):
+            if not Path(p).resolve().is_relative_to(self._upload_dir().resolve()):
                 raise ApiError(400, f"Upload path not allowed: {p}")
             if not Path(p).exists():
                 raise ApiError(400, f"Upload missing: {p}")
@@ -745,7 +964,10 @@ class Api(ProjectApi):
         args += ["--depth", str(depth), "--breadth", str(breadth)]
         if depth == 1:
             args.append("--stream")  # thought summaries land in the live log
-        pid = self.spawn(args, LOG_DIR / f"session_{sid}.log")
+        if self.current_workspace != "main":
+            # the run writes to the workspace it started in, whatever is shown later
+            args = ["--workspace", self.current_workspace, *args]
+        pid = self.spawn(args, self._log_dir() / f"session_{sid}.log")
         self.sessions.update_session_pid(sid, pid)
         rerun_of = body.get("rerun_of")
         size = sum(Path(p).stat().st_size for p in uploads if Path(p).exists())
@@ -788,7 +1010,7 @@ class Api(ProjectApi):
             raise ApiError(400, "Empty file")
         from uuid import uuid4
 
-        dest_dir = UPLOAD_DIR / uuid4().hex[:12]
+        dest_dir = self._upload_dir() / uuid4().hex[:12]
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / name
         dest.write_bytes(data)
@@ -1219,7 +1441,7 @@ class Api(ProjectApi):
 
         walk(int(sid), set())
         events = []
-        path = LOG_DIR / f"session_{sid}.log"
+        path = self._log_dir() / f"session_{sid}.log"
         if path.exists():
             text = re.sub(
                 r"\x1b\[[0-9;]*[A-Za-z]", "", path.read_text("utf-8", "replace")
@@ -1803,7 +2025,11 @@ def make_handler(api: Api, local_only: bool = False):
                 except ValueError:
                     return self._json(400, {"error": "Invalid JSON"})
             try:
-                status, obj = api.dispatch(method, url.path, parse_qs(url.query), body)
+                q = parse_qs(url.query)
+                # the switcher sends the header on fetch(); links (<img>, <audio>,
+                # downloads) carry ?ws= because they cannot set headers
+                ws = self.headers.get("X-DR-Workspace") or (q.get("ws") or [""])[0]
+                status, obj = api.dispatch(method, url.path, q, body, workspace=ws)
                 if isinstance(obj, RawResponse):
                     return self._raw(obj)
                 self._json(status, obj)
@@ -1897,8 +2123,8 @@ def serve(
     from deepresearch.core.config import service_env
 
     os.environ.update(service_env())
-    api = Api(db_path)
-    api.lab.ensure_watcher()  # pick up lab runs still active from before a restart
+    api = Api(db_path, workspaces=True)
+    api.start_watchers()  # pick up lab runs still active from before a restart
     httpd = ThreadingHTTPServer((host, port), make_handler(api, local_only=local_only))
     httpd.daemon_threads = True
     print(f"[INFO] Deep Research dashboard {__version__} on http://{host}:{port}")

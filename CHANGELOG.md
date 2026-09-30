@@ -7,6 +7,28 @@ releases.
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-09-30
+
+### Added
+
+- **Workspaces (foundation).** Separate libraries of reports, projects, notes, notebooks,
+  Lab runs, data sources and audio. Main is the existing library and stays exactly where
+  it is (`~/.config/deepresearch/`); others live in `~/.config/deepresearch/workspaces/<id>/`.
+  The Gemini key, cluster settings and the Lab's lessons are shared.
+- `deep-research --workspace ID ...` (or `DR_WORKSPACE`) for any command, and
+  `deep-research workspace list|create|duplicate|rename|archive|unarchive|delete`.
+  Delete moves the folder to `workspaces/.trash/` and never applies to Main.
+- Dashboard API: `/api/workspaces` (list, create, update, duplicate, delete); every
+  request is served from the workspace named in `X-DR-Workspace` (default Main). The
+  switcher in the top bar comes in 0.41.
+
+### Changed
+
+- Lab runs of a workspace other than Main use their own cluster folders
+  (`<remote_root>/ws-<id>/run_<n>`), warm-node task names and Slurm job names, so run
+  numbers that repeat across workspaces never share a folder. Main's are unchanged.
+- Research started from the dashboard in a workspace always writes to that workspace.
+
 ## [0.39.0] - 2026-09-30
 
 ### Added

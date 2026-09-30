@@ -676,7 +676,7 @@ def test_smoke_fix_interrupted_by_restart_is_resumed(wlab, monkeypatch):
     sm = dict(wlab.get(run["id"])["smoke"], fixing=True)
     sm["rounds"] = [{"round": 1, "rc": 1, "log_tail": "boom", "missing": []}]
     wlab._update(run["id"], smoke=sm)  # as left by a dashboard that died mid-fix
-    labm._SMOKE_FIXING.discard(run["id"])
+    labm._SMOKE_FIXING.discard(("main", run["id"]))
     called = []
     monkeypatch.setattr(wlab, "_smoke_fix", lambda *a: called.append(a))
     wlab.poll(wlab.get(run["id"]))
@@ -688,7 +688,7 @@ def test_smoke_fix_interrupted_by_restart_is_resumed(wlab, monkeypatch):
         _t.sleep(0.02)
     assert called and called[0][0] == run["id"] and called[0][1] == "boom"
     assert wlab.get(run["id"])["status"] == "smoke"
-    labm._SMOKE_FIXING.discard(run["id"])
+    labm._SMOKE_FIXING.discard(("main", run["id"]))
 
 
 def test_pixi_hook_runs_without_nounset():

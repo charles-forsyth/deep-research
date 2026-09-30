@@ -72,8 +72,10 @@ SLURM_DONE = {
     "DEADLINE": "failed",
 }
 # Lab runs whose submit is running in this process right now (see poll()).
-_IN_FLIGHT: set[int] = set()
-_SMOKE_FIXING: set[int] = set()  # runs whose AI smoke fix runs in this process
+_IN_FLIGHT: set[tuple[str, int]] = set()
+_SMOKE_FIXING: set[tuple[str, int]] = (
+    set()
+)  # runs whose AI smoke fix runs in this process
 GONE_POLLS = 8  # empty squeue+sacct polls (~2 min) before a running job is fetched
 MAX_FETCH_BYTES = 200 * 1024 * 1024  # whole outputs folder
 MAX_FILE_BYTES = 50 * 1024 * 1024  # any single file
@@ -944,6 +946,69 @@ class SlurmSSHTarget:
             f"Existing environment modules: {', '.join(self.modules) or 'none'}.\n"
             f"{self.software_notes}"
         )
+
+
+class ScopedTarget:
+    """A cluster target seen from one workspace: same SSH connection, catalog and warm
+    worker, but its Lab runs live under <remote_root>/<prefix>/run_<id> and its warm-node
+    tasks and Slurm job names carry the prefix, so run #1 of a new workspace never
+    touches run #1 of Main (Main keeps prefix '' and its original folders)."""
+
+    def __init__(self, base: "SlurmSSHTarget", prefix: str):
+        object.__setattr__(self, "_base", base)
+        object.__setattr__(self, "_prefix", prefix)
+
+    def __getattr__(self, name: str):
+        return getattr(self._base, name)
+
+    def __setattr__(self, name: str, value) -> None:
+        setattr(self._base, name, value)
+
+    @property
+    def base(self) -> "SlurmSSHTarget":
+        return self._base
+
+    @property
+    def ws_prefix(self) -> str:
+        return self._prefix
+
+    def job_dir(self, run_id: int) -> str:
+        return f"{self._base.remote_root}/{self._prefix}/run_{run_id}"
+
+    # every method that builds the run folder from job_dir must use ours, so call the
+    # base implementation with self (bound to this scoped view)
+    def submit(self, run_id, files):
+        return SlurmSSHTarget.submit(self, run_id, files)  # type: ignore[arg-type]
+
+    def upload(self, run_id, files, fresh=True):
+        return SlurmSSHTarget.upload(self, run_id, files, fresh)  # type: ignore[arg-type]
+
+    def sbatch_uploaded(self, run_id):
+        return SlurmSSHTarget.sbatch_uploaded(self, run_id)  # type: ignore[arg-type]
+
+    def read_file(self, run_id, rel, limit=60000):
+        return SlurmSSHTarget.read_file(self, run_id, rel, limit)  # type: ignore[arg-type]
+
+    def missing_outputs(self, run_id, sub, patterns):
+        return SlurmSSHTarget.missing_outputs(self, run_id, sub, patterns)  # type: ignore[arg-type]
+
+    def status(self, run_id, job_id):
+        return SlurmSSHTarget.status(self, run_id, job_id)  # type: ignore[arg-type]
+
+    def log(self, *a, **k):
+        return SlurmSSHTarget.log(self, *a, **k)  # type: ignore[arg-type]
+
+    def fetch(self, run_id, dest):
+        return SlurmSSHTarget.fetch(self, run_id, dest)  # type: ignore[arg-type]
+
+    def _warm_run_status(self, run_id, task):
+        return SlurmSSHTarget._warm_run_status(self, run_id, task)  # type: ignore[arg-type]
+
+
+def task_prefix(tgt) -> str:
+    """'' for Main; '<ws>-' for other workspaces (warm-node task and job names)."""
+    p = getattr(tgt, "ws_prefix", "") or ""
+    return (p.removeprefix("ws-") + "-") if p else ""
 
 
 def load_targets(config_dir: Path) -> dict[str, SlurmSSHTarget]:
@@ -1843,7 +1908,7 @@ def build_sbatch(
     )
     lines = [
         "#!/bin/bash",
-        f"#SBATCH --job-name=lab-{run_id}-{_slug(plan.get('title', ''), 24)}",
+        f"#SBATCH --job-name=lab-{task_prefix(target)}{run_id}-{_slug(plan.get('title', ''), 24)}",
         f"#SBATCH --partition={part}",
         f"#SBATCH --nodes={nodes}",
         f"#SBATCH --time={tl}",
@@ -2788,11 +2853,16 @@ class Lab(LabVerdictMixin):
         config_factory: Callable,
         state_dir: Path,
         targets: dict[str, SlurmSSHTarget] | None = None,
+        results_dir: Path | None = None,
+        workspace: str = "main",
     ):
         self.db_path = db_path
         self._config = config_factory
+        # state_dir: shared settings (targets, catalogs, lessons); results_dir: this
+        # workspace's fetched outputs (Main: state_dir/lab, as before workspaces)
         self.state_dir = state_dir
-        self.results_dir = state_dir / "lab"
+        self.results_dir = results_dir or state_dir / "lab"
+        self.workspace = workspace
         self.targets = targets if targets is not None else load_targets(state_dir)
         for t in self.targets.values():
             if getattr(t, "catalog_path", ""):
@@ -2908,9 +2978,19 @@ class Lab(LabVerdictMixin):
         return resp.text, cost
 
     def target(self, name: str | None = None) -> SlurmSSHTarget | None:
+        t: SlurmSSHTarget | None
         if name and name in self.targets:
-            return self.targets[name]
-        return next(iter(self.targets.values()), None)
+            t = self.targets[name]
+        else:
+            t = next(iter(self.targets.values()), None)
+        if t is None or self.workspace in ("", "main"):
+            return t
+        # other workspaces: same cluster, own run folders and task names
+        return ScopedTarget(t, f"ws-{self.workspace}")  # type: ignore[return-value]
+
+    def _key(self, run_id: int) -> tuple[str, int]:
+        """Key for the process-wide in-flight sets (run ids repeat across workspaces)."""
+        return (self.workspace, int(run_id))
 
     CATALOG_MAX_AGE_H = 24.0
 
@@ -3679,7 +3759,7 @@ class Lab(LabVerdictMixin):
         ):
             now = self.get(run_id) or run
             raise ValueError(f"run is {now['status']}; it was already submitted")
-        _IN_FLIGHT.add(run_id)
+        _IN_FLIGHT.add(self._key(run_id))
         try:
             plan = run["plan"] or {}
             sources = self._plan_sources(plan)
@@ -3713,7 +3793,7 @@ class Lab(LabVerdictMixin):
                 tgt.upload(run_id, files, fresh=True)
                 for src in sources:
                     self.sources.record_use(src, "lab_run", run_id)
-                _IN_FLIGHT.discard(run_id)
+                _IN_FLIGHT.discard(self._key(run_id))
                 self._start_smoke(run_id, tgt, plan, round_no=1, original=plan)
                 self.ensure_watcher()
                 return self.get(run_id) or {}
@@ -3724,7 +3804,7 @@ class Lab(LabVerdictMixin):
             # Nothing reached the cluster (sign-in expired, VPN or tunnel down): keep
             # the reviewed plan as a draft so Submit works again once it's fixed,
             # instead of a failed run whose only way back is a new draft.
-            _IN_FLIGHT.discard(run_id)
+            _IN_FLIGHT.discard(self._key(run_id))
             self._update(
                 run_id,
                 only_if=("submitting",),
@@ -3735,7 +3815,7 @@ class Lab(LabVerdictMixin):
             )
             raise
         except Exception as e:
-            _IN_FLIGHT.discard(run_id)
+            _IN_FLIGHT.discard(self._key(run_id))
             self._update(
                 run_id,
                 only_if=("submitting",),
@@ -3745,7 +3825,7 @@ class Lab(LabVerdictMixin):
                 finished_at=_now(),
             )
             raise
-        _IN_FLIGHT.discard(run_id)
+        _IN_FLIGHT.discard(self._key(run_id))
         if not self._update(
             run_id,
             only_if=("submitting",),
@@ -4099,7 +4179,7 @@ class Lab(LabVerdictMixin):
             tl = str(r.get("time_limit") or "01:00:00")
             sec = int(_hours(tl if TIME_RE.fullmatch(tl) else "01:00:00") * 3600)
             d = self._home(tgt.job_dir(run_id))
-            task = f"full-{run_id}"
+            task = f"{task_prefix(tgt)}full-{run_id}"
             run_sh = (
                 "#!/bin/bash\n"
                 f'RUN="{d}"\nexport SLURM_SUBMIT_DIR="$RUN"\ncd "$RUN"\n'
@@ -4121,7 +4201,7 @@ class Lab(LabVerdictMixin):
     ) -> None:  # fmt: skip
         cfg = tgt.warm or {}
         d = self._home(tgt.job_dir(run_id))
-        task = f"smoke-{run_id}-{round_no}"
+        task = f"{task_prefix(tgt)}smoke-{run_id}-{round_no}"
         sec = int(cfg.get("smoke_min", 15)) * 60
         run_sh = (
             "#!/bin/bash\n"
@@ -4160,11 +4240,11 @@ class Lab(LabVerdictMixin):
 
     def _poll_smoke(self, run: dict, tgt) -> None:
         sm = dict(run.get("smoke") or {})
-        if sm.get("fixing") and run["id"] not in _SMOKE_FIXING:
+        if sm.get("fixing") and self._key(run["id"]) not in _SMOKE_FIXING:
             # the dashboard restarted while the AI was fixing it (run #88): resume the fix
             # from the saved log instead of failing a run nobody did anything wrong with
             last = (sm.get("rounds") or [{}])[-1]
-            _SMOKE_FIXING.add(run["id"])
+            _SMOKE_FIXING.add(self._key(run["id"]))
             threading.Thread(
                 target=self._smoke_fix,
                 args=(
@@ -4327,7 +4407,7 @@ class Lab(LabVerdictMixin):
             smoke=sm,
         ):
             return
-        _SMOKE_FIXING.add(run_id)
+        _SMOKE_FIXING.add(self._key(run_id))
         threading.Thread(
             target=self._smoke_fix,
             args=(run_id, log, rc, missing, fadvice),
@@ -4366,7 +4446,7 @@ class Lab(LabVerdictMixin):
         try:
             self._smoke_fix_inner(run_id, log, rc, missing, advice)
         finally:
-            _SMOKE_FIXING.discard(run_id)
+            _SMOKE_FIXING.discard(self._key(run_id))
 
     def _smoke_fix_inner(
         self, run_id: int, log: str, rc: int | None, missing: list[str],
@@ -4599,7 +4679,7 @@ class Lab(LabVerdictMixin):
         if (
             run["status"] == "submitting"
             and not run.get("job_id")
-            and run["id"] not in _IN_FLIGHT
+            and self._key(run["id"]) not in _IN_FLIGHT
         ):
             # Left over from a dashboard that stopped mid-submit: nothing will ever
             # finish it, and it would block cancel/delete and keep the watcher busy.

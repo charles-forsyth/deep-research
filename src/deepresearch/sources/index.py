@@ -24,8 +24,24 @@ from deepresearch.sources.usage import research_uploads
 from deepresearch.storage.files import SOURCE_STORE_PREFIX
 
 
-def store_display_name(s: DataSource) -> str:
-    return f"{SOURCE_STORE_PREFIX}{s.name}"
+def store_display_name(s: DataSource, workspace: str | None = None) -> str:
+    """deep-research-source-<name>, or ...-<workspace>-<name> outside Main. The store is
+    found by its id (options.store), never by this name, so two workspaces' sources
+    with the same name never share or delete each other's index; the name only helps
+    tell them apart in `cleanup` listings."""
+    from deepresearch.core import workspace as W
+
+    ws = workspace if workspace is not None else W.current_slug()
+    mid = f"{ws}-" if ws and ws != W.MAIN else ""
+    return f"{SOURCE_STORE_PREFIX}{mid}{s.name}"
+
+
+def _ws_of(db_path: str) -> str | None:
+    """Workspace id of a registry DB (…/workspaces/<id>/history.db), else None."""
+    p = Path(db_path)
+    if p.parent.parent.name == "workspaces":
+        return p.parent.name
+    return None
 
 
 def index_state(s: DataSource) -> str:
@@ -66,7 +82,7 @@ def build_index(
             raise SourceError(f"{s.name} has no readable files to index")
         fm = FileManager(client)
         store = client.file_search_stores.create(
-            config={"display_name": store_display_name(s)}
+            config={"display_name": store_display_name(s, _ws_of(reg.db_path))}
         )
         try:
             for folder in paths:
