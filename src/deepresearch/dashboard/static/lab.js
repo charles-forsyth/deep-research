@@ -313,7 +313,9 @@ const LAB = {
       <div class="estimate"><span>PLANNING <b>~$0.10\u20130.30</b></span><span class="dim">Gemini Flash + Google Search ($14 per 1,000 searches), 1-2 min</span></div>
       <div class="acts"><button class="btn" data-x="0">Cancel</button><button class="btn primary" data-x="1">Write the plan</button></div>`,
       { dirty: () => ($("#lab-req")?.value || "").trim() !== (opts.request || "").trim() });
-    const pickedSources = typeof SRC !== "undefined" ? SRC.picker($("#lab-ds"), opts.data_sources || []) : () => [];
+    const pd = s.project_defaults;
+    const pickedSources = typeof SRC !== "undefined" ? SRC.picker($("#lab-ds"), opts.data_sources || (pd ? pd.data_sources : [])) : () => [];
+    if (pd) $("#lab-ds").insertAdjacentHTML("afterend", `<div class="dim" style="font-size:11px;margin-top:4px">Defaults from project \u201c${esc(pd.title)}\u201d${pd.lab_partition ? `; partition ${esc(pd.lab_partition)} preferred` : ""}.</div>`);
     const close = () => MODAL.close();
     $('#modal [data-x="0"]').onclick = () => MODAL.requestClose();
     $("#lab-req").focus();
@@ -481,6 +483,7 @@ const LAB = {
   async loadTargets() {
     try {
       const t = await api("/api/lab/targets");
+      this.targetsList = t.targets;
       const first = t.targets[0];
       if (first) { this.targetLabel = first.label; this.partitions = first.partitions; }
     } catch { /* optional */ }

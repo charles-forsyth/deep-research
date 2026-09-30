@@ -278,6 +278,9 @@ const BRIEF = {
         <button data-style="brief" class="on">Executive brief</button>
         <button data-style="slides">Slide outline</button>
         <button data-style="email">Email</button>
+        <button data-style="grant">Grant section</button>
+        <button data-style="lay">Lay summary</button>
+        <button data-style="litreview">Literature review</button>
       </div>
       <div class="acts"><button class="btn" data-x="0">Cancel</button><button class="btn primary" data-x="1">Build</button></div>`);
     let style = "brief";
@@ -289,7 +292,7 @@ const BRIEF = {
       try {
         const r = await api("/api/brief", { method: "POST", body: { kind, id, style } });
         close();
-        const label = { brief: "Brief", slides: "Slides", email: "Email" }[style];
+        const label = { brief: "Brief", slides: "Slides", email: "Email", grant: "Grant section", lay: "Lay summary", litreview: "Literature review" }[style];
         const src = kind === "session" ? `\n\n---\n*Built from Session #${id}*\n` : "";
         await NB.create(`${label}: ${clip(title, 60)}`, r.markdown + src);
         toast(`${label} ready as a new notebook${r.cost_usd != null ? ` ($${r.cost_usd.toFixed(3)})` : ""}`, "ok");

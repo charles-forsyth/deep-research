@@ -3,6 +3,8 @@
 Where the project is heading. Items are ideas, not commitments; open an issue to discuss or pick one up.
 
 ## Next up
+- [ ] **Projects claims board**: each claim a project's reports make, marked supported, refuted or inconclusive by Lab runs (builds on the Lab verdict redesign).
+- [ ] **`deep-research projects` CLI** (list, show, add, export) with `--json`.
 - [ ] **Optional dashboard login** (shared token) for use beyond a trusted network.
 - [ ] **Deep Research Max** toggle in the dashboard launcher.
 - [ ] **Scheduled re-runs** of saved questions, with the compare view as a change digest.
@@ -42,4 +44,5 @@ Where the project is heading. Items are ideas, not commitments; open an issue to
 - [x] **Session Management:** SQLite history with WAL mode concurrency and `tree` visualization.
 - [x] **Garbage Collection:** Auto-cleanup of cloud resources (`cleanup`).
 - [x] **Web Dashboard (v0.16.0):** `deep-research dashboard --start/--stop/--restart`, a dark browser workstation on port 7420 with launch, live logs, annotation, notebooks, semantic search and export.
+- [x] **Projects (v0.37.0):** projects as the home screen with home-project defaults, project AI summary, Ask this project, briefs, voice overview, Inbox sorting, and dossier / citations / research package (Obsidian + RO-Crate) exports.
 - [x] **Dashboard v0.17:** citation cards, research map, re-run and compare, live timeline with actual cost and notifications, brief builder, read-aloud and AI-voice audio export (full text or summary).

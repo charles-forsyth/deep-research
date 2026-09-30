@@ -26,6 +26,7 @@
     </div>
     <div class="telemetry" id="telemetry"></div>
     <div class="top-actions">
+      <button class="btn ghost" id="btn-projects" title="Your projects">Projects</button>
       <button class="btn ghost" id="btn-labruns" title="Every Lab run, newest first">Lab runs</button>
       <button class="btn ghost" id="btn-notes" title="Every highlight and note across your reports">Notes</button>
       <button class="btn ghost" id="btn-sources" title="Your data sources (folders, buckets, datasets)">Data sources</button>
@@ -50,6 +51,7 @@
           <button data-f="failed" title="Failed, crashed or cancelled">Failed</button>
         </div>
       </div>
+      <div class="proj-strip" id="proj-strip"></div>
       <div class="search-box">
         <input id="q" type="search" placeholder="Filter prompts and reports..." autocomplete="off" aria-label="Filter prompts and reports">
       </div>
@@ -127,6 +129,7 @@
 <script src="/features.js"></script>
 <script src="/sources.js"></script>
 <script src="/lab.js"></script>
+<script src="/projects.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

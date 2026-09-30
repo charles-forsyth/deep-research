@@ -30,6 +30,8 @@ from deepresearch.core.config import user_db_path, xdg_config_home
 from deepresearch.core.session import SessionManager
 from deepresearch.dashboard.features import VOICES, Features
 from deepresearch.dashboard.lab import Lab, TargetError
+from deepresearch.dashboard.project_api import ProjectApi
+from deepresearch.dashboard.projects import ProjectStore
 from deepresearch.dashboard.store import DashboardStore
 
 MAX_BODY = 25 * 1024 * 1024  # uploads are base64 in JSON
@@ -185,7 +187,7 @@ def _safe_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:120] or "upload"
 
 
-class Api:
+class Api(ProjectApi):
     """Route table + handlers. Kept separate from the HTTP plumbing for tests."""
 
     def __init__(
@@ -204,6 +206,7 @@ class Api:
         from deepresearch.sources import SourceRegistry
 
         self.sources = SourceRegistry(db_path)
+        self.projects = ProjectStore(db_path)
         self._jobs: dict[int, dict] = {}
         self._job_seq = 0
         self._jobs_lock = threading.Lock()
@@ -290,6 +293,7 @@ class Api:
         r("DELETE", r"/api/sources/(\d+)/index", self.sources_index_drop)
         r("GET", r"/api/sources/(\d+)/browse", self.sources_browse)
         r("GET", r"/api/sources/(\d+)/preview", self.sources_preview)
+        self.register_project_routes()
 
     def _route(self, method: str, pattern: str, fn: Callable) -> None:
         self.routes.append((method, re.compile(f"^{pattern}$"), fn))
@@ -388,7 +392,9 @@ class Api:
         q = (query.get("q") or [""])[0].strip() or None
         limit = int((query.get("limit") or ["500"])[0])
         rows = self.store.session_rows(q=q, limit=min(limit, 5000))
+        members = self.projects.membership_map()
         for r in rows:
+            r["projects"] = members.get(r["id"], []) if not r.get("parent_id") else []
             if r.get("status") == "running":
                 st = self._stall(r)
                 if st:
@@ -411,6 +417,9 @@ class Api:
         from deepresearch.sources.provenance import session_provenance
 
         s["provenance"] = session_provenance(self.db_path, s)
+        s["projects"] = self.projects.projects_for("session", int(sid))
+        home = self.projects.home_project(int(sid))
+        s["project_defaults"] = self._defaults(home) if home else None
         with sqlite3.connect(self.db_path, timeout=10) as conn:
             s["reruns"] = [
                 r[0]
@@ -518,6 +527,7 @@ class Api:
             self.sessions.delete_session(str(i))
         self.store.purge_session_workspace(ids)
         self.lab.purge_session(ids)
+        self.projects.purge("session", ids)
         return {"deleted": ids}
 
     def patch_meta(self, sid, query, body):
@@ -710,10 +720,15 @@ class Api:
             if self.sources.get(n) is None:
                 raise ApiError(400, f"data source '{n}' does not exist")
         fmt = (body.get("format") or "").strip()
+        project_id = body.get("project_id")
+        if project_id and not self.projects.get(int(project_id)):
+            raise ApiError(400, f"Project {project_id} not found")
         if not os.getenv("GEMINI_API_KEY"):
             raise ApiError(400, "GEMINI_API_KEY is not set for the dashboard process")
 
         sid = self.sessions.create_session("pending_start", prompt, uploads or None)
+        if project_id:
+            self.projects.add_item(int(project_id), "session", sid, home=True)
         args = ["research", prompt, "--adopt-session", str(sid)]
         if uploads:
             args += ["--upload", *uploads]
@@ -904,6 +919,7 @@ class Api:
     def delete_notebook(self, nid, query, body):
         if not self.store.delete_notebook(int(nid)):
             raise ApiError(404, "Notebook not found")
+        self.projects.purge("notebook", [int(nid)])
         return {"deleted": int(nid)}
 
     def list_stores(self, query, body):
@@ -1045,6 +1061,7 @@ class Api:
             except Exception:
                 pass  # the source goes anyway; `cleanup --all` can remove the store
         self.sources.delete(s.id)
+        self.projects.purge("source", [int(s.id)])
         return {"deleted": s.name}
 
     def sources_discover(self, query, body):
@@ -1451,13 +1468,26 @@ class Api:
                 raise ApiError(400, "This session has no report yet")
         request = (body.get("request") or "").strip()[:4000]
         ds = [str(x) for x in body.get("data_sources") or []]
+        target = body.get("target")
+        home = self.projects.home_project(int(sid))
+        if home:
+            # project defaults: its cluster, and its partition as the planner's preference
+            target = target or home.get("lab_target") or None
+            part = home.get("lab_partition")
+            if part and "partition" not in request.lower():
+                request = (
+                    request
+                    + ("\n" if request else "")
+                    + f"Project default partition: {part} (use it unless the job needs "
+                    "hardware it lacks)."
+                )[:4000]
         try:
             run = self.lab.create(
                 int(sid),
                 scope,
                 text[:120000],
                 request,
-                body.get("target"),
+                target,
                 data_sources=ds or None,
             )
         except ValueError as e:

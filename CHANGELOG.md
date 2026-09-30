@@ -7,6 +7,22 @@ releases.
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-09-29
+
+### Added
+
+- **Projects** (docs/SPEC.md section 22): a container above reports, data sources, notebooks and Lab runs, one per grant, paper, proposal or thesis. The left pane opens with a Projects strip (All, Inbox, each project) that filters the archive; a Projects overview; a project page with stats, reports, data sources, Lab runs and verdicts, notebooks, highlights and most-cited sources.
+- A report can be in several projects; one is its **home** and supplies defaults: the launcher files new research into a chosen project and pre-picks its data sources, Ask and the Lab dialog pre-pick them too, and Lab runs use the project's cluster target and prefer its partition.
+- Project **AI summary** (bottom line, findings, agreements and conflicts, computational evidence from Lab verdicts, gaps, next steps; flagged when out of date), **Ask this project** (semantic search limited to the project's reports plus its data sources, with citations), project **briefs**, and an **AI voice overview**.
+- Three new brief styles everywhere: grant background and significance section, lay summary, literature review.
+- **Exports** per project: dossier (Markdown, standalone HTML, Print/PDF), BibTeX and CSV citations, JSON, and a research package (.zip) with an Obsidian-ready `reports/` folder, notebooks, Lab write-ups and small outputs, audio, and RO-Crate 1.1 metadata.
+- **Sort inbox**: suggested groups from your tags and from report embeddings (average-linkage clustering, distinctive-word names, optional one-call AI naming); nothing is filed until you accept a group. Each project also lists unfiled reports that look like it.
+- Protection level is a project setting and label (never enforced); a project shows the strictest of its own and its data sources' levels. A Nexus grant or lab id can be stored as text.
+
+### Fixed
+
+- Opening something in the dashboard while it was still loading could be replaced by the saved tabs when loading finished.
+
 ## [0.36.0] - 2026-09-29
 
 ### Added
