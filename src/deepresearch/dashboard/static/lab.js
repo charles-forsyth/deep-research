@@ -175,7 +175,8 @@ const LAB = {
     const rv = p.review;
     if (!editable && !rv) return "";
     if (!rv) {
-      return `<div class="lab-referee none"><span class="label">Referee</span> <span class="dim" style="font-size:11.5px">Not reviewed yet: a second AI pass asks whether this test could ever fail, or ever pass.</span> <button class="btn small" data-x="review">Run referee</button></div>`;
+      const why = p.review_error ? `The automatic review did not run (${esc(p.review_error)}).` : "Not reviewed yet: a second AI pass asks whether this test could ever fail, or ever pass.";
+      return `<div class="lab-referee none"><span class="label">Referee</span> <span class="dim" style="font-size:11.5px">${why}</span> <button class="btn small" data-x="review">Run referee</button></div>`;
     }
     const stale = r.review_stale;
     const f = rv.findings || [];

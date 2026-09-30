@@ -3574,10 +3574,32 @@ class Lab(LabVerdictMixin):
             )
             return
         if self.auto_review:
+            self._auto_review(run_id)
+
+    def _auto_review(self, run_id: int) -> None:
+        """The referee after planning: two tries (a busy model or a bad reply is common),
+        then a note on the plan saying it did not run, so the dialog offers "Run referee"
+        with the reason instead of silently showing nothing (run #43). Advice only: a
+        failed referee never changes the plan's substance or its status."""
+        last = ""
+        for attempt in range(2):
             try:
                 self.review(run_id)
-            except Exception:  # advice only: a failed referee never touches the draft
-                pass
+                return
+            except ValueError as e:  # not a draft any more, or no usable review
+                last = str(e)
+                if "only drafts" in last:
+                    return
+            except Exception as e:  # network, quota, model error
+                last = f"{type(e).__name__}: {e}"
+            if attempt == 0:
+                self._stop.wait(5)
+        cur = self.get(run_id)
+        if cur and cur["status"] == "draft":
+            plan = dict(cur.get("plan") or {})
+            if not plan.get("review"):
+                plan["review_error"] = last[:300]
+                self._update(run_id, only_if=("draft",), plan=plan)
 
     def edit_plan(self, run_id: int, plan: dict) -> dict:
         run = self.get(run_id)
@@ -3641,6 +3663,7 @@ class Lab(LabVerdictMixin):
         review["plan_hash"] = self._plan_hash(plan)
         cur = self.get(run_id) or run
         new = {**(cur.get("plan") or {}), "review": review}
+        new.pop("review_error", None)
         if not self._update(run_id, only_if=("draft",), plan=new):
             now = self.get(run_id) or cur
             raise ValueError(f"run is {now['status']}; the review was not saved")

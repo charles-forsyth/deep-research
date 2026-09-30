@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.47.0 (package `deepresearch`) |
+| Applies to | deep-research v0.47.1 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1717,6 +1717,9 @@ pilot) so the referee does not flag them.
 - **Advice only**: never edits the plan's substance, never blocks submit, never runs
   anything. A failed or unusable referee reply (one retry) leaves the draft untouched.
 - Automatic after planning (background, ~$0.01); `DR_LAB_REVIEW=0` turns it off (tests do).
+  Two tries (5 s apart); if both fail, `plan.review_error` records why and the dialog
+  shows it next to "Run referee" (a successful review clears it). Before v0.47.1 a failed
+  automatic review left nothing (run #43).
   `POST /api/lab/{id}/review` runs it again on a draft (the dialog saves unsaved edits
   first so the referee judges what is on screen).
 - Stale: `plan_hash` covers script, resources, install and parameters; when they change
@@ -2349,6 +2352,7 @@ building on the zip format.
 | 2026-09-30 | v0.45.0 | Claims board on project pages and in the dossier (22.x claims). |
 | 2026-09-30 | v0.46.0 | Lab referee: adversarial review of every draft before submit (20.15). |
 | 2026-09-30 | v0.47.0 | `deep-research projects` CLI (22.10). |
+| 2026-09-30 | v0.47.1 | Automatic referee retries once and records why it did not run (20.15). |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |

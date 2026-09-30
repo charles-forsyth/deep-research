@@ -7,6 +7,14 @@ releases.
 
 ## [Unreleased]
 
+## [0.47.1] - 2026-09-30
+
+### Fixed
+
+- The automatic Lab referee could fail silently (a busy model), leaving a plan with no
+  review and no explanation. It now tries twice and, if it still cannot run, the review
+  box says why and offers "Run referee".
+
 ## [0.47.0] - 2026-09-30
 
 ### Added
