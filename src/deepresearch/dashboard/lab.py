@@ -2937,6 +2937,8 @@ class Lab(LabVerdictMixin):
                     pass  # no cache yet; fetched on first use
         self._genai = None
         self._client_lock = threading.Lock()
+        # the referee reads every new draft (one Flash call, ~$0.01); tests switch it off
+        self.auto_review = os.environ.get("DR_LAB_REVIEW", "1") != "0"
         self._fetch_tries: dict[int, int] = {}
         self._warm_checked: dict[str, float] = {}  # target -> last ensure_warm()
         self._stocked_out: dict[
@@ -3570,6 +3572,12 @@ class Lab(LabVerdictMixin):
                 stage="Planning failed",
                 error=str(e)[:500],
             )
+            return
+        if self.auto_review:
+            try:
+                self.review(run_id)
+            except Exception:  # advice only: a failed referee never touches the draft
+                pass
 
     def edit_plan(self, run_id: int, plan: dict) -> dict:
         run = self.get(run_id)
@@ -3596,6 +3604,64 @@ class Lab(LabVerdictMixin):
 
     FIX_MAX_ROUNDS = 2
 
+    def review(self, run_id: int) -> dict:
+        """Adversarial referee pass on a draft (v0.46.0): could the test ever fail, could
+        it ever pass? Advice only: stored on the plan as `review`, never edits the plan's
+        substance and never blocks submit. One model call (one retry on a bad reply)."""
+        from deepresearch.dashboard import labreview
+
+        run = self.get(run_id)
+        if not run:
+            raise KeyError(run_id)
+        if run["status"] != "draft":
+            raise ValueError(f"run is {run['status']}; only drafts can be reviewed")
+        plan = dict(run.get("plan") or {})
+        prompt = labreview.build_prompt(plan, str(plan.get("question") or ""))
+        review: dict | None = None
+        why = ""
+        for attempt in range(2):
+            ask = prompt if not attempt else prompt + (
+                "\n\nYour previous reply could not be used: " + why
+                + ". Reply again with ONLY the JSON block."
+            )  # fmt: skip
+            try:
+                reply, cost = self._ask(ask, search=False)
+            except EmptyReply as e:
+                self._add_cost(run_id, e.cost)
+                why = f"the reply was empty ({e.finish})"
+                continue
+            self._add_cost(run_id, cost)
+            try:
+                review = labreview.normalize(extract_json(reply))
+                break
+            except ValueError as e:
+                why = str(e)[:160]
+        if review is None:
+            raise ValueError(f"the referee returned no usable review twice ({why})")
+        review["plan_hash"] = self._plan_hash(plan)
+        cur = self.get(run_id) or run
+        new = {**(cur.get("plan") or {}), "review": review}
+        if not self._update(run_id, only_if=("draft",), plan=new):
+            now = self.get(run_id) or cur
+            raise ValueError(f"run is {now['status']}; the review was not saved")
+        return self.get(run_id) or {}
+
+    @staticmethod
+    def _plan_hash(plan: dict) -> str:
+        """Hash of what the referee judged (script, resources, install, parameters)."""
+        import hashlib
+
+        core = {
+            k: plan.get(k) for k in ("script", "resources", "install", "parameters")
+        }
+        return hashlib.sha256(
+            json.dumps(core, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
+
+    def review_stale(self, plan: dict) -> bool:
+        r = plan.get("review") or {}
+        return bool(r) and r.get("plan_hash") != self._plan_hash(plan)
+
     def fix_plan(self, run_id: int) -> dict:
         """Ask the planner to fix only what pre-flight flagged, then check again.
 
@@ -3617,6 +3683,14 @@ class Lab(LabVerdictMixin):
         plan = dict(original)
         plan.pop("plan_before_fix", None)
         warns = self._check(tgt, plan)  # includes "planned against an older catalog"
+        from deepresearch.dashboard import labreview
+
+        referee = (
+            labreview.as_problems(plan.get("review"))
+            if not self.review_stale(plan)
+            else []
+        )
+        warns = warns + referee
         if not warns:
             return {
                 **(self.get(run_id) or {}),
@@ -3635,7 +3709,7 @@ class Lab(LabVerdictMixin):
             body = {
                 k: v
                 for k, v in plan.items()
-                if k not in ("warnings", "plan_before_fix")
+                if k not in ("warnings", "plan_before_fix", "review")
             }
             prompt = FIX_PROMPT.format(
                 target=_describe(tgt, full=True),
@@ -3667,6 +3741,8 @@ class Lab(LabVerdictMixin):
         concerns = fix_concerns(before, plan)
         if concerns:
             notes.insert(0, "".join(f"REVIEW: {c}. " for c in concerns).strip())
+        if original.get("review"):
+            plan["review"] = original["review"]  # judged the old plan: shown as stale
         plan = {
             **plan,
             "warnings": warns,

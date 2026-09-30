@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.45.0 (package `deepresearch`) |
+| Applies to | deep-research v0.46.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1698,6 +1698,41 @@ match as substrings (dotted calls such as `urllib.request.urlopen` are one token
 
 Tests: `tests/dashboard/test_lab_selfrepair.py`.
 
+
+### 20.15 Referee: adversarial review before submit (v0.46.0)
+
+`dashboard/labreview.py` + `Lab.review()`. After a plan is drafted, a second Flash call
+reads it as a sceptical referee: could each check ever **fail** (tolerance too wide,
+"expected" computed by the same code, arms that cannot differ), could it ever **pass**
+(threshold out of reach at these sizes, signal below the noise, pilot too small), does it
+test the report's claim or an easier one next to it, are the informative checks real
+controls, is any deciding parameter unsourced. The prompt states cluster facts that are
+not problems (nodes have internet, the harness installs `install`, LAB_SMOKE marks the
+pilot) so the referee does not flag them.
+
+- Result on the plan as `review`: `verdict` sound / concerns / flawed, up to 12
+  `findings` {severity high/medium/low, kind cannot_fail / cannot_pass / wrong_question /
+  weak_control / parameter / other, where, problem, suggestion}, `summary`,
+  `reviewed_at`, `plan_hash`. A "sound" verdict with a high finding becomes "concerns".
+- **Advice only**: never edits the plan's substance, never blocks submit, never runs
+  anything. A failed or unusable referee reply (one retry) leaves the draft untouched.
+- Automatic after planning (background, ~$0.01); `DR_LAB_REVIEW=0` turns it off (tests do).
+  `POST /api/lab/{id}/review` runs it again on a draft (the dialog saves unsaved edits
+  first so the referee judges what is on screen).
+- Stale: `plan_hash` covers script, resources, install and parameters; when they change
+  the review shows OUT OF DATE (`review_stale` in the run view) and "Review again".
+- "Fix with AI" passes the current review's high and medium findings to the pre-flight
+  fixer as problems (the fixer never sees the review object); the fixed plan keeps the old
+  review, now stale.
+- UI: a Referee box above the pre-flight warnings with an "advice only" chip, findings
+  by severity, Re-run, and Fix with AI.
+- Tested on real Demo plans: it flagged run #36's alias check (`... or
+  tls_alias_ratio < 0.40` passes even when TLS is worse) and its missing BLS period check,
+  and run #34's analysis answering an easier question than the report asked (probe counts
+  instead of latency prediction). Reviews vary between calls; treat them as a second
+  opinion.
+- Tests: `tests/dashboard/test_lab_referee.py`.
+
 ### 21.1 Record
 
 | Field | Meaning |
@@ -2291,6 +2326,7 @@ building on the zip format.
 | 2026-09-30 | v0.43.2 | A submit stays "in flight" until its pilot is queued, so the watcher no longer fails it as "Submit interrupted" while the warm node is being reached. |
 | 2026-09-30 | v0.44.0 | Lab self-repair: one retry on an unusable AI reply, restored LaTeX/regex backslashes, new failure classes (TLS, network, API change, syntax), curated pitfalls (20.14). |
 | 2026-09-30 | v0.45.0 | Claims board on project pages and in the dossier (22.x claims). |
+| 2026-09-30 | v0.46.0 | Lab referee: adversarial review of every draft before submit (20.15). |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |

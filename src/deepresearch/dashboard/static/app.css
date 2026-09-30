@@ -991,3 +991,17 @@ mark.find.cur { background: var(--amber); color: #111; box-shadow: 0 0 0 2px var
 .proj-claims .claim-checks li.bad::marker { color: #ff8f8f; }
 .proj-claims .claim-checks.minor { opacity: .8; }
 .proj-claims .card-h .outcome-badge { margin-left: 4px; }
+
+/* Lab referee (v0.46) */
+.lab-referee { border: 1px solid var(--line); border-left: 3px solid var(--faint); border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
+.lab-referee.ok { border-left-color: var(--green); }
+.lab-referee.warn { border-left-color: var(--amber); }
+.lab-referee.bad { border-left-color: #ff8f8f; }
+.lab-referee.stale { opacity: .75; }
+.lab-referee .label { font-weight: 600; }
+.referee-findings { margin: 6px 0 4px 16px; padding: 0; font-size: 12.5px; }
+.referee-findings li { margin: 4px 0; overflow-wrap: anywhere; }
+.referee-findings .sev { font: 600 10px var(--mono); text-transform: uppercase; padding: 0 5px; border-radius: 8px; border: 1px solid currentColor; }
+.referee-findings li.high .sev { color: #ff8f8f; }
+.referee-findings li.medium .sev { color: var(--amber); }
+.referee-findings li.low .sev { color: var(--dim); }

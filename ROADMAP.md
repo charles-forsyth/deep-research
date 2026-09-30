@@ -12,7 +12,7 @@ Where the project is heading. Items are ideas, not commitments; open an issue to
 - [ ] **Browse from the CLI**: `deep-research sources browse-place drive:gd` to pick Drive files without the dashboard.
 - [ ] **AWS S3 with credentials** in the file browser (needs an AWS profile or rclone S3 remote on this machine).
 - [x] Projects claims board (0.45).
-- [ ] **Lab adversarial review**: before submit, a second model pass asks "could this test ever fail? could it ever pass?"
+- [x] Lab adversarial review (referee) before submit (0.46).
 - [ ] **`deep-research projects` CLI** (list, show, add, export) with `--json`.
 - [ ] **Optional dashboard login** (shared token) for use beyond a trusted network.
 - [ ] **Deep Research Max** toggle in the dashboard launcher.
