@@ -334,7 +334,7 @@ wheels = [
 
 [[package]]
 name = "deepresearch"
-version = "0.35.9"
+version = "0.36.0"
 source = { editable = "." }
 dependencies = [
     { name = "google-genai" },

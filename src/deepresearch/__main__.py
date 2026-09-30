@@ -15,6 +15,7 @@ from deepresearch.cli.commands import (
     handle_auth,
     handle_estimate,
 )
+from deepresearch.cli.jsonout import json_flag as _json_flag
 
 
 def get_version():
@@ -118,6 +119,16 @@ def _add_research_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--output", help=OUTPUT_HELP)
     p.add_argument("--depth", type=int, default=1, help=DEPTH_HELP)
     p.add_argument("--breadth", type=int, default=3, help=BREADTH_HELP)
+
+
+JSON_HELP = (
+    "Machine-readable output: exactly one JSON document on stdout (logs and "
+    'progress go to stderr); failures print {"error": ...} and exit non-zero'
+)
+
+
+def _add_json(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--json", action="store_true", help=JSON_HELP)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -329,14 +340,63 @@ def build_parser() -> argparse.ArgumentParser:
         "--port", type=int, default=None, help="Port (default: 7420)"
     )
 
+    for p in (
+        parser_research,
+        parser_search,
+        parser_start,
+        parser_followup,
+        parser_list,
+        parser_show,
+        parser_delete,
+        parser_cleanup,
+        parser_tree,
+        parser_auth,
+        parser_estimate,
+        parser_dash,
+    ):
+        _add_json(p)
+
     from deepresearch.cli.sources import add_parser as add_sources_parser
 
-    add_sources_parser(subparsers)
+    add_sources_parser(subparsers)  # every `sources` subcommand already has --json
 
     return parser
 
 
 def handle_dashboard(args) -> int:
+    if _json_flag(args):
+        return _dashboard_json(args)
+    return _dashboard(args)
+
+
+def _dashboard_json(args) -> int:
+    """Run the dashboard action (its messages go to stderr), then report state."""
+    from deepresearch.cli.jsonout import emit
+    from deepresearch.dashboard import daemon
+
+    if args.foreground:
+        emit({"error": "--foreground cannot be combined with --json"})
+        return 2
+    code = _dashboard(args)
+    state = daemon.read_state()
+    health = daemon._probe(state["host"], int(state["port"])) if state else None
+    emit(
+        {
+            "exit_code": code,
+            "running": bool(state),
+            "healthy": bool(health),
+            "pid": state["pid"] if state else None,
+            "host": state["host"] if state else None,
+            "port": state["port"] if state else None,
+            "allow_remote": bool(state.get("allow_remote")) if state else False,
+            "version": (health or {}).get("version"),
+            "urls": daemon._urls(state["host"], int(state["port"])) if state else [],
+        }
+    )
+    return code
+
+
+def _dashboard(args) -> int:
     from deepresearch.dashboard import daemon
 
     if args.stop:
@@ -395,6 +455,18 @@ def main():
         parser.print_help()
         return
 
+    if _json_flag(args):
+        from deepresearch.cli.jsonout import json_mode
+
+        with json_mode(True):
+            _dispatch(parser, args, as_json=True)
+        return
+    _dispatch(parser, args, as_json=False)
+
+
+def _dispatch(parser: argparse.ArgumentParser, args, as_json: bool) -> None:
+    from deepresearch.cli.jsonout import emit
+
     try:
         if args.command == "start":
             handle_start(args)
@@ -435,10 +507,19 @@ def main():
 
     except ValidationError as e:
         print(f"[ERROR] Input Validation Failed:\n{e}")
+        if as_json:
+            emit({"error": f"Input validation failed: {e}"})
+            sys.exit(2)
     except ValueError as e:
         print(f"[CONFIG ERROR] {e}")
+        if as_json:
+            emit({"error": f"Config error: {e}"})
+            sys.exit(2)
     except Exception as e:
         print(f"[CRITICAL ERROR] {e}")
+        if as_json:
+            emit({"error": str(e)})
+            sys.exit(1)
 
 
 if __name__ == "__main__":

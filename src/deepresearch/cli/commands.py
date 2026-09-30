@@ -20,6 +20,8 @@ from deepresearch.core.config import (
 from deepresearch.core.session import SessionManager
 from deepresearch.core.agent import DeepResearchAgent
 from deepresearch.cli.base import ResearchRequest, FollowUpRequest
+from deepresearch.cli.jsonout import emit, fail, session_dict
+from deepresearch.cli.jsonout import json_flag as _json_flag
 
 console = Console(width=120)
 
@@ -84,6 +86,10 @@ def _record_source_use(args, session_id) -> None:
 
 
 def handle_research(args):
+    from datetime import datetime
+
+    as_json = _json_flag(args)
+    t0 = datetime.now().isoformat()
     try:
         uploads = _source_uploads(args)
     except Exception as e:
@@ -93,12 +99,12 @@ def handle_research(args):
             SessionManager().fail_session_id(
                 int(args.adopt_session), f"Could not prepare the data sources: {e}"
             )
+        if as_json:
+            fail(f"Could not prepare the data sources: {e}", 2)
         sys.exit(2)
     _record_source_use(args, args.adopt_session)
     started = None
     if getattr(args, "source", None) and not args.adopt_session:
-        from datetime import datetime
-
         started = datetime.now().isoformat()
     request = ResearchRequest(
         prompt=args.prompt,
@@ -129,17 +135,35 @@ def handle_research(args):
         row = SessionManager().find_session_since(args.prompt, started)
         if row:
             _record_source_use(args, row)
+    if as_json:
+        _emit_research_result(args, t0)
+
+
+def _emit_research_result(args, since_iso: str) -> None:
+    """--json for `research`: the finished session, or an error with its status."""
+    mgr = SessionManager()
+    sid = args.adopt_session or mgr.find_session_since(args.prompt, since_iso)
+    row = mgr.get_session(str(sid)) if sid else None
+    if not row:
+        fail("Research did not create a session (see the log on stderr)", 1)
+    d = session_dict(row, result=True)
+    if d.get("status") != "completed":
+        fail(f"Research ended with status '{d.get('status')}'", 1, session=d)
+    emit(d)
 
 
 def handle_search(args):
     import json
     import math
 
+    as_json = _json_flag(args)
+
     config = DeepResearchConfig()
     client = genai.Client(api_key=config.api_key)
     mgr = SessionManager()
 
     # 1. Backfill if needed
+    embedded = 0
     unembedded = mgr.get_completed_sessions_without_embeddings()
     if unembedded:
         console.print(
@@ -156,6 +180,7 @@ def handle_search(args):
                     model="gemini-embedding-001", contents=text_to_embed
                 )
                 mgr.update_embedding(row["id"], json.dumps(resp.embeddings[0].values))
+                embedded += 1
             except Exception as e:
                 console.print(f"[red]Failed to embed session {row['id']}: {e}[/]")
 
@@ -167,6 +192,8 @@ def handle_search(args):
         query_vec = query_resp.embeddings[0].values
     except Exception as e:
         console.print(f"[bold red][ERROR] Failed to embed query:[/] {e}")
+        if as_json:
+            fail(f"Failed to embed query: {e}", 1)
         return
 
     all_docs = mgr.get_all_embeddings()
@@ -174,6 +201,15 @@ def handle_search(args):
         console.print(
             "[yellow]No completed research sessions found in the database to search.[/]"
         )
+        if as_json:
+            emit(
+                {
+                    "query": args.query,
+                    "matches": [],
+                    "answer": None,
+                    "embedded": embedded,
+                }
+            )
         return
 
     def cosine_sim(v1, v2):
@@ -196,7 +232,20 @@ def handle_search(args):
 
     if not top_k:
         console.print("[yellow]No relevant matches found.[/]")
+        if as_json:
+            emit(
+                {
+                    "query": args.query,
+                    "matches": [],
+                    "answer": None,
+                    "embedded": embedded,
+                }
+            )
         return
+    matches = [
+        {"session_id": doc["id"], "score": round(score, 4), "prompt": doc["prompt"]}
+        for score, doc in top_k
+    ]
 
     context = ""
     console.print("\n[bold green]Top Matches Found:[/]")
@@ -223,12 +272,25 @@ INSTRUCTIONS:
         response = client.models.generate_content(
             model=config.followup_model, contents=prompt
         )
+        if as_json:
+            emit(
+                {
+                    "query": args.query,
+                    "matches": matches,
+                    "answer": response.text or "",
+                    "model": config.followup_model,
+                    "embedded": embedded,
+                }
+            )
+            return
         console.print("\n")
         console.print(
             Panel(Markdown(response.text), title="[bold]Semantic Search Result[/]")
         )
     except Exception as e:
         console.print(f"[bold red][ERROR] Synthesis failed:[/] {e}")
+        if as_json:
+            fail(f"Synthesis failed: {e}", 1, query=args.query, matches=matches)
 
 
 def handle_start(args):
@@ -256,12 +318,16 @@ def handle_start(args):
     pid = detach_process(child_args, log_file)
     mgr.update_session_pid(sid, pid)
 
+    if _json_flag(args):
+        emit({"session_id": sid, "pid": pid, "log": log_file, "status": "running"})
+        return
     print(f"[INFO] Research started in background! (Session ID: {sid}, PID: {pid})")
     print(f"[INFO] Logs: {log_file}")
     print("[INFO] Check status with: deep-research list")
 
 
 def handle_followup(args):
+    as_json = _json_flag(args)
     interaction_id = args.id
     if args.id.isdigit():
         mgr = SessionManager()
@@ -273,6 +339,8 @@ def handle_followup(args):
             interaction_id = session["interaction_id"]
         else:
             print(f"[ERROR] Session #{args.id} not found or invalid.")
+            if as_json:
+                fail(f"Session #{args.id} not found or invalid.", 1)
             return
 
     prompt = args.prompt
@@ -287,6 +355,8 @@ def handle_followup(args):
             )
         except Exception as e:
             print(f"[ERROR] {e}")
+            if as_json:
+                fail(str(e), 2)
             return
     request = FollowUpRequest(
         interaction_id=interaction_id,
@@ -295,12 +365,28 @@ def handle_followup(args):
         sources=names or None,
     )
     agent = DeepResearchAgent()
-    agent.follow_up(request)
+    answer = agent.follow_up(request)
+    if as_json:
+        row = SessionManager().get_session(interaction_id)
+        if not answer:
+            fail("Follow-up returned no text (see the log on stderr)", 1)
+        emit(
+            {
+                "session_id": row["id"] if row else None,
+                "interaction_id": interaction_id,
+                "prompt": args.prompt,
+                "sources": names,
+                "answer": answer,
+            }
+        )
 
 
 def handle_list(args):
     mgr = SessionManager()
     sessions = mgr.list_sessions(args.limit)
+    if _json_flag(args):
+        emit([session_dict(s, result=False) for s in sessions])
+        return
 
     table = Table(title="Recent Research Sessions", box=None)
     table.add_column("ID", style="cyan", no_wrap=True)
@@ -323,8 +409,35 @@ def handle_list(args):
     console.print(table)
 
 
+def _tree_node(mgr: SessionManager, row, result: bool) -> dict:
+    """A session and all its descendants as nested JSON data."""
+    d = session_dict(row, result=result)
+    d["children"] = [_tree_node(mgr, c, result) for c in mgr.get_children(row["id"])]
+    return d
+
+
+def _show_json(args, mgr: SessionManager) -> None:
+    if args.save:
+        fail("--save cannot be combined with --json", 2)
+    session = mgr.get_session(args.id)
+    if not session:
+        fail(f"Session '{args.id}' not found.", 1)
+    from deepresearch.sources.provenance import session_provenance
+
+    d = session_dict(session, result=True)
+    d["provenance"] = session_provenance(user_db_path, dict(session))
+    if args.recursive:
+        d["children"] = [
+            _tree_node(mgr, c, result=True) for c in mgr.get_children(session["id"])
+        ]
+    emit(d)
+
+
 def handle_show(args):
     mgr = SessionManager()
+    if _json_flag(args):
+        _show_json(args, mgr)
+        return
 
     def get_full_recursive_report(root_id, level=1):
         session = mgr.get_session(root_id)
@@ -413,13 +526,27 @@ def handle_show(args):
 def handle_delete(args):
     mgr = SessionManager()
     success = mgr.delete_session(args.id)
+    if _json_flag(args):
+        if not success:
+            fail(f"Session '{args.id}' not found.", 1, id=args.id, deleted=False)
+        emit({"id": args.id, "deleted": True})
+        return
     if success:
         console.print(f"[bold green][INFO][/] Session '{args.id}' deleted.")
     else:
         console.print(f"[bold red][ERROR][/] Session '{args.id}' not found.")
 
 
+def _store_info(s) -> dict:
+    return {
+        "name": s.name,
+        "display_name": str(getattr(s, "display_name", "") or ""),
+        "create_time": str(getattr(s, "create_time", "") or ""),
+    }
+
+
 def handle_cleanup(args):
+    as_json = _json_flag(args)
     config = DeepResearchConfig()
     client = genai.Client(api_key=config.api_key)
 
@@ -428,6 +555,8 @@ def handle_cleanup(args):
         stores = list(client.file_search_stores.list())
     except Exception as e:
         console.print(f"[bold red][ERROR][/] Failed to list stores: {e}")
+        if as_json:
+            fail(f"Failed to list stores: {e}", 1)
         return
 
     from deepresearch.storage.files import is_disposable_store
@@ -450,6 +579,19 @@ def handle_cleanup(args):
 
     if not stores:
         console.print("[bold green]No temporary stores found. System is clean![/]")
+        if as_json:
+            emit({"deleted": [], "failed": [], "kept": [_store_info(s) for s in keep]})
+        return
+    if as_json and not args.force:
+        # --json never prompts: without --force it only reports what would go.
+        emit(
+            {
+                "dry_run": True,
+                "would_delete": [_store_info(s) for s in stores],
+                "kept": [_store_info(s) for s in keep],
+                "hint": "add --force to delete",
+            }
+        )
         return
 
     table = Table(title=f"Found {len(stores)} store(s) to delete")
@@ -476,6 +618,8 @@ def handle_cleanup(args):
             console.print("[bold yellow]Aborted.[/]")
             return
 
+    deleted: list[str] = []
+    failed: list[dict] = []
     with console.status("Deleting stores...", spinner="dots"):
         for s in stores:
             try:
@@ -498,10 +642,22 @@ def handle_cleanup(args):
             try:
                 client.file_search_stores.delete(name=s.name)
                 console.print(f"[green]Deleted:[/green] {s.name}")
+                deleted.append(s.name)
             except Exception as e:
                 console.print(f"[bold red]Failed to delete {s.name}:[/] {e}")
+                failed.append({"name": s.name, "error": str(e)})
 
     console.print("[bold green]Cleanup Complete![/]")
+    if as_json:
+        emit(
+            {
+                "deleted": deleted,
+                "failed": failed,
+                "kept": [_store_info(s) for s in keep],
+            }
+        )
+        if failed:
+            sys.exit(1)
 
 
 def _protected_stores() -> set[str]:
@@ -518,8 +674,26 @@ def _protected_stores() -> set[str]:
         return set()
 
 
+def _tree_json(args, mgr: SessionManager) -> None:
+    if args.id:
+        root = mgr.get_session(args.id)
+        if not root:
+            fail(f"Session {args.id} not found", 1)
+        emit(_tree_node(mgr, root, result=False))
+        return
+    with sqlite3.connect(mgr.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        roots = conn.execute(
+            "SELECT * FROM sessions WHERE parent_id IS NULL ORDER BY updated_at DESC LIMIT 10"
+        ).fetchall()
+    emit([_tree_node(mgr, r, result=False) for r in roots])
+
+
 def handle_tree(args):
     mgr = SessionManager()
+    if _json_flag(args):
+        _tree_json(args, mgr)
+        return
 
     def build_tree(node_id, tree_node):
         children = mgr.get_children(node_id)
@@ -595,13 +769,18 @@ def handle_auth(args):
             f.write(f"GEMINI_API_KEY={key}\n")
 
         console.print(f"[bold green]Success![/] Key saved to {user_config_path}")
+        if _json_flag(args):
+            emit({"saved": user_config_path})
 
     elif args.action == "logout":
-        if os.path.exists(user_config_path):
+        existed = os.path.exists(user_config_path)
+        if existed:
             os.remove(user_config_path)
             console.print("[green]Logged out. Config file deleted.[/]")
         else:
             console.print("[yellow]Not logged in.[/]")
+        if _json_flag(args):
+            emit({"logged_out": existed, "path": user_config_path})
 
 
 def handle_estimate(args):
@@ -643,6 +822,27 @@ def handle_estimate(args):
         + cached / 1_000_000 * COST_CACHED_1M
         + total_output / 1_000_000 * COST_OUTPUT_1M
     )
+
+    if _json_flag(args):
+        emit(
+            {
+                "prompt": args.prompt,
+                "depth": args.depth,
+                "breadth": args.breadth,
+                "nodes": total_nodes,
+                "file_tokens": round(file_tokens),
+                "input_tokens": round(total_input),
+                "output_tokens": round(total_output),
+                "cost_usd": round(cost, 2),
+                "pricing": {
+                    "input_per_1m": COST_INPUT_1M,
+                    "cached_per_1m": COST_CACHED_1M,
+                    "output_per_1m": COST_OUTPUT_1M,
+                },
+                "note": "Rough estimate; actuals vary with search grounding.",
+            }
+        )
+        return
 
     table = Table(title="Cost Estimate (Gemini Deep Research)")
     table.add_column("Metric", style="cyan")
