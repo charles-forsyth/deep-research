@@ -283,6 +283,10 @@ class Api(ProjectApi):
         r("GET", r"/api/lab/(\d+)/file", self.lab_file)
         r("DELETE", r"/api/lab/(\d+)", self.lab_delete)
         r("GET", r"/api/sources/discover", self.sources_discover)
+        r("GET", r"/api/browse/places", self.browse_places)
+        r("GET", r"/api/browse/list", self.browse_list)
+        r("GET", r"/api/browse/preview", self.browse_preview)
+        r("POST", r"/api/browse/spec", self.browse_spec)
         r("GET", r"/api/sources", self.sources_list)
         r("POST", r"/api/sources", self.sources_add)
         r("GET", r"/api/sources/(\d+)", self.sources_get)
@@ -1097,6 +1101,61 @@ class Api(ProjectApi):
         from deepresearch.sources.service import check
 
         return self._source_view(check(self.sources, self._source(sid)))
+
+    # ---- v0.38: file browser for adding sources (SPEC section 13.8) -------------
+
+    def browse_places(self, query, body):
+        from deepresearch.sources import browse
+
+        return {"places": browse.places()}
+
+    def browse_list(self, query, body):
+        from deepresearch.sources import browse
+        from deepresearch.sources.adapters import SourceError
+
+        q = {k: (v or [""])[0] for k, v in query.items()}
+        try:
+            out = browse.list_place(
+                q.get("place", ""), q.get("path", ""), q.get("q", "")
+            )
+        except SourceError as e:
+            raise ApiError(502, str(e)) from e
+        return {"place": q.get("place", ""), "path": q.get("path", ""), **out}
+
+    def browse_preview(self, query, body):
+        from deepresearch.sources import browse
+        from deepresearch.sources.adapters import SourceError
+
+        q = {k: (v or [""])[0] for k, v in query.items()}
+        try:
+            size = int(q.get("size") or 0)
+        except ValueError:
+            size = 0
+        try:
+            data = browse.preview(q.get("place", ""), q.get("path", ""), 64_000, size)
+        except SourceError as e:
+            raise ApiError(502, str(e)) from e
+        text = data.decode("utf-8", "replace")
+        binary = text.count("\ufffd") > len(text) // 20
+        return {"binary": binary, "text": "" if binary else text, "bytes": len(data)}
+
+    def browse_spec(self, query, body):
+        """The source a set of picked items becomes (the dialog then POSTs it to
+        /api/sources after the user names it)."""
+        from deepresearch.sources import browse
+        from deepresearch.sources.adapters import SourceError
+
+        b = body or {}
+        items = [i for i in b.get("items") or [] if isinstance(i, dict)]
+        try:
+            spec = browse.source_spec(str(b.get("place") or ""), items)
+        except SourceError as e:
+            raise ApiError(400, str(e)) from e
+        base, n = spec["name"], 2
+        while self.sources.get_by_name(spec["name"]):
+            spec["name"] = f"{base[:37]}-{n}"
+            n += 1
+        return spec
 
     def sources_browse(self, sid, query, body):
         from deepresearch.sources.adapters import SourceError, adapter_for

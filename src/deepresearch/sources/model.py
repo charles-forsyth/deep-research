@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 
 KINDS = (
     "web", "gcs", "s3", "public_bucket", "local_folder", "local_file", "report",
-    "notebook",
+    "notebook", "gdrive",
 )  # fmt: skip
 LEVELS = ("P1", "P2", "P3", "P4")  # shown, never enforced (Chuck, 2026-09-28)
 STAGING = ("auto", "relay", "direct")

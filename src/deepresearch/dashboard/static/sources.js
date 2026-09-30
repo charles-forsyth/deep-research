@@ -6,7 +6,7 @@ const SRC = {
   list: [],
   roots: [],
 
-  kindLabel: { web: "Web", gcs: "GCS", s3: "S3 / Ceph", public_bucket: "Public bucket", local_folder: "Folder", local_file: "File", report: "Report", notebook: "Notebook" },
+  kindLabel: { web: "Web", gcs: "GCS", s3: "S3 / Ceph", public_bucket: "Public bucket", local_folder: "Folder", local_file: "File", report: "Report", notebook: "Notebook", gdrive: "Google Drive" },
 
   size(n) {
     if (!n) return "0 B";
@@ -51,12 +51,15 @@ const SRC = {
       <div class="src-head"><h2>Data sources</h2>
         <span class="dim">Places your data lives. Use them in research, follow-ups and Lab runs.</span>
         <button class="btn primary small" id="src-add">+ Add source</button>
+        <button class="btn small" id="src-add-manual" title="Type a URL, gs:// or s3:// address, or a path">Type a location</button>
         <button class="btn small" id="src-find">Find open datasets</button>
         <button class="btn small" id="src-reload">Refresh</button></div>
       <div id="src-form" hidden></div>
       <div id="src-disc" hidden></div>
       <div id="src-body"><div class="dim">Loading\u2026</div></div></div>`;
-    $("#src-add", v).onclick = () => this.form(v);
+    // the file browser first; typing a location stays one click away
+    $("#src-add", v).onclick = () => (typeof FB !== "undefined" ? FB.open({ manual: () => this.form(v), onAdded: (s) => { this.render(v); openTab({ key: `src${s.id}`, kind: "source", id: s.id, title: s.name }); } }) : this.form(v));
+    $("#src-add-manual", v).onclick = () => this.form(v);
     $("#src-find", v).onclick = () => this.discover(v);
     $("#src-reload", v).onclick = () => this.render(v);
     try { await this.load(); } catch (e) { $("#src-body", v).innerHTML = `<div class="err-banner">${esc(e.message)}</div>`; return; }
@@ -159,7 +162,7 @@ const SRC = {
     f.innerHTML = `<div class="src-card">
       <div class="src-grid">
         <label>Name<input id="sf-name" placeholder="noaa-ghcn" autocomplete="off"></label>
-        <label>Location<input id="sf-uri" placeholder="https://..., gs://bucket/prefix, s3://bucket/prefix, or ~/data/folder" autocomplete="off"></label>
+        <label>Location<input id="sf-uri" placeholder="https://..., gs://bucket/prefix, s3://bucket/prefix, gdrive://folder/ID, or ~/data/folder" autocomplete="off"></label>
         <label>Kind<select id="sf-kind"><option value="">auto</option>${Object.entries(this.kindLabel).map(([k, l]) => `<option value="${k}">${l}</option>`).join("")}</select></label>
         <label>Credentials<input id="sf-auth" placeholder="blank = public bucket (free, anonymous); Ceph: rclone:ceph" autocomplete="off"></label>
         <label>Lab staging<select id="sf-staging"><option value="auto">auto</option><option value="relay">relay (this machine uploads)</option><option value="direct">direct (cluster downloads)</option></select></label>
@@ -175,7 +178,7 @@ const SRC = {
       const n = $("#sf-name", f).value.trim(), u = $("#sf-uri", f).value.trim();
       if (!/^[a-z0-9][a-z0-9-]{1,40}$/.test(n)) return "Name: 2-41 lowercase letters, digits or dashes";
       if (!u) return "Location is required";
-      if (/^[a-z][a-z0-9+.-]*:/i.test(u) && !/^(https?|gs|s3):\/\//i.test(u) && !/^(report|notebook):\d+$/i.test(u)) return `"${u.split(":")[0]}:" is not supported. Use https://, gs://, s3://, report:N, notebook:N, or a folder path`;
+      if (/^[a-z][a-z0-9+.-]*:/i.test(u) && !/^(https?|gs|s3|gdrive):\/\//i.test(u) && !/^(report|notebook):\d+$/i.test(u)) return `"${u.split(":")[0]}:" is not supported. Use https://, gs://, s3://, gdrive://, report:N, notebook:N, or a folder path`;
       return "";
     };
     f.onkeydown = (e) => { if (e.key === "Enter" && e.target.tagName === "INPUT") $("#sf-save", f).click(); };

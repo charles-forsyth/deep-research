@@ -65,8 +65,11 @@ real computations on an HPC cluster. Everything lives in a local SQLite history 
   modules and containers, and you always review and edit it (with a worst-case cost) before
   anything is submitted. The dashboard watches the job, fetches the outputs and figures, and
   writes a short results note on the report. A Lab runs page lists every run.
-- **Data sources**: register web datasets, GCS buckets, S3/CephRDS buckets and folders in your
-  home directory once, browse and preview them, edit their filters later, and include them in
+- **Data sources**: register web datasets, Google Drive folders and Docs, GCS buckets,
+  S3/CephRDS buckets and folders in your home directory once. "+ Add source" opens a file
+  browser over whatever is already signed in on your machine (rclone Drive and S3 remotes,
+  your gcloud account): search Drive, preview a Doc or Sheet, tick files, add. Google Docs
+  arrive as Markdown and Sheets as CSV. Browse and preview them later, edit their filters later, and include them in
   research runs, follow-up questions and Lab runs. Data the cluster cannot reach (CephRDS behind
   the campus VPN, local files) is uploaded from your machine; web and GCS data is downloaded on
   the node. Jobs read it read-only from `$DS_<NAME>`, and every report and run records exactly
