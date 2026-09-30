@@ -301,6 +301,23 @@ class Features:
         "plus a line of speaker notes",
         "email": "a short email to colleagues summarizing the findings, plain and direct, "
         "with a subject line",
+        "grant": "a grant proposal background and significance section: the problem, "
+        "what is known, the gap, and why closing it matters, in formal academic prose "
+        "with citations kept, about 600-900 words",
+        "lay": "a plain-language summary for a general audience (about 250 words, no "
+        "jargon, explain any technical term), suitable for a press release or a "
+        "public abstract",
+        "litreview": "a short literature review organized by theme: for each theme, "
+        "what the sources say, where they agree and disagree, and open questions; end "
+        "with a one-paragraph synthesis",
+    }
+    BRIEF_LABELS = {
+        "brief": "Brief",
+        "slides": "Slides",
+        "email": "Email",
+        "grant": "Grant section",
+        "lay": "Lay summary",
+        "litreview": "Literature review",
     }
 
     def brief(self, title: str, content: str, style: str) -> dict:

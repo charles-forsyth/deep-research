@@ -157,6 +157,17 @@ deep-research dashboard --foreground --port 8080      # run in the terminal
 Runs launched from the dashboard are ordinary background sessions: they appear in
 `deep-research list` and keep going if the dashboard restarts.
 
+**Projects** organize the dashboard: one per grant, paper, proposal or thesis. A project
+holds its reports, data sources, notebooks and Lab runs, and remembers defaults (data
+sources, Lab partition, protection level) that new research, Ask and Lab runs start
+with. Each project has an AI summary, "Ask this project" (answers only from its own
+reports and sources), briefs (executive, slides, email, grant section, lay summary,
+literature review), an AI voice overview, and exports: a Markdown/HTML/PDF dossier,
+BibTeX and CSV citations, JSON, and a research package (.zip) that opens as an Obsidian
+folder and carries Lab results and RO-Crate metadata. Reports in no project sit in the
+Inbox; "sort inbox" suggests groups from your tags and from similar reports, and files
+nothing until you accept. See [docs/SPEC.md section 22](docs/SPEC.md#22-projects).
+
 > **Security:** the dashboard has no login. Anyone who can reach the port can read your research
 > and start runs on your API key, so it listens on `127.0.0.1` (this machine only) by default.
 > To reach it from another machine on a network you trust, pass `--host 0.0.0.0 --allow-remote`

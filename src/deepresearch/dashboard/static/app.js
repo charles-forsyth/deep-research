@@ -152,6 +152,7 @@ const S = {
   rtab: "info",
   health: null,
   stats: null,
+  project: null,     // left-pane filter: null (all), "inbox", or a project id
 };
 const LS_TABS = "dr.tabs.v1";
 
@@ -221,6 +222,7 @@ function renderTelemetry() {
 function filteredSessions() {
   return (S.q && S.results ? S.results : S.sessions).filter((s) => {
     if (S.rootsOnly && s.parent_id && !S.q) return false;
+    if (!PROJ.matches(s)) return false;
     if (S.filter === "running") return s.status === "running";
     if (S.filter === "starred") return s.starred;
     if (S.filter === "failed") return ["failed", "crashed", "cancelled"].includes(s.status);
@@ -242,6 +244,7 @@ function renderSessionList() {
           ${s.result_chars >= 1000 ? `<span>${fmtN(Math.round(s.result_chars / 1000))}k chars</span>` : ""}
           ${s.children ? `<span>\u2937 ${s.children}</span>` : ""}
           ${s.annotations ? `<span>\u270E ${s.annotations}</span>` : ""}
+          ${PROJ.pills(s.projects)}
           ${s.tags.map((t) => `<span class="tagpill">${esc(t)}</span>`).join("")}
         </div>
       </div>
@@ -258,6 +261,7 @@ function saveTabs() {
   localStorage.setItem(LS_TABS, JSON.stringify({ tabs: S.tabs.filter((t) => t.kind !== "launch"), active: S.active }));
 }
 function openTab(tab) {
+  if (!S.booted) S.bootNav = true;
   if (!S.tabs.find((t) => t.key === tab.key)) S.tabs.push(tab);
   if (S.active !== tab.key) stashView();
   S.active = tab.key;
@@ -279,7 +283,7 @@ async function closeTab(key) {
   if (!S.tabs.length) { S.tabs.push({ key: "home", kind: "home", title: "Mission control" }); S.active = "home"; }
   saveTabs(); renderTabs(); renderStage();
 }
-const ICONS = { notes: "\u270E", home: "\u25CE", session: "\u00a7", notebook: "\u270E", launch: "+", search: "\u2315", tree: "\u2937", map: "\u2B21", compare: "\u21C4" };
+const ICONS = { project: "\u25A3", projects: "\u25A3", sorter: "\u21C5", notes: "\u270E", home: "\u25CE", session: "\u00a7", notebook: "\u270E", launch: "+", search: "\u2315", tree: "\u2937", map: "\u2B21", compare: "\u21C4" };
 function renderTabs() {
   $("#tabs").setAttribute("role", "tablist");
   $("#tabs").innerHTML = S.tabs.map((t) => `
@@ -386,7 +390,7 @@ function renderStage() {
   const v = document.createElement("div");
   v.className = "view";
   stage.appendChild(v);
-  const renderers = { home: renderHome, session: renderSession, notebook: renderNotebook, launch: renderLaunch, search: renderSearch, tree: renderTree, map: renderMap, compare: renderCompare, sources: (v) => SRC.render(v), labruns: (v) => LAB.renderAll(v), notes: renderNotes, source: (v, t) => SRC.renderOne(v, t.id) };
+  const renderers = { home: renderHome, session: renderSession, notebook: renderNotebook, launch: renderLaunch, search: renderSearch, tree: renderTree, map: renderMap, compare: renderCompare, sources: (v) => SRC.render(v), project: (v, t) => PROJ.render(v, t), projects: renderProjects, sorter: (v) => PROJ.renderSorter(v), labruns: (v) => LAB.renderAll(v), notes: renderNotes, source: (v, t) => SRC.renderOne(v, t.id) };
   const gen = ++RENDER_GEN;
   v.dataset.gen = gen;
   (renderers[t.kind] || renderHome)(v, t);
@@ -397,6 +401,33 @@ function renderStage() {
 // if the user has moved on (instead of writing into a view that is gone).
 let RENDER_GEN = 0;
 const stale = (v) => !v.isConnected || +v.dataset.gen !== RENDER_GEN;
+
+// ---------------------------------------------------------------- projects overview
+function openProjects() { openTab({ key: "projects", kind: "projects", title: "Projects" }); }
+async function renderProjects(v) {
+  v.innerHTML = `<div class="pad"><div class="empty-result scan">Loading projects\u2026</div></div>`;
+  try { await PROJ.load(); } catch (e) { if (!stale(v)) v.innerHTML = `<div class="pad"><div class="err-banner">${esc(e.message)}</div></div>`; return; }
+  if (stale(v)) return;
+  v.innerHTML = `<div class="pad">
+    <div class="runs-head"><h2>Projects</h2><span class="grow"></span>
+      <button class="btn" id="pv-sort">\u21C5 Sort inbox (${PROJ.inbox})</button><button class="btn primary" id="pv-new">+ New project</button></div>
+    <p class="dim" style="max-width:760px">A project holds the reports, data sources, notebooks and Lab runs for one grant, paper, proposal or thesis, and remembers its defaults. Reports can sit in several projects; the one marked home supplies the defaults.</p>
+    <div class="proj-cards">
+      ${PROJ.list.map((p) => `<div class="rcard proj-card ${esc(p.color)}" data-p="${p.id}" tabindex="0" role="link">
+        <div style="display:flex;align-items:center;gap:6px">${PROJ.dot(p.color)}<b class="grow">${esc(p.title)}</b>${PROJ.level(p.protection_level)}</div>
+        ${p.description ? `<div class="p dim">${esc(clip(p.description, 160))}</div>` : ""}
+        <div class="mono dim" style="font-size:10.5px;margin-top:6px">${p.counts.session} reports \u00b7 ${p.counts.source} sources \u00b7 ${p.counts.notebook} notebooks \u00b7 ${ago(p.updated_at)}${p.nexus_ref ? ` \u00b7 ${esc(p.nexus_ref)}` : ""}</div>
+      </div>`).join("")}
+      <div class="rcard proj-card inbox" data-p="inbox" tabindex="0" role="link"><div style="display:flex;align-items:center;gap:6px"><span class="pdot inbox"></span><b>Inbox</b></div>
+        <div class="p dim">Reports not in any project yet.</div><div class="mono dim" style="font-size:10.5px;margin-top:6px">${PROJ.inbox} reports</div></div>
+    </div></div>`;
+  v.querySelector("#pv-new").onclick = () => PROJ.createDialog();
+  v.querySelector("#pv-sort").onclick = () => PROJ.openSorter();
+  v.querySelectorAll("[data-p]").forEach((c) => {
+    const go = () => { if (c.dataset.p === "inbox") { S.project = "inbox"; PROJ.renderStrip(); renderSessionList(); drawer("left"); } else PROJ.open(+c.dataset.p); };
+    c.onclick = go; c.onkeydown = (e) => { if (e.key === "Enter") go(); };
+  });
+}
 
 // ---------------------------------------------------------------- home
 function renderHome(v) {
@@ -429,6 +460,10 @@ function renderHome(v) {
       </div>
     </div>
     <div class="card" style="margin-bottom:18px">
+      <div class="card-h"><h3>Projects</h3><span class="grow"></span><button class="linkbtn" id="home-allproj">all projects</button></div>
+      <div class="recent" id="proj-cards-home"></div>
+    </div>
+    <div class="card" style="margin-bottom:18px">
       <h3>Notebooks</h3>
       <div class="recent" id="nb-cards"></div>
     </div>
@@ -452,6 +487,15 @@ function renderHome(v) {
   v.querySelector('[data-go="notebook"]').onclick = () => NB.create();
   v.querySelector('[data-go="map"]').onclick = openMap;
   v.querySelectorAll(".rcard[data-id]").forEach((c) => (c.onclick = () => openSession(c.dataset.id)));
+  v.querySelector("#home-allproj").onclick = openProjects;
+  PROJ.load().then(() => {
+    const el = v.querySelector("#proj-cards-home"); if (!el) return;
+    el.innerHTML = PROJ.list.slice(0, 8).map((p) => `<div class="rcard proj-card ${esc(p.color)}" data-p="${p.id}"><div style="display:flex;gap:6px;align-items:center">${PROJ.dot(p.color)}<b class="grow">${esc(p.title)}</b></div>
+      <div class="mono dim" style="font-size:10.5px;margin-top:4px">${p.counts.session} reports \u00b7 ${ago(p.updated_at)}</div></div>`).join("")
+      + `<div class="rcard proj-card" data-new="1"><b>+ New project</b><div class="dim" style="font-size:11.5px;margin-top:4px">${PROJ.inbox} report${PROJ.inbox === 1 ? "" : "s"} in the inbox${PROJ.inbox ? ' \u00b7 <span class="linkbtn">sort them</span>' : ""}</div></div>`;
+    el.querySelectorAll("[data-p]").forEach((c) => (c.onclick = () => PROJ.open(+c.dataset.p)));
+    el.querySelector("[data-new]").onclick = (e) => (e.target.classList.contains("linkbtn") ? PROJ.openSorter() : PROJ.createDialog());
+  }).catch(() => {});
   loadNotebooks().then(() => {
     const el = v.querySelector("#nb-cards");
     if (!el) return;
@@ -481,6 +525,7 @@ async function renderSession(v, t) {
   v.innerHTML = `
     <div class="vbar">
       <button class="btn small" data-a="star">${s.meta.starred ? "\u2605 Starred" : "\u2606 Star"}</button>
+      <button class="btn small" data-a="project" title="File this report in projects">\u25A3 ${s.projects?.length ? esc(clip((s.projects.find((p) => p.is_home) || s.projects[0]).title, 22)) + (s.projects.length > 1 ? ` +${s.projects.length - 1}` : "") : "Project"}</button>
       ${hasReport ? `<button class="btn small" data-a="copy">Copy report</button>
       <button class="btn small" data-a="to-nb">\u2192 Notebook</button>
       <button class="btn small" data-a="find">Find</button>
@@ -498,7 +543,7 @@ async function renderSession(v, t) {
         <option value="print">Print / PDF</option>
         <option value="audio-full">Audio: full report (AI voice)</option>
         <option value="audio-summary">Audio: AI voice summary</option>
-        <option value="brief">Brief: executive / slides / email</option>
+        <option value="brief">Brief: executive, slides, email, grant, lay, lit review</option>
       </select>` : ""}
       ${running ? `<button class="btn small danger" data-a="cancel">Stop research</button>` : ""}
       <button class="btn small danger" data-a="delete" title="Delete session">Delete</button>
@@ -514,6 +559,7 @@ async function renderSession(v, t) {
           <span>SIZE <b>${fmtN((s.result || "").length)}</b> chars</span>
           ${s.parent_id ? `<span>PARENT <a href="#" data-open="${s.parent_id}" style="color:var(--cyan)">#${s.parent_id}</a></span>` : ""}
           ${s.files.length ? `<span>FILES <b>${s.files.length}</b></span>` : ""}
+          ${(s.projects || []).map((p) => `<a href="#" class="projlink" data-proj="${p.id}">${PROJ.pill(p)}</a>`).join("")}
         </div>
       </div>
       ${s.stall ? `<div class="stall-note" role="alert" style="margin:8px 0;padding:10px 12px;border:1px solid var(--amber,#b80);border-radius:6px">
@@ -572,6 +618,7 @@ async function renderSession(v, t) {
     starBtn.dataset.keepLabel = "1"; starBtn.textContent = m.starred ? "\u2605 Starred" : "\u2606 Star"; // no re-render: keep the reading position
     loadSessions().catch(() => {});
   });
+  v.querySelector('[data-a="project"]')?.addEventListener("click", () => PROJ.fileDialog(s));
   v.querySelector('[data-a="copy"]')?.addEventListener("click", () => copyText(s.result || ""));
   v.querySelector('[data-a="to-nb"]')?.addEventListener("click", safe(() => NB.append(`## ${s.prompt}\n\n${s.result || ""}\n\n*Source: Session #${s.id}*\n`)));
   v.querySelector('[data-a="tree"]')?.addEventListener("click", () => openTree(s.id));
@@ -590,6 +637,7 @@ async function renderSession(v, t) {
     openCompare(a, b);
   });
   v.querySelector("[data-open]")?.addEventListener("click", (e) => { e.preventDefault(); openSession(e.target.dataset.open); });
+  v.querySelectorAll("[data-proj]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); PROJ.open(+a.dataset.proj); }));
   const exp = v.querySelector('[data-a="export"]');
   if (exp) exp.onchange = safe(async (e) => {
     const f = e.target.value; e.target.value = "";
@@ -671,7 +719,7 @@ async function renderSession(v, t) {
   const ta = v.querySelector(".dock textarea");
   const askBtn = v.querySelector('[data-a="ask"]');
   const askDsEl = v.querySelector("#ask-ds");
-  const askSources = askDsEl && typeof SRC !== "undefined" ? SRC.picker(askDsEl, [], { compact: true }) : () => [];
+  const askSources = askDsEl && typeof SRC !== "undefined" ? SRC.picker(askDsEl, s.project_defaults ? s.project_defaults.data_sources : [], { compact: true }) : () => [];
   const grow = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 160) + "px"; };
   ta.oninput = grow;
   ta.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); askBtn.click(); } };
@@ -969,6 +1017,9 @@ function renderLaunch(v) {
       <div class="field"><label for="l-breadth">Breadth (sub-tasks per level)</label>
         <div class="range-wrap"><input type="range" id="l-breadth" min="1" max="6" value="3"><output id="o-breadth">3</output></div></div>
     </div>
+    <div class="field"><label for="l-project">Project</label>
+      <select id="l-project"><option value="">Inbox (no project)</option>${PROJ.list.map((p) => `<option value="${p.id}" ${+pre.project_id === p.id || (!pre.project_id && typeof S.project === "number" && S.project === p.id) ? "selected" : ""}>${esc(p.title)}</option>`).join("")}</select>
+      <div class="dim" id="l-project-note" style="font-size:11.5px;margin-top:4px"></div></div>
     <div class="field"><label for="l-format">Output format (optional)</label>
       <input id="l-format" placeholder='e.g. "Executive summary, then a Markdown comparison table"'></div>
     <div class="field"><label id="l-drop-label">Your documents (optional)</label>
@@ -988,9 +1039,24 @@ function renderLaunch(v) {
   // uploads and picked sources live on the tab, so switching tabs keeps them
   const tab = currentTab() || {};
   const uploads = (tab.uploads = tab.uploads || []);
-  const launchSources = typeof SRC !== "undefined"
+  let launchSources = typeof SRC !== "undefined"
     ? SRC.picker($("#l-ds"), tab.ds || (S.launchPrefill && S.launchPrefill.data_sources) || [], (names) => { tab.ds = names; })
     : () => [];
+  // picking a project pre-fills its data sources (only while the user has not chosen any)
+  const projSel = v.querySelector("#l-project");
+  const projNote = () => {
+    const p = PROJ.byId(projSel.value);
+    v.querySelector("#l-project-note").textContent = p ? `Files the report in \u201c${p.title}\u201d (level ${p.protection_level}). Its data sources are added below.` : "";
+  };
+  projSel.onchange = safe(async () => {
+    projNote();
+    if (!projSel.value || (tab.ds && tab.ds.length)) return;
+    const d = await api(`/api/projects/${projSel.value}`);
+    tab.ds = d.sources.map((x) => x.name);
+    if (typeof SRC !== "undefined" && !stale(v)) launchSources = SRC.picker($("#l-ds"), tab.ds, (names) => { tab.ds = names; });
+  });
+  projNote();
+  if (projSel.value && !tab.ds && !(S.launchPrefill && S.launchPrefill.data_sources)) projSel.onchange();
   api("/api/stores").then((r) => {
     const dl = v.querySelector("#l-stores-list");
     if (dl) dl.innerHTML = (r.stores || []).map((x) => `<option value="${esc(x.name)}">${esc(x.display_name || "")}</option>`).join("");
@@ -1053,14 +1119,14 @@ function renderLaunch(v) {
       const r = await api("/api/research", { method: "POST", body: {
         prompt, depth: d, breadth: +$("#l-breadth").value, format: $("#l-format").value,
         uploads: uploads.map((u) => u.path), stores: $("#l-stores").value.split(/\s+/).filter(Boolean),
-        data_sources: launchSources(),
+        data_sources: launchSources(), project_id: projSel.value ? +projSel.value : null,
       } });
       toast(`Research #${r.id} launched`, "ok");
       NOTIFY.ask();
       S.launchPrefill = null;
       tab.uploads = []; tab.ds = null; delete VIEWSTATE.launch;
       closeTab("launch"); S.rtab = "log";
-      await loadSessions(); loadStats();
+      await loadSessions(); loadStats(); PROJ.load().catch(() => {});
       openSession(r.id);
     }
   });
@@ -1397,6 +1463,10 @@ const PAL = { items: [], idx: 0 };
 function paletteItems(q) {
   const cmds = [
     ["cmd", "New research", () => openLaunch()],
+    ["cmd", "Projects", openProjects],
+    ["cmd", "New project", () => PROJ.createDialog()],
+    ["cmd", "Sort inbox into projects", () => PROJ.openSorter()],
+    ...PROJ.list.map((p) => ["project", p.title, () => PROJ.open(p.id)]),
     ["cmd", "Semantic search", openSearch],
     ["cmd", "New notebook", () => NB.create()],
     ["cmd", "Research map", openMap],
@@ -1450,6 +1520,7 @@ $("#btn-right").onclick = () => drawer("right");
 $("#scrim").onclick = closeDrawers;
 $("#btn-new").onclick = () => { closeDrawers(); openLaunch(); };
 $("#btn-sources").onclick = () => { closeDrawers(); openSources(); };
+$("#btn-projects").onclick = () => { closeDrawers(); openProjects(); };
 $("#btn-labruns").onclick = () => { closeDrawers(); openLabRuns(); };
 $("#nav-labruns").onclick = () => { closeDrawers(); openLabRuns(); };
 $("#nav-sources").onclick = () => { closeDrawers(); openSources(); };
@@ -1491,14 +1562,21 @@ window.addEventListener("beforeunload", (e) => { if (NB.dirty) { NB.saveNow(); e
 (async function boot() {
   try { S.health = await api("/api/health?check=1"); $("#version").textContent = "v" + S.health.version; }
   catch { toast("Dashboard API unreachable", "err"); }
-  await Promise.all([loadSessions(), loadStats(), loadNotebooks(), LAB.loadTargets()]).catch((e) => toast(e.message, "err"));
-  try {
-    const saved = JSON.parse(localStorage.getItem(LS_TABS) || "null");
-    if (saved?.tabs?.length) { S.tabs = saved.tabs; S.active = saved.active; }
-  } catch { /* ignore */ }
+  await Promise.all([PROJ.load(), loadStats(), loadNotebooks(), LAB.loadTargets()]).catch((e) => toast(e.message, "err"));
+  await loadSessions().catch((e) => toast(e.message, "err"));
+  // If the user already opened something while boot was loading (the project strip
+  // draws early), keep it instead of restoring saved tabs over it.
+  if (!S.tabs.length) {
+    try {
+      const saved = JSON.parse(localStorage.getItem(LS_TABS) || "null");
+      if (saved?.tabs?.length) { S.tabs = saved.tabs; S.active = saved.active; }
+    } catch { /* ignore */ }
+  }
+  const navigated = S.tabs.length && S.bootNav;
   if (!S.tabs.find((t) => t.kind === "home")) S.tabs.unshift({ key: "home", kind: "home", title: "Mission control" });
   if (!S.tabs.find((t) => t.key === S.active)) S.active = "home";
-  renderTabs(); renderStage();
+  renderTabs(); if (!navigated) renderStage();
+  S.booted = true;
   // live refresh: fast while anything runs, slow otherwise
   const poll = async () => {
     try { await loadSessions(); if (Math.random() < 0.3) loadStats(); } catch { /* offline */ }

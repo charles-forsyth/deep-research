@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.36.0 (package `deepresearch`) |
+| Applies to | deep-research v0.37.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -36,6 +36,7 @@ in [section 17](#17-known-gaps-and-limitations).
 19. [Extension guide](#19-extension-guide)
 20. [Lab runs](#20-lab-runs)
 21. [Data sources](#21-data-sources)
+22. [Projects](#22-projects)
 
 ---
 
@@ -105,7 +106,9 @@ report leaves, and no comfortable place to read, compare or reuse the output.
 | **Follow-up** | A question asked in the context of a finished interaction; the answer is appended to that session's report. |
 | **Notebook** | A dashboard-only Markdown document for collecting findings across reports. |
 | **Annotation** | A highlight (and optional note) on an exact quote in a report. |
-| **Brief** | A generated executive brief, slide outline or email built from a report or notebook, saved as a notebook. |
+| **Brief** | A generated executive brief, slide outline, email, grant section, lay summary or literature review built from a report, notebook or project, saved as a notebook. |
+| **Project** | A container for the reports, data sources, notebooks and Lab runs of one grant, paper, proposal or thesis, with defaults for new work (section 22). |
+| **Inbox** | Top-level reports that are in no project. |
 | **Audio export** | A Gemini TTS rendering (full text or spoken summary) of a report or notebook, stored as MP3 (WAV if ffmpeg is missing). |
 | **State dir** | `$XDG_CONFIG_HOME/deepresearch` (default `~/.config/deepresearch`): settings, database, logs, uploads, audio, dashboard pid file. |
 
@@ -242,7 +245,9 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | `dashboard/daemon.py` | 225 | `--start/--stop/--restart/--status`, pid file, loopback check, health probe, URL listing. |
 | `dashboard/server.py` | 1,659 | `Api` route table and handlers, `ThreadingHTTPServer` plumbing, loopback-only guard, static files, Range support. |
 | `dashboard/store.py` | 287 | `DashboardStore`: notebooks, annotations, session meta (stars, tags), dashboard session queries. |
-| `dashboard/features.py` | 563 | Actual cost, research map, compare, briefs, text-to-speech audio. |
+| `dashboard/features.py` | 590 | Actual cost, research map, compare, briefs, text-to-speech audio. |
+| `dashboard/projects.py` | 1000 | Projects: store, filing rules, citations, dossier and research package exports, summary/Ask prompts, Inbox grouping (22). |
+| `dashboard/project_api.py` | 790 | Project HTTP handlers mixed into `Api` (22.6). |
 | `dashboard/lab.py` | 2,584 | Lab runs (section 20): Slurm target, cluster catalog, planner, pre-flight, job harness, watcher. |
 | `sources/` | 1,941 | Data sources (section 21): `model`, `registry`, `adapters`, `public` (anonymous buckets), `staging`, `usage`, `index`, `discover`, `cloud_catalogs`, `provenance`, `service`. |
 | `dashboard/static/` | 3,736 | `index.html`, `app.css`, `app.js` (core), `features.js`, `lab.js`, `sources.js`, vendored `marked` and `DOMPurify`. |
@@ -742,7 +747,7 @@ had it earlier). Implemented in `cli/jsonout.py`.
 |---|---|---|
 | `GET /api/map` | no | Research map nodes, 2-D coordinates and similarity edges (11.4). |
 | `POST /api/compare` | if `summarize` | Body `{a, b, summarize}`. Sources only in A, only in B, shared; optional AI "what changed" summary. |
-| `POST /api/brief` | yes | Body `{kind: session\|notebook, id, style: brief\|slides\|email}`. Returns `{markdown, cost_usd}`; the client saves it as a notebook. |
+| `POST /api/brief` | yes | Body `{kind: session\|notebook, id, style: brief\|slides\|email\|grant\|lay\|litreview}`. Returns `{markdown, cost_usd}`; the client saves it as a notebook. |
 | `POST /api/audio/estimate` | no | Body `{kind, id, mode}`. Words, seconds, cost and the voice list. |
 | `POST /api/audio` | yes | Body `{kind, id, mode: full\|summary, voice}`. Starts a background job; returns `{job}`. Reuses a cached file for the same kind, id, mode and voice. |
 | `GET /api/audio/jobs/{id}` | no | `{status: running\|done\|error, result, error}`. Jobs live in memory only (K17). |
@@ -756,7 +761,7 @@ had it earlier). Implemented in `cli/jsonout.py`.
 ### 11.1 Stack and layout
 
 - `index.html` shell, `app.css`, `app.js` (core, dialogs, tabs, reader, notes), `features.js`
-  (cost, map, compare, audio, briefs), `lab.js` (Lab runs), `sources.js` (data sources).
+  (cost, map, compare, audio, briefs), `lab.js` (Lab runs), `sources.js` (data sources), `projects.js` (projects, 22.7).
   Vanilla JavaScript in strict mode, no framework, no build step, no network calls
   except to the dashboard's own API.
 - Markdown is rendered with vendored `marked` (GFM) and always passed through vendored
@@ -814,7 +819,7 @@ older keystroke is dropped.
 | Tree and timeline | Tree of child tasks; timeline with lanes per node, parsed thought and info events, elapsed time, estimate and actual cost. |
 | Research map | Completed, embedded root sessions placed by a two-component projection of their embeddings (power iteration, server side) and relaxed client side; edges join each node to up to 4 neighbours with cosine similarity of at least 0.72. |
 | Compare | Two sessions side by side; sources only in A, only in B and shared (by link label); paragraphs of 8+ words in B with no normalised match in A are marked new; optional AI summary. |
-| Brief builder | Executive brief, slide outline or email, saved as a new notebook with a "Built from Session #N" footer. |
+| Brief builder | Executive brief, slide outline, email, grant section, lay summary or literature review, saved as a new notebook with a "Built from Session #N" footer. |
 | Read aloud | Browser `speechSynthesis`, free, paragraph highlighting, voice and rate saved as `dr.voice` and `dr.rate`. Reads `speakable()` text (REQ-DASH-9). |
 | Audio export | Full text or 2-3 minute summary in one of 8 Gemini voices (`dr.aivoice`); estimate first; plays in an inline player; listed on the report. |
 | Command palette | Ctrl/Cmd K: commands, notebooks and sessions, arrow keys and Enter; the highlighted item stays in view (listbox semantics). |
@@ -1739,6 +1744,125 @@ drops the other's result.
 
 ---
 
+## 22. Projects
+
+A **project** is a container above reports, data sources, notebooks and (through its
+reports) Lab runs and highlights: one per grant, paper, proposal or thesis. It is the
+dashboard's primary way to organize work and remembers defaults for new work.
+Code: `dashboard/projects.py` (store, exports, prompts, grouping) and
+`dashboard/project_api.py` (HTTP handlers, mixed into `Api`); client
+`static/projects.js`. Tests: `tests/dashboard/test_projects.py`.
+
+### 22.1 Model and filing rules
+
+| Table | Columns |
+|---|---|
+| `projects` | `id`, `title` (unique among unarchived, case-insensitive, max 120), `description`, `color` (cyan, amber, magenta, green, red), `protection_level` (P1-P4), `nexus_ref` (free text), `lab_target`, `lab_partition`, `archived`, `summary`, `summary_at`, `summary_cost`, `created_at`, `updated_at` |
+| `project_items` | `project_id`, `kind` (`session`, `source`, `notebook`), `ref_id`, `is_home`, `added_at`; primary key (project, kind, ref) |
+
+- **REQ-PROJ-1** Only top-level reports, data sources and notebooks are filed.
+  Filing a sub-report files its root. Follow-ups live inside their report; sub-reports,
+  Lab runs and highlights follow their root report and are never filed on their own.
+- **REQ-PROJ-2** A report can be in several projects. Exactly one membership per report
+  is its *home* (the first project it joins, until changed). The home supplies the
+  report's defaults; removing the home or deleting the project re-homes the report to
+  its oldest remaining project.
+- **REQ-PROJ-3** The **Inbox** is not a project: it is the set of top-level reports in no
+  project.
+- **REQ-PROJ-4** The protection level is a label, shown and never enforced (as for data
+  sources, 21). A project's *effective* level is the strictest of its own level and its
+  data sources' levels.
+- **REQ-PROJ-5** `nexus_ref` is stored as text. Nothing in deep-research writes to Nexus.
+- **REQ-PROJ-6** Deleting a project deletes only the project and its memberships.
+  Deleting a report, source or notebook removes its memberships.
+
+### 22.2 Defaults
+
+The home project's defaults are returned as `project_defaults` on `GET
+/api/sessions/{id}` and applied by the client:
+
+| Where | Default |
+|---|---|
+| New research (launcher) | Project picker (preselected when launched from a project or while one is filtered); picking one fills its data sources; the run is filed there as its home (`project_id` on `POST /api/research`). |
+| Ask (follow-up dock) | The home project's data sources are pre-picked. |
+| Lab run dialog | Data sources pre-picked; `POST /api/sessions/{id}/lab` uses the project's `lab_target` when none is given and adds its `lab_partition` to the planner instruction as a preference (unless the instruction already names a partition). |
+
+### 22.3 AI features (paid, gemini-3.8-flash)
+
+| Feature | Behaviour |
+|---|---|
+| Summary | `POST /api/projects/{id}/summary`: one page over every finished report and Lab run verdict (bottom line, findings, agreements and conflicts, computational evidence, gaps, next steps), citing *Session #N* / *Lab run #N*. Each report gets an equal share of a 400k-character budget. Stored on the project; marked out of date when a report or membership changes after it was written. |
+| Ask this project | `POST /api/projects/{id}/ask`: embeds missing reports, ranks the project's reports (and sub-reports) by cosine similarity to the question, sends the top 6 plus the project's data sources (21.5 caps) and answers with citations. Never reads reports outside the project. |
+| Briefs | `POST /api/projects/{id}/brief` with `style` = brief, slides, email, grant (background and significance), lay (plain-language summary), litreview; saved as a notebook filed in the project. The same three new styles are available for single reports and notebooks (`POST /api/brief`). |
+| Voice overview | `POST /api/projects/{id}/audio`: a 2-3 minute spoken briefing (from the summary when there is one) in the chosen voice; job polled via `/api/audio/jobs/{id}`; stored as `audio_exports` kind `project`. |
+| Group naming | `POST /api/projects/suggestions/name`: one call names up to 40 suggested groups. Optional; the free heuristic label (distinctive shared words, months and filler removed, acronyms kept) is the default. |
+
+### 22.4 Sorting the Inbox
+
+`GET /api/projects/suggestions` proposes groups of Inbox reports: first one group per tag
+applied to two or more Inbox reports, then average-linkage clusters of report embeddings
+(cosine threshold 0.78 by default, `?threshold=` 0.6-0.95; groups of 3 or more; up to
+12). Nothing is filed until the user accepts a group (`POST
+/api/projects/suggestions/accept` with the ticked session ids and a title or an existing
+`project_id`). `GET /api/projects/{id}/similar` lists Inbox reports closest to a
+project's centroid (cosine >= 0.72).
+
+### 22.5 Exports
+
+`GET /api/projects/{id}/export?format=`
+
+| Format | Content |
+|---|---|
+| `md` | Dossier: metadata, AI summary, contents, data sources, Lab runs with verdict checks and write-ups, every report (and sub-report) with its highlights, notebooks. The client also renders it as standalone HTML and Print/PDF. |
+| `json` | Everything: project, reports (no embeddings), highlights, Lab runs (plan, verdict, write-up, file list), data source references (never credentials), notebooks, citations. |
+| `bib` | BibTeX `@misc` entry per unique cited link (numeric citation chips skipped), noting the citing sessions. |
+| `csv` | Citations: label, url, sessions. |
+| `zip` | Research package: README, dossier, `project.json`, citations (bib, csv), `reports/` (one Markdown file each with YAML front matter and an `Index.md` of `[[wiki links]]`, so the folder opens as an Obsidian vault), `notebooks/`, `lab/run_N/` (write-up plus outputs up to 5 MB of json, csv, txt, md, png, jpg, log), the latest audio overview per project/report, and `ro-crate-metadata.json` (RO-Crate 1.1). |
+
+### 22.6 API
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/projects` (`?archived=1`) | Projects with counts per kind, and the Inbox size |
+| `POST /api/projects` | Create (`title`, optional settings, `sessions`, `sources`) |
+| `GET /api/projects/{id}` | Page data: project, effective level, summary staleness, reports (home flag, other projects, counts), sources, notebooks, highlights, Lab runs with verdict lines, citation count and top citations |
+| `PATCH /api/projects/{id}` | Settings (title, description, color, level, Nexus ref, Lab target and partition, archived) |
+| `DELETE /api/projects/{id}` | Delete the project only |
+| `POST`/`DELETE /api/projects/{id}/items` | `{kind, ids}` add or remove members (sources by name or id) |
+| `POST /api/projects/{id}/home` | `{session_id}` make this project the report's home |
+| `GET /api/projects/inbox` | Unfiled top-level report ids |
+| `GET /api/projects/suggestions`, `POST .../accept`, `POST .../name` | Sorting the Inbox (22.4) |
+| `GET /api/projects/{id}/similar` | Inbox reports that look like the project |
+| `POST /api/projects/{id}/summary`, `/ask`, `/brief`, `/audio` | AI features (22.3; paid) |
+| `GET /api/projects/{id}/export` | Exports (22.5) |
+| `GET /api/sessions/{id}/projects` | A report's root, projects and home defaults |
+
+`GET /api/sessions` rows and `GET /api/sessions/{id}` carry `projects`
+(`[{id, title, color, is_home}]`); the detail also carries `project_defaults`.
+
+### 22.7 Client
+
+- The left pane opens with a **Projects** strip (All reports, Inbox, each project with
+  its report count) that filters the archive; "sort inbox" and "+ new" sit in its header.
+  Archive rows show the home project pill and "+N" for others.
+- Top bar **Projects** opens the overview (cards per project plus the Inbox); Mission
+  control shows project cards first.
+- A project page shows the hero (title, effective level, Nexus ref, stats, actions),
+  the AI summary, Ask this project, and a grid of reports (home flag, other projects,
+  make home, remove), unfiled look-alikes, data sources, Lab runs with verdicts,
+  notebooks, recent highlights and most-cited sources. Export offers every 22.5 format,
+  the six brief styles and the voice overview.
+- A report's toolbar has a **Project** button (file into several projects, pick the
+  home); the report header shows its project pills.
+- The command palette lists Projects, New project, Sort inbox and each project.
+
+### 22.8 Known gaps
+
+- Only the protection level label is inherited; it is never enforced (by design).
+- Group suggestions need embeddings; reports never indexed (no Semantic search since
+  they finished) are not clustered until a search or project Ask embeds them.
+- The CLI has no `projects` command yet; projects are managed in the dashboard.
+
 ## Document history
 
 | Date | Version | Change |
@@ -1770,6 +1894,7 @@ drops the other's result.
 | 2026-09-29 | v0.28.1 | Lab submit: expired gcloud sign-in named plainly; a submit that never reached the cluster keeps the run as a draft (20.6). |
 | 2026-09-29 | v0.28.2 | Lab: OR-Tools plans on a Python module get an isolated venv (CP-SAT segfaulted on top of python-sci). |
 | 2026-09-29 | v0.29.0 | Lab: lessons (curated + learned) in plan/fix prompts, science guards, known-answer verdicts (20.10). |
+| 2026-09-29 | v0.37.0 | Projects (section 22): container above reports, sources, notebooks and Lab runs; home project defaults; project AI summary, Ask, briefs (grant, lay, literature review), voice overview; Inbox sorting from tags and embeddings; dossier, BibTeX/CSV, JSON and research package (Obsidian folder, Lab results, RO-Crate) exports. |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |
