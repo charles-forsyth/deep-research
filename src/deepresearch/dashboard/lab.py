@@ -73,6 +73,10 @@ SLURM_DONE = {
 }
 # Lab runs whose submit is running in this process right now (see poll()).
 _IN_FLIGHT: set[tuple[str, int]] = set()
+# always-on warm node: one keeper thread per process; targets paused by a manual Stop
+_KEEPER: threading.Thread | None = None
+_KEEPER_LOCK = threading.Lock()
+_WARM_PAUSED: set[str] = set()
 _SMOKE_FIXING: set[tuple[str, int]] = (
     set()
 )  # runs whose AI smoke fix runs in this process
@@ -442,7 +446,8 @@ class SlurmSSHTarget:
             part = self.default_partition
         return {
             "partition": part,
-            "idle_min": int(cfg.get("idle_min", 20)),
+            "idle_min": int(cfg.get("idle_min", 20)),  # 0 = never exit when idle
+            "always_on": bool(cfg.get("always_on", False)),
             "hours": float(cfg.get("hours", 4)),
             "max_par": int(cfg.get("max_par", 2)),
             "max_full_min": int(cfg.get("max_full_min", 120)),
@@ -827,10 +832,14 @@ class SlurmSSHTarget:
                 "spot": bool(p.get("spot")),
                 "use_for": p.get("use_for", ""),
             }
-            if p.get("default"):
+            # the catalog's default applies only when lab_targets.json names none:
+            # the person's choice wins (2026-09-30: computehigh, not the catalog's standard)
+            if p.get("default") and not self.cfg.get("default_partition"):
                 self.default_partition = p["name"]
         if parts:
             self.partitions = parts
+            if self.default_partition not in parts:
+                self.default_partition = next(iter(parts))
 
     def known_modules(self) -> tuple[set[str], dict[str, str]]:
         """(every loadable module incl. bare names, module -> MPI it needs)."""
@@ -4797,12 +4806,18 @@ class Lab(LabVerdictMixin):
         tgt = self.target(name)
         if not tgt or not getattr(tgt, "warm", None):
             return {"enabled": False}
-        return tgt.warm_status()
+        cfg = tgt.warm or {}
+        return {
+            **tgt.warm_status(),
+            "always_on": bool(cfg.get("always_on")),
+            "keeper_paused": tgt.name in _WARM_PAUSED,
+        }
 
     def warm_start(self, name: str | None = None) -> dict:
         tgt = self.target(name)
         if not tgt or not getattr(tgt, "warm", None):
             raise ValueError("no warm worker configured for this target")
+        _WARM_PAUSED.discard(tgt.name)
         state = self._keep_warm(tgt, force=True)
         return {"state": state, **tgt.warm_status()}
 
@@ -4811,7 +4826,52 @@ class Lab(LabVerdictMixin):
         if not tgt or not getattr(tgt, "warm", None):
             raise ValueError("no warm worker configured for this target")
         tgt.warm_stop()
-        return {"stopping": True}
+        # a manual stop pauses the always-on keeper until the next manual start
+        _WARM_PAUSED.add(tgt.name)
+        return {
+            "stopping": True,
+            "keeper_paused": bool((tgt.warm or {}).get("always_on")),
+        }
+
+    # ---- always-on warm node (v0.48.0) -------------------------------------------
+    KEEPER_INTERVAL_S = 300.0
+
+    def start_warm_keeper(self) -> None:
+        """For targets with `"warm": {"always_on": true}`: keep one warm worker running
+        at all times, even with no Lab runs (jobs then start in seconds). One keeper per
+        process (Main's Lab starts it; workspaces share the node). A manual Stop pauses
+        it until Start. The worker itself never exits for idleness (idle_min 0) and is
+        replaced near its time limit."""
+        if not any(
+            (getattr(t, "warm", None) or {}).get("always_on")
+            for t in self.targets.values()
+        ):
+            return
+        with _KEEPER_LOCK:
+            global _KEEPER
+            if _KEEPER and _KEEPER.is_alive():
+                return
+            _KEEPER = threading.Thread(
+                target=self._keeper_loop, daemon=True, name="lab-warm-keeper"
+            )
+            _KEEPER.start()
+
+    def _keeper_loop(self) -> None:
+        while not self._stop.is_set():
+            self.keep_warm_once()
+            self._stop.wait(self.KEEPER_INTERVAL_S)
+
+    def keep_warm_once(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for name, t in self.targets.items():
+            cfg = getattr(t, "warm", None) or {}
+            if not cfg.get("always_on") or name in _WARM_PAUSED:
+                continue
+            try:
+                out[name] = self._keep_warm(t, force=True) or ""
+            except Exception as e:  # cluster unreachable, sign-in expired: try later
+                out[name] = f"error: {str(e)[:200]}"
+        return out
 
     def log(self, run_id: int, offset: int = 0) -> dict:
         run = self.get(run_id)

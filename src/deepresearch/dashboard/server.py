@@ -396,8 +396,13 @@ class Api(ProjectApi):
             return ctx
 
     def start_watchers(self) -> None:
-        """Resume Lab watching in every workspace with runs still in flight."""
+        """Resume Lab watching in every workspace with runs still in flight, and keep
+        the always-on warm node alive when the target asks for it."""
         self._main.lab.ensure_watcher()
+        try:
+            self._main.lab.start_warm_keeper()
+        except Exception:
+            traceback.print_exc()
         if not self._workspaces:
             return
         from deepresearch.core import workspace as W
