@@ -1257,10 +1257,19 @@ class Api(ProjectApi):
         except Exception as e:
             raise ApiError(502, f"Compare failed: {e}") from e
 
-    def _doc(self, kind: str, ref: int) -> tuple[str, str]:
+    def _doc(self, kind: str, ref: int, with_lab: bool = False) -> tuple[str, str]:
         if kind == "session":
             s = self._session(str(ref))
-            return s["prompt"], s.get("result") or ""
+            text = s.get("result") or ""
+            if with_lab:
+                # Lab results attach to the report (never edit it); summaries and
+                # audio include them so the listener hears what the checks showed
+                from deepresearch.dashboard.projects import lab_findings
+
+                labs = lab_findings(self.lab.runs_for(int(ref)))
+                if labs:
+                    text += "\n\n## Lab results\n\n" + labs
+            return s["prompt"], text
         if kind == "notebook":
             nb = self.store.get_notebook(ref)
             if not nb:
@@ -1270,7 +1279,9 @@ class Api(ProjectApi):
 
     def brief(self, query, body):
         body = body or {}
-        title, content = self._doc(body.get("kind", ""), int(body.get("id") or 0))
+        title, content = self._doc(
+            body.get("kind", ""), int(body.get("id") or 0), with_lab=True
+        )
         if not content.strip():
             raise ApiError(400, "Nothing to summarize")
         try:
@@ -1282,8 +1293,10 @@ class Api(ProjectApi):
 
     def audio_estimate(self, query, body):
         body = body or {}
-        _, content = self._doc(body.get("kind", ""), int(body.get("id") or 0))
         mode = body.get("mode") or "full"
+        _, content = self._doc(
+            body.get("kind", ""), int(body.get("id") or 0), with_lab=mode == "summary"
+        )
         text = self.fx.speakable(content)
         out = self.fx.estimate_audio(text, mode)
         out["voices"] = VOICES
@@ -1293,8 +1306,8 @@ class Api(ProjectApi):
         body = body or {}
         kind = body.get("kind", "")
         ref = int(body.get("id") or 0)
-        title, content = self._doc(kind, ref)
         mode = body.get("mode") or "full"
+        title, content = self._doc(kind, ref, with_lab=mode == "summary")
         voice = body.get("voice") or "Charon"
         if mode not in ("full", "summary") or voice not in VOICES:
             raise ApiError(400, "bad mode or voice")

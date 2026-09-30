@@ -5,6 +5,7 @@ the same SQLite history; Gemini is only called when the user asks for a
 brief, a comparison summary, or audio.
 """
 
+import hashlib
 import io
 import json
 import math
@@ -104,6 +105,9 @@ class Features:
                 );
                 """
             )
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(audio_exports)")}
+            if "src_hash" not in cols:  # v0.38.2: re-make audio when the text changes
+                conn.execute("ALTER TABLE audio_exports ADD COLUMN src_hash TEXT")
 
     def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=10)
@@ -390,7 +394,7 @@ class Features:
     def estimate_audio(self, text: str, mode: str) -> dict:
         words = len(text.split())
         if mode == "summary":
-            words = min(words, 450)
+            words = min(words, 400 if words < 4000 else 650 if words < 9000 else 800)
         seconds = words / 2.5  # ~150 words per minute
         cost = (
             len(text) / 4 / 1e6 * TTS_IN_1M
@@ -401,13 +405,22 @@ class Features:
         return {"words": words, "seconds": round(seconds), "cost_usd": round(cost, 3)}
 
     def summary_script(self, title: str, md: str) -> str:
+        body = _strip_sources(md)
+        words = len(body.split())
+        # a longer report gets a longer briefing (still a summary): 2-3 min for a
+        # short report, up to about 5 min for a long one
+        target = "300-400" if words < 4000 else "500-650" if words < 9000 else "650-800"
+        minutes = "2 to 3" if words < 4000 else "3 to 4" if words < 9000 else "4 to 5"
         prompt = (
             "Write a spoken audio briefing of this research report for someone listening "
-            "on the go. 2 to 3 minutes when read aloud (about 300-400 words). Warm, clear, "
-            "plain spoken English: no Markdown, no bullet symbols, no URLs, no citation "
-            "markers. Start with the question, then the main findings, then what it means. "
-            "Spell out abbreviations the first time.\n\n"
-            f"QUESTION: {title}\n\nREPORT:\n{_strip_sources(md)[:120000]}"
+            f"on the go. {minutes} minutes when read aloud (about {target} words). Warm, "
+            "clear, plain spoken English: no Markdown, no bullet symbols, no URLs, no "
+            "citation markers. Start with the question, then the main findings, then what "
+            "it means. Cover the WHOLE report, every major section, not just the first or "
+            "last part. If it includes Lab (computational) results, say what they showed "
+            "and whether they supported the report's claims. Spell out abbreviations the "
+            "first time.\n\n"
+            f"QUESTION: {title}\n\nREPORT:\n{body[:400000]}"
         )
         return (
             self._client()
@@ -477,7 +490,12 @@ class Features:
                 "AND voice=? ORDER BY id DESC LIMIT 1",
                 (kind, ref_id, mode, voice),
             ).fetchone()
-        if row and Path(row["path"]).exists():
+        src_hash = hashlib.sha256(md.encode()).hexdigest()[:16]
+        if (
+            row
+            and Path(row["path"]).exists()
+            and (row["src_hash"] if "src_hash" in row.keys() else None) == src_hash
+        ):
             return dict(row) | {"cached": True}
         script = (
             self.summary_script(title, md) if mode == "summary" else self.speakable(md)
@@ -522,7 +540,7 @@ class Features:
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO audio_exports (kind, ref_id, mode, voice, path, seconds, "
-                "cost_usd, script, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                "cost_usd, script, created_at, src_hash) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     kind,
                     ref_id,
@@ -533,6 +551,7 @@ class Features:
                     round(cost, 4),
                     script,
                     datetime.now().isoformat(timespec="seconds"),
+                    src_hash,
                 ),
             )
             conn.commit()

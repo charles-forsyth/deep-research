@@ -206,6 +206,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="A data source whose text is given with the question (repeatable)",
     )
 
+    parser_repair = subparsers.add_parser(
+        "repair",
+        help="Restore reports saved with only their last part (before v0.38.2)",
+        description=(
+            "Long reports arrive in several parts; before v0.38.2 only the last part was "
+            "saved. While Google still keeps the interaction, this restores the full text "
+            "(appended follow-ups are kept). Dry run unless --apply."
+        ),
+    )
+    parser_repair.add_argument(
+        "ids", nargs="*", type=int, help="Only these session ids"
+    )
+    parser_repair.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the repaired text (default: report only)",
+    )
+    parser_repair.add_argument(
+        "--resynthesize",
+        action="store_true",
+        help="With --apply: also rebuild recursive reports whose synthesis started "
+        "from a cut main report (one Flash call each, a few cents)",
+    )
+    parser_repair.add_argument(
+        "--json", action="store_true", help="Machine-readable output"
+    )
+
     parser_list = subparsers.add_parser("list", help="List recent research sessions")
     parser_list.add_argument(
         "--limit",
@@ -431,6 +458,7 @@ def main():
         "search",
         "start",
         "followup",
+        "repair",
         "list",
         "show",
         "delete",
@@ -478,6 +506,10 @@ def _dispatch(parser: argparse.ArgumentParser, args, as_json: bool) -> None:
             handle_search(args)
         elif args.command == "followup":
             handle_followup(args)
+        elif args.command == "repair":
+            from deepresearch.cli.commands import handle_repair
+
+            handle_repair(args)
         elif args.command == "list":
             handle_list(args)
         elif args.command == "show":

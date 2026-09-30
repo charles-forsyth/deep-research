@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.38.1 (package `deepresearch`) |
+| Applies to | deep-research v0.38.2 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -158,7 +158,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 |---|---|---|
 | REQ-RUN-1 | A research run shall create a local session row before or at the moment Google returns an interaction id, so a run is recorded even if the process dies later. | `test_create_session`, `test_process_stream_output` |
 | REQ-RUN-2 | A background run (`start` or dashboard) shall pre-create its row with interaction id `pending_start`, record the worker pid, and have the worker adopt that row. No second row shall be created for the root, at any depth. | `test_recursive_root_adopts_precreated_row`, `test_start_research_records_run_meta_and_rerun_link`, `test_main_start` |
-| REQ-RUN-3 | When the agent finishes, the complete report text shall be stored in `sessions.result` and the status set to `completed`. Logs may truncate the report; the database shall not. | `test_final_text_from_steps`, `test_update_session` |
+| REQ-RUN-3 | When the agent finishes, the complete report text shall be stored in `sessions.result` and the status set to `completed`. Logs may truncate the report; the database shall not. | `test_final_text_from_steps`, `test_final_text_joins_every_model_output_part`, `test_update_session` |
 | REQ-RUN-4 | If a run fails after an interaction exists, the row shall become `failed` with the error in `result`. If it fails before an interaction exists (bad key, quota, network), an adopted row shall also become `failed`. | `test_research_failure_before_interaction_marks_adopted_row_failed` |
 | REQ-RUN-5 | Ctrl-C in a foreground run shall mark the row `cancelled`. | manual |
 | REQ-RUN-6 | A streamed run whose connection drops shall check the interaction's status and, if it is still running, resume from the last event id without starting a new interaction, backing off on repeated failures. | `test_stream_end_without_final_event_checks_status` |
@@ -353,8 +353,10 @@ root node of every recursive run.
    `interactions.get(id, stream=True, last_event_id=...)`. The wait between attempts
    grows from 2 s to 30 s on repeated failures. The loop ends at the task limit
    (6.4a).
-5. On completion, fetch the interaction once more and extract the final text
-   (`output_text`, else the last `model_output` step). If non-empty, store it with
+5. On completion, fetch the interaction once more and extract the final text:
+   every `model_output` step joined in order (long reports arrive in several parts;
+   `output_text` holds only the last part and was the cause of cut reports before
+   v0.38.2), else `output_text`. If non-empty, store it with
    status `completed` (or leave `running` when the caller will synthesize later) and
    export it if `--output` was given. If empty, nothing is written (see K6).
 6. `KeyboardInterrupt` marks the row `cancelled`. Any other exception marks it `failed`
@@ -556,7 +558,7 @@ strings (K16).
 | `session_meta` | store | `session_id` PK, `starred`, `tags` (JSON list, max 20) | Stars and tags. |
 | `run_meta` | server | `session_id` PK, `depth`, `breadth`, `estimate_usd`, `rerun_of`, `launched_at` | Launch parameters and estimate for dashboard runs; re-run links. |
 | `session_usage` | features | `session_id` PK, `usage` (JSON), `fetched_at`, `error` | Cached usage block or definitive "not available" (REQ-COST-3). |
-| `audio_exports` | features | `id`, `kind` (`session`/`notebook`), `ref_id`, `mode` (`full`/`summary`), `voice`, `path`, `seconds`, `cost_usd`, `script`, `created_at` | One row per generated audio file. |
+| `audio_exports` | features | `id`, `kind` (`session`/`notebook`), `ref_id`, `mode` (`full`/`summary`), `voice`, `path`, `seconds`, `cost_usd`, `script`, `created_at`, `src_hash` (hash of the text it was made from; a changed report makes new audio) | One row per generated audio file. |
 | `lab_runs` | lab | `id`, `session_id`, `scope` (`selection`/`document`), `selection`, `request`, `target`, `status`, `stage`, `plan` (JSON), `script`, `job_id`, `slurm_state`, `node`, `elapsed`, `exit_code`, `error`, `result_md`, `files` (JSON), `estimate_usd`, `ai_cost_usd`, `rerun_of`, `data_sources` (JSON names picked at launch), `created_at`, `updated_at`, `submitted_at`, `finished_at` | One row per lab run (section 20). A cache of the cluster's job folder. |
 | `lab_suggestions` | lab | `session_id` PK, `data` (JSON), `cost_usd`, `created_at` | Cached pre-run suggestions for a report. |
 | `data_sources` | sources | `id`, `name` (unique), `title`, `description`, `tags` (JSON), `kind`, `uri`, `options` (JSON: `include`, `exclude`, `region`, `max_relay_bytes`, `store`, `store_hash`, `files` for Drive picks), `auth_ref`, `protection_level`, `staging`, `temporary`, `status`, `last_checked`, `last_error`, `manifest` (JSON), timestamps | The data source registry (21.1). Credential references only, never secrets. |
@@ -624,6 +626,7 @@ Shared options for `research` and `start`:
 | `auth login` | Prompts (hidden) for a key, warns if it does not start with `AIza`, overwrites the user `.env` with `GEMINI_API_KEY=...` (K15). |
 | `auth logout` | Deletes the user `.env`. |
 | `cleanup [--force]` | Lists and deletes **all** File Search Stores on the key, with documents. Confirms unless `--force`. |
+| `repair [IDS] [--apply] [--resynthesize] [--json]` | Restores reports stored with only their last part (before v0.38.2) by re-reading every `model_output` step from Google, while Google still keeps the interaction (older ones report `gone`). Changes a row only when its stored text (before appended follow-ups) is exactly the last part; keeps follow-ups; clears the embedding. `--resynthesize` rebuilds synthesized recursive reports from the full main report and their children, deepest first (one Flash call each). Dry run unless `--apply`. |
 
 ### 9.4 Dashboard
 
@@ -821,7 +824,7 @@ older keystroke is dropped.
 | Compare | Two sessions side by side; sources only in A, only in B and shared (by link label); paragraphs of 8+ words in B with no normalised match in A are marked new; optional AI summary. |
 | Brief builder | Executive brief, slide outline, email, grant section, lay summary or literature review, saved as a new notebook with a "Built from Session #N" footer. |
 | Read aloud | Browser `speechSynthesis`, free, paragraph highlighting, voice and rate saved as `dr.voice` and `dr.rate`. Reads `speakable()` text (REQ-DASH-9). |
-| Audio export | Full text or 2-3 minute summary in one of 8 Gemini voices (`dr.aivoice`); estimate first; plays in an inline player; listed on the report. |
+| Audio export | Full text, or a spoken summary (2-3 minutes for a short report, up to about 5 for a long one, covering every section and the report's Lab results), in one of 8 Gemini voices (`dr.aivoice`); estimate first; plays in an inline player; listed on the report. Re-made when the report text changes. |
 | Command palette | Ctrl/Cmd K: commands, notebooks and sessions, arrow keys and Enter; the highlighted item stays in view (listbox semantics). |
 | Lab runs page | Every Lab run with status, report, partition, worst-case cost and age; rows open the report at that run's card (section 20). |
 | Data sources | Library, add form (checked before sending), source page with test, edit, index, folder browser and preview, "Find open datasets" with a per-catalog filter and an inline add form (section 21). |
@@ -1840,7 +1843,7 @@ The home project's defaults are returned as `project_defaults` on `GET
 | Summary | `POST /api/projects/{id}/summary`: one page over every finished report and Lab run verdict (bottom line, findings, agreements and conflicts, computational evidence, gaps, next steps), citing *Session #N* / *Lab run #N*. Each report gets an equal share of a 400k-character budget. Stored on the project; marked out of date when a report or membership changes after it was written. |
 | Ask this project | `POST /api/projects/{id}/ask`: embeds missing reports, ranks the project's reports (and sub-reports) by cosine similarity to the question, sends the top 6 plus the project's data sources (21.5 caps) and answers with citations. Never reads reports outside the project. |
 | Briefs | `POST /api/projects/{id}/brief` with `style` = brief, slides, email, grant (background and significance), lay (plain-language summary), litreview; saved as a notebook filed in the project. The same three new styles are available for single reports and notebooks (`POST /api/brief`). |
-| Voice overview | `POST /api/projects/{id}/audio`: a 2-3 minute spoken briefing (from the summary when there is one) in the chosen voice; job polled via `/api/audio/jobs/{id}`; stored as `audio_exports` kind `project`. |
+| Voice overview | `POST /api/projects/{id}/audio`: a spoken briefing (from the summary when there is one and it is current, plus each Lab run's write-up) in the chosen voice; job polled via `/api/audio/jobs/{id}`; stored as `audio_exports` kind `project`. |
 | Group naming | `POST /api/projects/suggestions/name`: one call names up to 40 suggested groups. Optional; the free heuristic label (distinctive shared words, months and filler removed, acronyms kept) is the default. |
 
 ### 22.4 Sorting the Inbox
@@ -1943,6 +1946,7 @@ project's centroid (cosine >= 0.72).
 | 2026-09-29 | v0.37.0 | Projects (section 22): container above reports, sources, notebooks and Lab runs; home project defaults; project AI summary, Ask, briefs (grant, lay, literature review), voice overview; Inbox sorting from tags and embeddings; dossier, BibTeX/CSV, JSON and research package (Obsidian folder, Lab results, RO-Crate) exports. |
 | 2026-09-30 | v0.38.0 | File browser for adding sources (21.9): this computer, Google Drive (search, shared drives), GCS by project, S3/CephRDS; new source kind `gdrive` (Docs as Markdown, Sheets as CSV). |
 | 2026-09-30 | v0.38.1 | Phone layout fix: app column capped at the screen width; phone rules for Lab runs, Data sources, project stats, launch dialog. |
+| 2026-09-30 | v0.38.2 | Report text is every `model_output` part joined (was only the last); `deep-research repair`; audio cache keyed on text hash; summary audio scales with length; Lab write-ups in summaries, briefs and audio. |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |
