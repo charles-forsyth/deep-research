@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.44.0 (package `deepresearch`) |
+| Applies to | deep-research v0.45.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -2022,6 +2022,32 @@ project's centroid (cosine >= 0.72).
   they finished) are not clustered until a search or project Ask embeds them.
 - The CLI has no `projects` command yet; projects are managed in the dashboard.
 
+
+### 22.9 Claims board (v0.45.0)
+
+`dashboard/claims.py`, deterministic (no model calls). A project page shows **Claims
+tested**: one row per question its Lab runs tested, with the run's outcome
+(CONFIRMED / REFUTED / INCONCLUSIVE / BROKEN from `labverdict.assess`, or PENDING while a
+submitted run is in progress). Drafts, runs being planned, cancelled runs and plans that
+failed are not claims yet.
+
+- Grouping: runs linked by `rerun_of` (reruns, AI fixes, re-plans that reword the
+  question) are one claim; so are runs in the same report whose question is the same
+  after normalising case and punctuation. The same question in another report is a
+  separate claim.
+- The lead attempt is the best outcome (confirmed/refuted over inconclusive over broken),
+  newest among equals; a submitted attempt still in progress replaces a broken lead. All
+  attempts are listed.
+- Order: refuted first (the claims to correct or discuss), then confirmed, inconclusive,
+  pending, broken. Header chips count each outcome.
+- Each row expands to the run's claim checks (expected vs got, pass/fail) and, separately,
+  the validation and informative checks that make the result trustworthy, with a link to
+  the report.
+- `GET /api/projects/{id}` returns `claims: {claims, counts, total}`. The Markdown/HTML
+  dossier and the research package gain a "Claims tested by Lab runs" section before
+  "Lab runs" (claim checks only).
+- Tests: `tests/dashboard/test_claims.py`.
+
 ## 23. Workspaces
 
 Added in v0.40.0 (design: nexus `2026-09-30_Deep_Research_Workspaces_Design.md`). Module
@@ -2264,6 +2290,7 @@ building on the zip format.
 | 2026-09-30 | v0.43.1 | Top bar fits at 1200-1600 px: status chips that do not fit are hidden instead of pushing the buttons off screen. |
 | 2026-09-30 | v0.43.2 | A submit stays "in flight" until its pilot is queued, so the watcher no longer fails it as "Submit interrupted" while the warm node is being reached. |
 | 2026-09-30 | v0.44.0 | Lab self-repair: one retry on an unusable AI reply, restored LaTeX/regex backslashes, new failure classes (TLS, network, API change, syntax), curated pitfalls (20.14). |
+| 2026-09-30 | v0.45.0 | Claims board on project pages and in the dossier (22.x claims). |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |

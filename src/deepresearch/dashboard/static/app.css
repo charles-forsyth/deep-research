@@ -977,3 +977,17 @@ mark.find.cur { background: var(--amber); color: #111; box-shadow: 0 0 0 2px var
   .src-view, .runs-view, .proj-view { padding-bottom: 48px; }
   .statusbar .sb-right { overflow: hidden; text-overflow: ellipsis; }
 }
+
+/* claims board (v0.45) */
+.proj-claims .claim { border-top: 1px solid var(--line); padding: 6px 0; }
+.proj-claims .claim summary { display: flex; gap: 8px; align-items: baseline; cursor: pointer; list-style: none; flex-wrap: wrap; }
+.proj-claims .claim summary::-webkit-details-marker { display: none; }
+.proj-claims .claim-q { flex: 1 1 320px; min-width: 0; font-size: 13px; }
+.proj-claims .claim-meta { font-size: 10.5px; white-space: nowrap; }
+.proj-claims .claim-body { padding: 6px 0 2px 4px; }
+.proj-claims .claim-checks { margin: 4px 0 0 16px; padding: 0; font-size: 12px; }
+.proj-claims .claim-checks li { margin: 2px 0; overflow-wrap: anywhere; }
+.proj-claims .claim-checks li.ok::marker { color: var(--green); }
+.proj-claims .claim-checks li.bad::marker { color: #ff8f8f; }
+.proj-claims .claim-checks.minor { opacity: .8; }
+.proj-claims .card-h .outcome-badge { margin-left: 4px; }
