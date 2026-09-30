@@ -93,8 +93,9 @@ CURATED: list[dict[str, Any]] = [
         "fail to start. Verify with `lmp -h | grep -q GRANULAR`. In 2D (dimension 2) fix "
         "pour needs gravity along -y (fix grav gravity 1.0 vector 0 -1 0); `lattice ... "
         "units box` is not valid syntax (lattice takes a scale; `region`/`create_atoms` take "
-        "units box).",
-        "source": "run #57, checked on a compute node 2026-09-29",
+        "units box). thermo_style resets thermo_modify: put `thermo_modify lost ignore` AFTER "
+        "thermo_style, or grains leaving an open boundary stop the run with 'Lost atoms'.",
+        "source": "runs #57/#81/#84, checked on a compute node 2026-09-29",
     },
     {
         "id": "gmsh-python",
@@ -405,6 +406,33 @@ def _python_bodies(script: str) -> list[tuple[int, str]]:
 
 
 _BUILTINS = set(dir(__import__("builtins"))) | {"__file__", "__name__", "__doc__"}
+
+
+def mathtext_escapes(script: str) -> list[str]:
+    """`'$\tau$'` in a normal (not raw) Python string: \t becomes a tab, \a a bell,
+    and matplotlib's mathtext parser fails (run #88: '$\tau \approx 1.34$'). f-strings
+    are checked on their literal parts too."""
+    hits = []
+    for line0, body in _python_bodies(script):
+        try:
+            tree = ast.parse(body)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.JoinedStr):
+                v = "".join(
+                    x.value for x in node.values
+                    if isinstance(x, ast.Constant) and isinstance(x.value, str)
+                )  # fmt: skip
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                v = node.value
+            else:
+                continue
+            if "$" in v and re.search(
+                r"\$[^$]*[\t\a\b\f\v\r][^$]*\$|\$[^$]*[\t\a\b\f\v\r]", v
+            ):
+                hits.append(f"line {line0 + node.lineno - 1}: {v.strip()[:40]!r}")
+    return list(dict.fromkeys(hits))[:4]
 
 
 def undefined_names(script: str) -> list[str]:
@@ -733,6 +761,14 @@ def weak_reference_checks(script: str) -> list[str]:
 def science_warnings(plan: dict) -> list[str]:
     script = str((plan or {}).get("script") or "")
     warns = []
+    mt = mathtext_escapes(script)
+    if mt:
+        warns.append(
+            "Matplotlib math text in a normal string has backslashes Python turns into "
+            "control characters (\\t, \\a, \\b): "
+            + "; ".join(mt)
+            + ". Use a raw string (r'$\\tau$')."
+        )
     und = undefined_names(script)
     if und:
         warns.append(

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.35.5 (package `deepresearch`) |
+| Applies to | deep-research v0.35.6 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1739,6 +1739,7 @@ drops the other's result.
 | 2026-09-29 | v0.28.1 | Lab submit: expired gcloud sign-in named plainly; a submit that never reached the cluster keeps the run as a draft (20.6). |
 | 2026-09-29 | v0.28.2 | Lab: OR-Tools plans on a Python module get an isolated venv (CP-SAT segfaulted on top of python-sci). |
 | 2026-09-29 | v0.29.0 | Lab: lessons (curated + learned) in plan/fix prompts, science guards, known-answer verdicts (20.10). |
+| 2026-09-29 | v0.35.6 | Restart resumes smoke fixes; python-gmsh import name; mathtext escape check. |
 | 2026-09-29 | v0.35.5 | Static check (and one AI retry) on smoke fixes before they run. |
 | 2026-09-29 | v0.35.4 | gmsh -> python-gmsh on conda; SU2/LAMMPS/gmsh known problems. |
 | 2026-09-29 | v0.35.3 | Undefined-name and unset-heredoc-variable pre-flight; value-substitution warning; verify without pipefail; versioned .bad cache. |
