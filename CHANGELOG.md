@@ -7,6 +7,12 @@ releases.
 
 ## [Unreleased]
 
+## [0.35.7] - 2026-09-29
+
+### Added
+
+- Pre-flight warns about crossing detection with `np.diff(np.sign(...))`: a step from exactly zero (both curves zero below a threshold) counts as a crossing (run #71 reported T*=0.045 instead of about 0.25).
+
 ## [0.35.6] - 2026-09-29
 
 ### Fixed

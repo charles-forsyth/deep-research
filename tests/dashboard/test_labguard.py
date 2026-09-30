@@ -195,3 +195,10 @@ def test_mathtext_escapes():
         "python3 - <<'EOF'\nt = 1.3\nlabel = f'Pile ($\\tau \\approx {t:.2f}$)'\nEOF\n"
     )
     assert labguard.mathtext_escapes(fbad)
+
+
+def test_sign_crossing_warning():
+    from deepresearch.dashboard import labguard
+
+    s = "python3 - <<'EOF'\nimport numpy as np\nd = np.array([0, -1, 1])\nc = np.where(np.diff(np.sign(d)))[0]\nEOF\n"
+    assert any("np.diff(np.sign" in w for w in labguard.science_warnings({"script": s}))
