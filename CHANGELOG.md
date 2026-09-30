@@ -7,6 +7,19 @@ releases.
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-09-30
+
+### Added
+
+- **`deep-research projects`** from the terminal: `list`, `show`, `create`, `add`, `remove`
+  and `export` (Markdown dossier, JSON, BibTeX, CSV citations, research package zip),
+  with `--json` for scripts and `-W` for another workspace. Same data as the dashboard;
+  `add`/`remove` change membership only.
+- Correction notes on report #290 (coral / Allee effects) from Lab runs #97 and #98:
+  the diffusion-approximation sentence is marked refuted for extinction probability, the
+  "15 m threshold, regardless" sentence qualified by the clustering result. The report
+  text is unchanged (notes only).
+
 ## [0.46.0] - 2026-09-30
 
 ### Added

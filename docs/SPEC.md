@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.46.0 (package `deepresearch`) |
+| Applies to | deep-research v0.47.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -2083,6 +2083,27 @@ failed are not claims yet.
   "Lab runs" (claim checks only).
 - Tests: `tests/dashboard/test_claims.py`.
 
+
+### 22.10 `deep-research projects` (v0.47.0)
+
+`cli/projects.py`. Calls the dashboard's own `Api` in-process (no server, no HTTP; the
+Lab watcher and referee are off), so the CLI and the dashboard can never disagree. The
+workspace comes from `-W/--workspace` or `DR_WORKSPACE`. `PROJECT` is an id or a title
+(exact, or a unique case-insensitive prefix; an ambiguous prefix lists the matches).
+
+- `projects list [--all] [--json]`: projects with counts, and the inbox size.
+- `projects show PROJECT [--json]`: reports, data sources, claims tested, Lab runs,
+  notebooks; `--json` is the same document as `GET /api/projects/{id}`.
+- `projects create TITLE [--description] [--level P1-P4] [--report ID]... [--source NAME]...`
+- `projects add|remove PROJECT [--report ID]... [--source NAME]...`: membership only;
+  reports and sources are never deleted.
+- `projects export PROJECT [-f md|json|bib|csv|zip] [-o FILE|DIR/|-]`: the dashboard's
+  exports; a trailing slash or an existing folder gets the default file name; `-` writes
+  text formats to stdout (not zip).
+- Errors print `Error: ...` (or `{"error": ...}` with `--json`) and exit 1. `projects` is
+  in the known-command list, so it is never taken for a research prompt (a paid run).
+- Tests: `tests/cli/test_projects_cli.py` (subprocess, isolated config).
+
 ## 23. Workspaces
 
 Added in v0.40.0 (design: nexus `2026-09-30_Deep_Research_Workspaces_Design.md`). Module
@@ -2327,6 +2348,7 @@ building on the zip format.
 | 2026-09-30 | v0.44.0 | Lab self-repair: one retry on an unusable AI reply, restored LaTeX/regex backslashes, new failure classes (TLS, network, API change, syntax), curated pitfalls (20.14). |
 | 2026-09-30 | v0.45.0 | Claims board on project pages and in the dossier (22.x claims). |
 | 2026-09-30 | v0.46.0 | Lab referee: adversarial review of every draft before submit (20.15). |
+| 2026-09-30 | v0.47.0 | `deep-research projects` CLI (22.10). |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |
