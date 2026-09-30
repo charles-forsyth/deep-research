@@ -68,9 +68,10 @@ real computations on an HPC cluster. Everything lives in a local SQLite history 
   (a test that could not tell is re-planned once, for your review). The outcome is attached
   to the report as a note (the report itself is never edited) and included in its summaries
   and audio. A Lab runs page lists every run with its outcome.
-- **Workspaces**: keep separate libraries (for example a clean one for demos) with
-  `deep-research workspace create Demo` and `--workspace demo`; your existing library is
-  `main` and is never moved. A switcher in the dashboard's top bar is coming next.
+- **Workspaces**: keep separate libraries (for example a clean one for demos). Switch,
+  create, duplicate, rename or archive them from the name beside the logo in the top bar,
+  or use `deep-research workspace ...` and `--workspace ID` on the command line. Your
+  existing library is `main` and is never moved.
 - **Data sources**: register web datasets, Google Drive folders and Docs, GCS buckets,
   S3/CephRDS buckets and folders in your home directory once. "+ Add source" opens a file
   browser over whatever is already signed in on your machine (rclone Drive and S3 remotes,

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.40.0 (package `deepresearch`) |
+| Applies to | deep-research v0.41.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -2091,11 +2091,30 @@ workspace; research spawned in a workspace carries `--workspace` and logs there;
 library mode; duplicate leaves the source unchanged and rewrites audio paths.
 `tests/conftest.py` clears `DR_WORKSPACE` around every test.
 
-### 23.6 Planned
+### 23.6 Switcher (v0.41.0)
 
-v0.41 top-bar switcher (subtle tint outside Main); v0.42 copy projects and reports into
-another workspace; v0.43 export and import a workspace as a zip (import always creates a
-new workspace).
+`static/workspaces.js` (`WSUI`). A pill beside the brand in the top bar shows the current
+workspace (dot + name). Click opens the Workspaces dialog: one row per workspace with
+report and project counts and running Lab runs; click a row to switch. Actions: New
+workspace (name, optional description; opens it), Duplicate current, and outside Main
+Rename, Archive, Delete (type the id to confirm; the folder goes to the trash). Archived
+workspaces are listed folded, with Unarchive.
+
+- Switching stores the id (`localStorage["dr.workspace"]`) and reloads the page, so no
+  state from the previous workspace can remain on screen; an unsaved notebook is saved
+  first. A stored id that no longer exists or is archived falls back to Main.
+- Outside Main the cue is deliberately quiet (Chuck, 2026-09-30: "very subtle"): the dot
+  takes the workspace colour, the top bar's bottom border takes a 45% mix of it, and the
+  window title becomes "<name> // Deep Research". No banner, no background change.
+- Phones: the pill shrinks (110 px under 820 px, 76 px without the caret under 380 px);
+  the audit (10 views x 5 widths) shows no clipping.
+- Tests: `tests/dashboard/test_workspace_ui.py` (header on every call, `?ws=` on links,
+  tabs per workspace, switcher loaded after app.js, tint changes no background).
+
+### 23.7 Planned
+
+v0.42 copy projects and reports into another workspace; v0.43 export and import a
+workspace as a zip (import always creates a new workspace).
 
 ## Document history
 
@@ -2134,6 +2153,7 @@ new workspace).
 | 2026-09-30 | v0.38.2 | Report text is every `model_output` part joined (was only the last); `deep-research repair`; audio cache keyed on text hash; summary audio scales with length; Lab write-ups in summaries, briefs and audio. |
 | 2026-09-30 | v0.39.0 | Lab outcomes (confirmed/refuted/inconclusive/broken), check kinds, parameter sources, notes on the report, pilot gate, one automatic re-plan (20.13). |
 | 2026-09-30 | v0.40.0 | Workspaces foundation (23): separate libraries, Main unmoved, `--workspace`, `workspace` commands, per-request dashboard context, per-workspace cluster folders and task names. |
+| 2026-09-30 | v0.41.0 | Workspace switcher in the top bar (23.6), subtle tint outside Main. |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |

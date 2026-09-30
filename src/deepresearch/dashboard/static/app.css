@@ -72,6 +72,30 @@ input, textarea, select { font: inherit; color: var(--text); }
 .brand-sub { font: 10px var(--mono); color: var(--dim); letter-spacing: .12em; text-transform: uppercase; }
 @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .45 } }
 .telemetry { display: flex; gap: 6px; flex: 1; justify-content: center; }
+/* ---- workspace switcher (v0.41): quiet by design; outside Main only a thin tinted
+   line under the top bar and a coloured dot, no banners ---- */
+.ws-switch { display: inline-flex; align-items: center; gap: 7px; max-width: 220px; padding: 4px 10px; border: 1px solid var(--line-2); border-radius: 999px; background: rgba(18, 25, 38, .6); color: var(--text); font: 11.5px var(--mono); cursor: pointer; white-space: nowrap; }
+.ws-switch:hover, .ws-switch:focus-visible { border-color: var(--cyan); outline: none; }
+.ws-switch .ws-name { overflow: hidden; text-overflow: ellipsis; }
+.ws-switch .ws-caret { color: var(--dim); font-size: 9px; }
+.ws-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex: none; opacity: .8; }
+.ws-dot[data-color="teal"], .ws-switch[data-color="teal"] .ws-dot, body[data-ws="teal"] { --ws-tint: #2dd4bf; }
+.ws-dot[data-color="violet"], .ws-switch[data-color="violet"] .ws-dot, body[data-ws="violet"] { --ws-tint: #a78bfa; }
+.ws-dot[data-color="amber"], .ws-switch[data-color="amber"] .ws-dot, body[data-ws="amber"] { --ws-tint: #fbbf24; }
+.ws-dot[data-color="rose"], .ws-switch[data-color="rose"] .ws-dot, body[data-ws="rose"] { --ws-tint: #fb7185; }
+.ws-dot[data-color="green"], .ws-switch[data-color="green"] .ws-dot, body[data-ws="green"] { --ws-tint: #4ade80; }
+.ws-dot[data-color="slate"], .ws-switch[data-color="slate"] .ws-dot, body[data-ws="slate"] { --ws-tint: #94a3b8; }
+.ws-dot[data-color]:not([data-color=""]), .ws-switch:not([data-color=""]) .ws-dot { background: var(--ws-tint, var(--dim)); }
+body[data-ws]:not([data-ws=""]) .topbar { border-bottom-color: color-mix(in srgb, var(--ws-tint, var(--line)) 45%, var(--line)); box-shadow: 0 1px 0 color-mix(in srgb, var(--ws-tint, transparent) 22%, transparent); }
+.ws-list { display: flex; flex-direction: column; gap: 4px; }
+.ws-row { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--text); cursor: pointer; font: inherit; }
+.ws-row:hover { border-color: var(--line-2); }
+.ws-row.on { border-color: var(--cyan); }
+.ws-row-name { font-weight: 600; font-size: 13px; }
+.ws-row-meta { margin-left: auto; font-size: 11px; white-space: nowrap; }
+.ws-row.arch { cursor: default; justify-content: space-between; }
+.ws-arch { margin-top: 10px; font-size: 12px; }
+.ws-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
 .chip {
   font: 11px var(--mono); padding: 3px 10px; border-radius: 999px;
   border: 1px solid var(--line-2); background: rgba(18, 25, 38, .7); color: var(--dim);
@@ -475,6 +499,8 @@ html, body { overflow-x: hidden; }
   .hero { grid-template-columns: 1fr; }
   .telemetry { display: none; }
   .topbar { gap: 8px; padding: 0 8px; }
+  .ws-switch { max-width: 110px; padding: 3px 8px; }
+  .ws-row-meta { display: none; }
   .brand { min-width: 0; flex: 1; overflow: hidden; }
   .brand-name { letter-spacing: .14em; white-space: nowrap; }
   .brand-sub { display: none; }
@@ -909,6 +935,8 @@ mark.find.cur { background: var(--amber); color: #111; box-shadow: 0 0 0 2px var
 }
 @media (max-width: 380px) {
   .brand > div { display: none; } /* just the mark on the narrowest phones */
+  .ws-switch { max-width: 76px; padding: 3px 6px; gap: 4px; }
+  .ws-switch .ws-caret { display: none; }
 }
 
 @media (max-width: 600px) {
