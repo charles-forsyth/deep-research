@@ -154,3 +154,22 @@ def test_curated_pitfalls_reach_prompts_for_matching_plans(tmp_path):
         "https://www.loc.gov/collections/chronicling-america/", tmp_path
     )
     assert "SSL_CERT_FILE" not in labguard.prompt_block("lammps granular", tmp_path)
+
+
+def test_the_two_python_package_checks_agree():
+    """ "already provides X" and "imports X but nothing installs it" must not flip-flop
+    (run #42: requests was dropped by one check and demanded by the other)."""
+    from deepresearch.dashboard.lab import missing_import_warnings
+
+    plan = {
+        "install": {"modules": ["python-sci/2026.09"], "pip": [], "conda": []},
+        "script": "python - <<'EOF'\nimport requests, certifi, numpy\nEOF\n",
+    }
+    assert missing_import_warnings(plan) == []
+    assert (
+        "requests" in labm.PYTHON_SCI_PACKAGES and "certifi" in labm.PYTHON_SCI_PACKAGES
+    )
+    for p in labm.PYTHON_SCI_PACKAGES:
+        assert (
+            labm._DIST_TO_IMPORT.get(p, p) in labm.MODULE_PYTHON_PACKAGES["python-sci"]
+        )

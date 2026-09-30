@@ -115,3 +115,26 @@ def test_worker_with_idle_zero_does_not_exit_when_idle(tmp_path):
 def test_worker_with_an_idle_limit_still_exits(tmp_path):
     p = _worker(tmp_path, 1, 10)
     assert p.returncode == 0 and "idle for 1s, exiting" in p.stdout
+
+
+def test_single_node_cpu_plans_are_pointed_at_the_always_on_warm_partition():
+    from deepresearch.dashboard.lab import suggest_partition
+
+    t = SlurmSSHTarget(
+        _cfg(warm={"partition": "computehigh", "always_on": True, "idle_min": 0})
+    )
+    plan = {
+        "resources": {"partition": "standard", "nodes": 1, "gpus": 0},
+        "script": "python x.py",
+    }
+    part, why = suggest_partition(t, plan)
+    assert part == "computehigh" and "warm node" in why
+    # multi-node jobs and targets without an always-on node keep their choice
+    assert (
+        suggest_partition(t, {**plan, "resources": {**plan["resources"], "nodes": 4}})[
+            1
+        ]
+        == ""
+    )
+    t2 = SlurmSSHTarget(_cfg())
+    assert suggest_partition(t2, plan) == ("standard", "")

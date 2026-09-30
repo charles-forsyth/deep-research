@@ -966,9 +966,26 @@ class SlurmSSHTarget:
                 )
                 + (f", up to {v['max_nodes']} nodes" if v.get("max_nodes") else "")
                 + f", ${v.get('usd_per_hour', '?')}/node-hour"
-                + (f". {v['use_for']}" if v.get("use_for") else "")
+                # the catalog's text may call another partition the default; ours wins
+                + (
+                    f". {re.sub(r'^Default\.\s*', '', v['use_for'])}"
+                    if v.get("use_for")
+                    else ""
+                )
             )
-        return "Partitions (whole nodes, created on demand):\n" + "\n".join(rows)
+        warm = getattr(self, "warm", None) or {}
+        tail = (
+            f"\nUse `{self.default_partition}` unless the job needs GPUs, more memory or "
+            "many nodes"
+            + (
+                f"; single-node CPU jobs on `{warm['partition']}` run on the always-on warm "
+                "node and start in seconds"
+                if warm.get("partition") == self.default_partition
+                else ""
+            )
+            + "."
+        )
+        return "Partitions (whole nodes, created on demand):\n" + "\n".join(rows) + tail
 
     def describe(self) -> str:
         parts = "\n".join(
@@ -1070,7 +1087,7 @@ PYTHON_SCI_PACKAGES = set(
     """numpy scipy pandas matplotlib seaborn scikit-learn sklearn statsmodels
 sympy numba xarray netcdf4 h5py tables pytables zarr dask polars pyarrow astropy astroquery
 skyfield sunpy cartopy shapely geopandas pyproj rasterio networkx biopython pysam
-scikit-image opencv pillow jupyterlab ipykernel ipywidgets tqdm requests pyyaml rich
+scikit-image opencv pillow jupyterlab ipykernel ipywidgets tqdm requests certifi pyyaml rich
 cutadapt multiqc snakemake uv""".split()
 )
 PYTHON_ML_PACKAGES = set(
@@ -1279,32 +1296,23 @@ _HEREDOC = re.compile(
 
 # What each site Python module provides (from the catalog usage cards; used to catch a
 # script importing a package nobody installs: run #76 imported pandas on python-ml).
+# What each Python environment module provides, as IMPORT names. One source of truth
+# for both pre-flight checks ("already provides X, drop the install" and "imports X
+# but nothing installs it"): two lists that disagreed told the planner to drop and add
+# `requests` in turn (run #42, 2026-09-30).
+_DIST_TO_IMPORT = {"scikit-learn": "sklearn", "biopython": "Bio", "scikit-image": "skimage",
+                   "opencv": "cv2", "pillow": "PIL", "pyyaml": "yaml", "netcdf4": "netCDF4",
+                   "pytables": "tables", "jupyterlab": "jupyterlab"}  # fmt: skip
 MODULE_PYTHON_PACKAGES = {
-    "python-sci": {
-        "numpy",
-        "scipy",
-        "pandas",
-        "matplotlib",
-        "numba",
-        "xarray",
-        "astropy",
-        "skyfield",
-        "Bio",
-        "networkx",
-        "sklearn",
-        "statsmodels",
-    },
-    # checked on a compute node 2026-09-29
-    "python-ml": {
-        "torch",
-        "transformers",
-        "sklearn",
-        "numpy",
-        "scipy",
-        "pandas",
-        "matplotlib",
-        "networkx",
-    },
+    "python-sci": {_DIST_TO_IMPORT.get(p, p) for p in PYTHON_SCI_PACKAGES}
+    | {
+        "certifi",
+        "urllib3",
+        "idna",
+        "charset_normalizer",
+    },  # requests' own dependencies
+    "python-ml": {_DIST_TO_IMPORT.get(p, p) for p in PYTHON_ML_PACKAGES}
+    | {"matplotlib", "networkx"},  # checked on a compute node 2026-09-29
 }
 _STDLIB = set(getattr(sys, "stdlib_module_names", ())) | {"__future__"}
 
@@ -2119,6 +2127,22 @@ def suggest_partition(
         "cpu": ["computehigh", "standard"],
     }[shape]
     ok = [p for p in by_shape if p in parts and p not in out]
+    warm = getattr(target, "warm", None) or {}
+    if (
+        shape == "cpu"
+        and want != target.default_partition
+        and target.default_partition in ok
+        and warm.get("always_on")
+        and warm.get("partition") == target.default_partition
+        and max(_int((plan.get("resources") or {}).get("nodes"), 1), 1) == 1
+    ):
+        # a single-node CPU job planned elsewhere would boot a node; the default
+        # partition has an always-on warm node that starts it in seconds (v0.48.1)
+        return (
+            target.default_partition,
+            f"single-node CPU work starts in seconds on the always-on warm node "
+            f"('{target.default_partition}') instead of booting a '{want}' node",
+        )
     if want in parts and want not in out:
         if (shape == "gpu") == bool(parts[want].get("gpus")):
             return want, ""
