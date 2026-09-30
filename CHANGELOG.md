@@ -7,6 +7,13 @@ releases.
 
 ## [Unreleased]
 
+## [0.35.8] - 2026-09-29
+
+### Added
+
+- The dashboard re-checks each job's own verdict instead of trusting its pass flags: numbers that contradict a "pass", tolerances over 20% of the expected value, and comparison arms whose summaries are identical (run #89: both regimes were the same simulation, yet "passed"). Contradictions and identical arms turn the verdict into a fail; loose tolerances are shown as "passed, but see the re-check".
+- Known problems: BGK lattice Boltzmann needs tau >= 0.55 (blew up at 0.535, run #70, reproduced on a compute node), pressure probes on the first fluid node; SU2 unsteady force coefficients need AERO_COEFF history output and the start-up transient dropped (C_D near 30 in the first steps, run #87).
+
 ## [0.35.7] - 2026-09-29
 
 ### Added

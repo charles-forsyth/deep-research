@@ -1,6 +1,7 @@
+import json
+
 """Lab guards: pitfalls in prompts, science warnings, verdicts, learned lessons."""
 
-import json
 
 from deepresearch.dashboard import labguard as g
 from deepresearch.dashboard.lab import validate_plan
@@ -202,3 +203,48 @@ def test_sign_crossing_warning():
 
     s = "python3 - <<'EOF'\nimport numpy as np\nd = np.array([0, -1, 1])\nc = np.where(np.diff(np.sign(d)))[0]\nEOF\n"
     assert any("np.diff(np.sign" in w for w in labguard.science_warnings({"script": s}))
+
+
+def test_audit_verdict(tmp_path):
+    from deepresearch.dashboard import labguard
+
+    out = tmp_path / "outputs"
+    out.mkdir()
+    (out / "verdict.json").write_text(
+        json.dumps(
+            {
+                "pass": True,
+                "checks": [
+                    {
+                        "name": "tau",
+                        "expected": 1.53,
+                        "got": 1.78,
+                        "tolerance": 0.45,
+                        "pass": True,
+                    },
+                    {
+                        "name": "cd",
+                        "expected": 3.23,
+                        "got": 28.7,
+                        "tolerance": 0.35,
+                        "pass": True,
+                    },
+                    {
+                        "name": "amplitude above 0.05",
+                        "expected": 0.05,
+                        "got": 0.14,
+                        "tolerance": 0.05,
+                        "pass": True,
+                    },
+                ],
+            }
+        )
+    )
+    same = {"avalanche_count": 76, "fitted_tau": 1.78, "d_ks": 0.17}
+    (out / "summary.json").write_text(
+        json.dumps({"frictional": same, "inertial": dict(same)})
+    )
+    v = labguard.read_verdict(tmp_path)
+    kinds = [a.split(" ")[0] for a in v["audit"]]
+    assert kinds.count("MISMATCH") == 1 and "LOOSE" in kinds and "IDENTICAL" in kinds
+    assert v["pass"] is False

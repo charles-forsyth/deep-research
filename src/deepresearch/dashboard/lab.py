@@ -4695,6 +4695,12 @@ class Lab:
         stage = "Completed" if final == "completed" else f"Ended: {state or 'unknown'}"
         if final == "completed" and verdict and verdict.get("pass") is False:
             stage = "Completed, known-answer check FAILED"
+        elif final == "completed" and verdict and verdict.get("audit"):
+            stage = (
+                "Completed; review the verdict ("
+                + verdict["audit"][0].split(" ")[0].lower()
+                + " check)"
+            )
         changed = self._update(
             run["id"],
             only_if=("analyzing",),
