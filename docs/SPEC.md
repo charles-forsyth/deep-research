@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.47.1 (package `deepresearch`) |
+| Applies to | deep-research v0.48.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1736,6 +1736,26 @@ pilot) so the referee does not flag them.
   opinion.
 - Tests: `tests/dashboard/test_lab_referee.py`.
 
+
+### 20.16 Default partition and the always-on warm node (v0.48.0)
+
+- `default_partition` in `lab_targets.json` now wins over the cluster catalog's default
+  (before, the catalog's `standard` replaced it whenever the catalog loaded). Ursa Major
+  runs with `computehigh` (c3-highcpu-44) as the default: `standard` (c2d) failed to start
+  nodes repeatedly on 2026-09-29/30 (GCP capacity), and computehigh is also the warm
+  node's partition, so short single-node runs go straight to the warm node.
+- `"warm": {"always_on": true, "idle_min": 0}` keeps one warm worker running at all
+  times. `idle_min: 0` makes `warm_worker.sh` never exit for idleness (it still drains
+  and is replaced near its Slurm time limit, `hours`). A keeper thread in the dashboard
+  (`Lab.start_warm_keeper`, started with the watchers; one per process, shared by all
+  workspaces) calls `ensure_warm` every 5 minutes, also when no Lab runs exist, and
+  survives an unreachable cluster. The warm Stop button pauses the keeper until Start;
+  `GET /api/lab/warm` reports `always_on` and `keeper_paused`.
+- Cost: one computehigh node around the clock (~$1.87/hour list, about $45/day,
+  before credits).
+- Tests: `tests/dashboard/test_warm_always_on.py` (catalog vs config default, keeper,
+  pause/resume, unreachable cluster, worker with idle 0 keeps running, with a limit exits).
+
 ### 21.1 Record
 
 | Field | Meaning |
@@ -2353,6 +2373,7 @@ building on the zip format.
 | 2026-09-30 | v0.46.0 | Lab referee: adversarial review of every draft before submit (20.15). |
 | 2026-09-30 | v0.47.0 | `deep-research projects` CLI (22.10). |
 | 2026-09-30 | v0.47.1 | Automatic referee retries once and records why it did not run (20.15). |
+| 2026-09-30 | v0.48.0 | Default partition from lab_targets.json wins over the catalog; always-on warm node (20.16). |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |

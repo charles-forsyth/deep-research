@@ -7,6 +7,20 @@ releases.
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-09-30
+
+### Changed
+
+- The default partition set in `lab_targets.json` now wins over the cluster catalog's
+  default. Ursa Major now defaults to **computehigh** (the high-CPU nodes), which also
+  host the warm node.
+
+### Added
+
+- **Always-on warm node**: with `"warm": {"always_on": true, "idle_min": 0}` the
+  dashboard keeps one warm Lab node running at all times, so pilots and short runs start
+  in seconds. Stop in the Lab panel pauses it until Start. About $1.87/hour.
+
 ## [0.47.1] - 2026-09-30
 
 ### Fixed
