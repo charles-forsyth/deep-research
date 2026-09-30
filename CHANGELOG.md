@@ -7,6 +7,13 @@ releases.
 
 ## [Unreleased]
 
+## [0.35.9] - 2026-09-29
+
+### Added
+
+- Pre-flight warns about unsteady SU2 runs without MAX_TIME: SU2 stops at 1 s of physical time by default whatever TIME_ITER says (run #92 ran 201 of 2000 steps and missed the vortex shedding).
+- Known problems: LAMMPS runs must check the final atom count (run #89's pile fell apart to 6 atoms and `lost ignore` hid it); SU2 MAX_TIME.
+
 ## [0.35.8] - 2026-09-29
 
 ### Added

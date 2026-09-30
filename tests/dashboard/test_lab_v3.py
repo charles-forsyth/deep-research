@@ -744,3 +744,14 @@ def test_gmsh_maps_to_python_gmsh_on_conda():
     plan = dict(PLAN, install={"conda": ["gmsh", "numpy"], "channels": ["conda-forge"]})
     s = build_sbatch(1, plan, FakeTarget())
     assert "python-gmsh" in s
+
+
+def test_su2_max_time_warning():
+    script = "cat << EOF > case.cfg\nTIME_DOMAIN= YES\nTIME_ITER= 2000\nEOF\nmpirun SU2_CFD case.cfg\n"
+    w = labm.validate_plan(FakeTarget(), dict(PLAN, script=script))
+    assert any("MAX_TIME" in x for x in w)
+    w = labm.validate_plan(
+        FakeTarget(),
+        dict(PLAN, script=script.replace("TIME_ITER", "MAX_TIME= 10\nTIME_ITER")),
+    )
+    assert not any("MAX_TIME" in x for x in w)
