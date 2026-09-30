@@ -1,4 +1,4 @@
-"""v0.41.0: the workspace switcher is wired into every request and every link."""
+"""v0.41/0.42: the workspace switcher is wired into every request and every link."""
 
 import re
 from importlib import resources
@@ -36,7 +36,9 @@ def test_open_tabs_are_kept_per_workspace():
 def test_switcher_is_in_the_top_bar_and_loaded():
     html = _read("index.html")
     assert 'id="ws-switch"' in html and "/workspaces.js" in html
-    assert html.index("/app.js") < html.index("/workspaces.js")
+    # WSUI is defined before app.js's boot() awaits WSUI.init()
+    assert html.index("/workspaces.js") < html.index("/app.js")
+    assert "await WSUI.init()" in _read("app.js")
 
 
 def test_tint_is_subtle():

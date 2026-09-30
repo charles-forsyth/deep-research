@@ -538,6 +538,7 @@ async function renderSession(v, t) {
       <button class="btn small" data-a="to-nb">\u2192 Notebook</button>
       <button class="btn small" data-a="find">Find</button>
       <button class="btn small" data-a="listen" title="Read the report aloud, word for word">\u25B6 Listen</button>` : ""}
+      ${hasReport && !s.parent_id && typeof WSUI !== "undefined" && WSUI.enabled ? `<button class="btn small" data-a="ws-copy" title="Copy this report (with sub-reports, notes and Lab runs) into another workspace">\u29C9 Copy to\u2026</button>` : ""}
       ${s.children.length ? `<button class="btn small" data-a="tree">\u2937 Tree (${s.children.length})</button>` : ""}
       ${(hasReport || broken) && !s.parent_id ? `<button class="btn small ${broken ? "primary" : ""}" data-a="rerun" title="Run this question again${broken ? "" : " and compare"}">\u21BB Re-run</button>` : ""}
       ${s.reruns?.length || s.run?.rerun_of ? `<button class="btn small" data-a="compare">\u21C4 Compare</button>` : ""}
@@ -627,6 +628,7 @@ async function renderSession(v, t) {
     loadSessions().catch(() => {});
   });
   v.querySelector('[data-a="project"]')?.addEventListener("click", () => PROJ.fileDialog(s));
+  v.querySelector('[data-a="ws-copy"]')?.addEventListener("click", () => WSUI.copyDialog({ reports: [s.id], label: `Report #${s.id}: ${clip(oneLine(s.prompt || ""), 120)}` }));
   v.querySelector('[data-a="copy"]')?.addEventListener("click", () => copyText(s.result || ""));
   v.querySelector('[data-a="to-nb"]')?.addEventListener("click", safe(() => NB.append(`## ${s.prompt}\n\n${s.result || ""}\n\n*Source: Session #${s.id}*\n`)));
   v.querySelector('[data-a="tree"]')?.addEventListener("click", () => openTree(s.id));
@@ -1575,7 +1577,7 @@ window.addEventListener("beforeunload", (e) => { if (NB.dirty) { NB.saveNow(); e
     if (WS.get() !== "main" && /404|409|not found|archived/i.test(String(e.message))) { WS.set("main"); location.reload(); return; }
     toast("Dashboard API unreachable", "err");
   }
-  if (typeof WSUI !== "undefined") WSUI.init();
+  if (typeof WSUI !== "undefined") await WSUI.init(); // before any page renders (Copy to buttons)
   await Promise.all([PROJ.load(), loadStats(), loadNotebooks(), LAB.loadTargets()]).catch((e) => toast(e.message, "err"));
   await loadSessions().catch((e) => toast(e.message, "err"));
   // If the user already opened something while boot was loading (the project strip

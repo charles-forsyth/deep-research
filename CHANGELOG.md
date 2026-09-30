@@ -7,6 +7,17 @@ releases.
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-09-30
+
+### Added
+
+- **Copy into another workspace.** "Copy to..." on a report and "Copy to workspace..." on
+  a project copy it with every sub-report and follow-up, highlights and notes, Lab runs
+  and their outputs, the data sources they used and the project's notebooks. Numbers are
+  renumbered in the target and "Session #N" / "Lab run #N" mentions follow; the source
+  is never changed and a failed copy changes nothing. Also
+  `deep-research workspace copy --to demo --project 3 --report 290`.
+
 ## [0.41.0] - 2026-09-30
 
 ### Added

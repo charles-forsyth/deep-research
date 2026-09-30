@@ -112,7 +112,11 @@ def test_double_submit_sends_only_one_slurm_job(lab):
     for t in ts:
         t.join()
     assert lab.tgt.submits == [run["id"]]
-    assert len(errs) == 1 and "already submitted" in str(errs[0])
+    # the loser is refused either by the atomic claim ("already submitted") or, if it
+    # reads the row after the winner claimed it, by the draft check ("run is
+    # submitting"); both are correct, and only one Slurm job was sent (above)
+    assert len(errs) == 1
+    assert "already submitted" in str(errs[0]) or "run is submitting" in str(errs[0])
     r = lab.get(run["id"])
     assert r["status"] == "queued" and r["job_id"] == "1001"
 

@@ -66,6 +66,51 @@ const WSUI = {
     m.querySelector('[data-x="delete"]')?.addEventListener("click", () => this.remove());
   },
 
+  // ---- copy into another workspace (v0.42) -----------------------------
+  async copyDialog({ projects = [], reports = [], label = "" } = {}) {
+    if (!this.enabled) { toast("Workspaces are not enabled on this server", "err"); return; }
+    await this.reloadList();
+    const cur = WS.get();
+    const targets = this.list.filter((w) => w.slug !== cur && !w.archived);
+    const newOpt = `<option value="__new">+ New workspace\u2026</option>`;
+    MODAL.open(`
+      <div class="modal-head"><h3>Copy to another workspace</h3><button class="icon-btn modal-x" data-x="close" aria-label="Close">\u2715</button></div>
+      <p style="font-size:12.5px;margin:0 0 8px">${esc(label)}</p>
+      <div class="field"><label for="wc-to">Copy into</label><select id="wc-to">${targets.map((w) => `<option value="${esc(w.slug)}">${esc(w.name)}</option>`).join("")}${newOpt}</select></div>
+      <div class="field" id="wc-new" ${targets.length ? "hidden" : ""}><label for="wc-name">New workspace name</label><input id="wc-name" placeholder="e.g. Demo" maxlength="80"></div>
+      <div class="dim" id="wc-plan" style="font-size:12px;min-height:18px">\u2026</div>
+      <p class="dim" style="font-size:11.5px">Brings every sub-report and follow-up, highlights and notes, Lab runs with their outputs, and the data sources they used. This workspace is not changed. Audio is not copied (it is remade on request).</p>
+      <div class="acts" style="margin-top:12px"><button class="btn" data-x="close">Cancel</button><button class="btn primary" data-x="ok">Copy</button></div>`, { label: "Copy to another workspace" });
+    const m = $("#modal");
+    m.querySelectorAll('[data-x="close"]').forEach((b) => (b.onclick = () => MODAL.close()));
+    const sel = $("#wc-to");
+    if (!targets.length) sel.value = "__new";
+    sel.onchange = () => { $("#wc-new").hidden = sel.value !== "__new"; };
+    try {
+      const p = await api("/api/workspaces/copy/plan", { method: "POST", body: { from: cur, to: "x", projects, reports } });
+      const c = p.counts;
+      $("#wc-plan").textContent = `Will copy ${[c.projects && `${c.projects} project${c.projects > 1 ? "s" : ""}`, `${c.reports} report${c.reports === 1 ? "" : "s"} (with sub-reports)`, c.lab_runs && `${c.lab_runs} Lab run${c.lab_runs > 1 ? "s" : ""}`, c.sources && `${c.sources} data source${c.sources > 1 ? "s" : ""}`, c.notebooks && `${c.notebooks} notebook${c.notebooks > 1 ? "s" : ""}`].filter(Boolean).join(", ")}.`;
+    } catch (e) { $("#wc-plan").textContent = e.message; }
+    const ok = m.querySelector('[data-x="ok"]');
+    ok.onclick = () => busy(ok, async () => {
+      let to = sel.value;
+      if (to === "__new") {
+        const name = $("#wc-name").value.trim();
+        if (!name) { toast("Name the new workspace", "err"); return; }
+        to = (await api("/api/workspaces", { method: "POST", body: { name } })).slug;
+      }
+      const r = await api("/api/workspaces/copy", { method: "POST", body: { from: cur, to, projects, reports } });
+      await this.reloadList();
+      const dest = this.list.find((w) => w.slug === to) || { name: to };
+      MODAL.open(`
+        <div class="modal-head"><h3>Copied to ${esc(dest.name)}</h3><button class="icon-btn modal-x" data-x="close" aria-label="Close">\u2715</button></div>
+        <p style="font-size:12.5px">${r.counts.reports} report(s), ${r.counts.lab_runs} Lab run(s), ${r.counts.projects} project(s), ${r.counts.sources} data source(s), ${r.counts.notebooks} notebook(s).${r.sources_reused.length ? ` Reused existing data sources: ${esc(r.sources_reused.join(", "))}.` : ""}</p>
+        <div class="acts"><button class="btn" data-x="close">Stay here</button><button class="btn primary" data-x="go">Open ${esc(dest.name)}</button></div>`, { label: "Copied" });
+      $("#modal").querySelector('[data-x="close"]').onclick = () => MODAL.close();
+      $("#modal").querySelector('[data-x="go"]').onclick = () => this.switchTo(to);
+    });
+  },
+
   async reloadList() {
     const d = await api("/api/workspaces");
     this.list = d.workspaces || [];
