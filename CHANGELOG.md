@@ -7,6 +7,17 @@ releases.
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-09-30
+
+### Added
+
+- **Workspace switcher** in the dashboard's top bar: shows the current workspace; the
+  Workspaces dialog lists them with counts and switches, creates, duplicates, renames,
+  archives and deletes (to the trash, typed confirmation, never Main). Switching reloads
+  the page so nothing from the previous workspace stays on screen. Outside Main the only
+  cue is a coloured dot and a faint tinted line under the top bar.
+- A restart resumes Lab watching in every workspace with runs in flight.
+
 ## [0.40.0] - 2026-09-30
 
 ### Added

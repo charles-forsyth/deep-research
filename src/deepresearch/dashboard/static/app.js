@@ -1570,7 +1570,12 @@ window.addEventListener("beforeunload", (e) => { if (NB.dirty) { NB.saveNow(); e
 // ---------------------------------------------------------------- boot
 (async function boot() {
   try { S.health = await api("/api/health?check=1"); $("#version").textContent = "v" + S.health.version; }
-  catch { toast("Dashboard API unreachable", "err"); }
+  catch (e) {
+    // the stored workspace may have been deleted or archived elsewhere: go back to Main
+    if (WS.get() !== "main" && /404|409|not found|archived/i.test(String(e.message))) { WS.set("main"); location.reload(); return; }
+    toast("Dashboard API unreachable", "err");
+  }
+  if (typeof WSUI !== "undefined") WSUI.init();
   await Promise.all([PROJ.load(), loadStats(), loadNotebooks(), LAB.loadTargets()]).catch((e) => toast(e.message, "err"));
   await loadSessions().catch((e) => toast(e.message, "err"));
   // If the user already opened something while boot was loading (the project strip

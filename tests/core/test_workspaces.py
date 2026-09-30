@@ -296,3 +296,38 @@ def test_main_has_no_metadata_until_changed(home):
     W.list_all()
     W.get("main")
     assert not (home["base"] / "workspaces").exists()
+
+
+def test_restart_resumes_watchers_in_every_workspace(home, monkeypatch, tmp_path):
+    class T(FakeTarget):
+        remote_root = "~/drl"
+
+    monkeypatch.setattr(srv, "STATE_DIR", home["base"])
+    W.create("Demo")
+    started = []
+    monkeypatch.setattr(
+        Lab,
+        "ensure_watcher",
+        lambda self: started.append((self.workspace, len(self.active()))),
+    )
+
+    def make():
+        lab = Lab(home["main_db"], lambda: None, home["base"], targets={"fake": T()})
+        return srv.Api(home["main_db"], spawn=lambda *a: 1, lab=lab, workspaces=True)
+
+    api = make()
+    ctx = api.context("demo")
+    assert ctx.lab.targets is api._main.lab.targets  # one SSH connection, one warm node
+    run = ctx.lab.create(1, "document", "x", "", plan=PLAN)
+    ctx.lab._update(run["id"], status="queued", job_id="77")
+    api2 = make()  # a dashboard restart
+    started.clear()
+    api2.start_watchers()
+    assert ("demo", 1) in started and ("main", 0) in started
+    assert api2.context("demo").lab.target().job_dir(run["id"]) == "~/drl/ws-demo/run_1"
+    # archived workspaces are not watched
+    W.update("demo", archived=True)
+    api3 = make()
+    started.clear()
+    api3.start_watchers()
+    assert [s for s, _ in started] == ["main"]
