@@ -13,7 +13,7 @@ Where the project is heading. Items are ideas, not commitments; open an issue to
 - [ ] **AWS S3 with credentials** in the file browser (needs an AWS profile or rclone S3 remote on this machine).
 - [x] Projects claims board (0.45).
 - [x] Lab adversarial review (referee) before submit (0.46).
-- [ ] **`deep-research projects` CLI** (list, show, add, export) with `--json`.
+- [x] `deep-research projects` CLI (0.47).
 - [ ] **Optional dashboard login** (shared token) for use beyond a trusted network.
 - [ ] **Deep Research Max** toggle in the dashboard launcher.
 - [ ] **Scheduled re-runs** of saved questions, with the compare view as a change digest.

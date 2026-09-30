@@ -333,6 +333,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--upload", nargs="+", help="Files or folders you plan to upload"
     )
 
+    from deepresearch.cli.projects import add_parser as add_projects_parser
+
+    add_projects_parser(subparsers, _add_json)
+
     parser_ws = subparsers.add_parser(
         "workspace",
         help="List, create, rename, archive or delete workspaces",
@@ -558,6 +562,7 @@ def main():
         "dashboard",
         "sources",
         "workspace",
+        "projects",
         "-W",
         "--workspace",
         "-h",
@@ -637,6 +642,12 @@ def _dispatch(parser: argparse.ArgumentParser, args, as_json: bool) -> None:
             from deepresearch.cli.workspaces import handle as handle_ws
 
             code = handle_ws(args)
+            if code:
+                sys.exit(code)
+        elif args.command == "projects":
+            from deepresearch.cli.projects import handle as handle_projects
+
+            code = handle_projects(args)
             if code:
                 sys.exit(code)
         elif args.command == "sources":
