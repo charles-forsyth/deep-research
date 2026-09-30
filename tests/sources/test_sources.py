@@ -246,9 +246,8 @@ def test_missing_tool_is_a_clear_error(monkeypatch):
 def test_every_kind_has_an_adapter():
     from deepresearch.sources.model import KINDS
 
-    assert set(KINDS) == set(ad.ADAPTERS) | {
-        "public_bucket"
-    }  # public: sources/public.py
+    # public_bucket: sources/public.py; gdrive: sources/gdrive.py (lazy imports)
+    assert set(KINDS) == set(ad.ADAPTERS) | {"public_bucket", "gdrive"}
 
 
 def test_report_source_reads_history(tmp_path):

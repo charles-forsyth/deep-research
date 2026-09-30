@@ -273,7 +273,10 @@ const PROJ = {
         const el = v.querySelector("#proj-src-add"); if (!el) return;
         const have = new Set(d.sources.map((s) => s.name));
         const opts = SRC.list.filter((s) => !have.has(s.name));
-        el.innerHTML = opts.length ? `<select class="btn small" aria-label="Add a data source"><option value="">+ add a data source</option>${opts.map((s) => `<option value="${esc(s.name)}">${esc(s.name)} (${esc(SRC.kindLabel[s.kind] || s.kind)})</option>`).join("")}</select>` : `<span class="dim" style="font-size:11.5px">${SRC.list.length ? "Every data source is already here." : "No data sources yet (top bar: Data sources)."}</span>`;
+        el.innerHTML = (opts.length ? `<select class="btn small" aria-label="Add a data source"><option value="">+ add a data source</option>${opts.map((s) => `<option value="${esc(s.name)}">${esc(s.name)} (${esc(SRC.kindLabel[s.kind] || s.kind)})</option>`).join("")}</select>` : "")
+          + (typeof FB !== "undefined" ? ` <button class="btn small" id="proj-src-browse" title="Drive, Google Docs, buckets or folders on this computer">Browse files\u2026</button>` : "");
+        const br = el.querySelector("#proj-src-browse");
+        if (br) br.onclick = () => FB.open({ onAdded: async (s) => { await api(`/api/projects/${p.id}/items`, { method: "POST", body: { kind: "source", ids: [s.name] } }); reload(); } });
         const sel = el.querySelector("select");
         if (sel) sel.onchange = safe(async () => { if (!sel.value) return; await api(`/api/projects/${p.id}/items`, { method: "POST", body: { kind: "source", ids: [sel.value] } }); reload(); });
       }).catch(() => {});

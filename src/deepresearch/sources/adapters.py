@@ -54,7 +54,12 @@ def _run_bytes(
     if r.returncode != 0:
         err = (r.stderr or r.stdout or b"").decode("utf-8", "replace")
         msg = err.strip().splitlines()
-        raise SourceError((msg[-1] if msg else f"{cmd[0]} failed")[:300])
+        last = msg[-1] if msg else f"{cmd[0]} failed"
+        # the cause often sits after a long URL; keep the tail, and name an
+        # expired sign-in plainly wherever it appears
+        if "invalid_grant" in err and "invalid_grant" not in last[-300:]:
+            last = "couldn't fetch token: invalid_grant: maybe token expired?"
+        raise SourceError(last if len(last) <= 300 else "..." + last[-297:])
     return r.stdout
 
 
@@ -563,4 +568,8 @@ def adapter_for(source: DataSource) -> SourceAdapter:
         from deepresearch.sources.public import PublicBucketAdapter
 
         return PublicBucketAdapter(source)
+    if source.kind == "gdrive":
+        from deepresearch.sources.gdrive import DriveAdapter
+
+        return DriveAdapter(source)
     return ADAPTERS[source.kind](source)

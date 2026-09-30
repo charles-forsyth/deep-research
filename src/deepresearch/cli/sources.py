@@ -148,6 +148,8 @@ def guess_kind(uri: str, auth: str = "") -> str:
         return "gcs" if auth else "public_bucket"
     if uri.startswith("s3://"):
         return "s3" if auth else "public_bucket"
+    if uri.startswith("gdrive://"):
+        return "gdrive"
     if uri.startswith("report:"):
         return "report"
     if uri.startswith("notebook:"):

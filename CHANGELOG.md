@@ -7,6 +7,18 @@ releases.
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-09-30
+
+### Added
+
+- **File browser for adding data sources** (docs/SPEC.md 21.9): "+ Add source" and the project page's "Browse files" open a browser over everything already signed in on this machine: this computer, each Google Drive (My Drive, Shared with me, shared drives, full-text search), Google Cloud Storage by project and bucket, and each S3 remote (CephRDS). Click to preview (Docs render as Markdown, Sheets as a table); tick files or open a folder and add it as one source. Typing a location is still one click away.
+- **Google Drive sources** (kind `gdrive`): a Drive folder or hand-picked Docs, Sheets and files. Docs arrive as Markdown, Sheets as CSV, Slides as PDF, so research runs, Ask and Lab runs can read them; Lab gets them by relay. Picked files are found again after a rename or move, and a missing one is named.
+- Expired rclone sign-ins are reported with the command to fix them (`rclone config reconnect <remote>:`).
+
+### Fixed
+
+- Error messages from rclone and gcloud keep the cause when it comes after a long URL.
+
 ## [0.37.0] - 2026-09-29
 
 ### Added

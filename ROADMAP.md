@@ -3,6 +3,8 @@
 Where the project is heading. Items are ideas, not commitments; open an issue to discuss or pick one up.
 
 ## Next up
+- [ ] **Browse from the CLI**: `deep-research sources browse-place drive:gd` to pick Drive files without the dashboard.
+- [ ] **AWS S3 with credentials** in the file browser (needs an AWS profile or rclone S3 remote on this machine).
 - [ ] **Projects claims board**: each claim a project's reports make, marked supported, refuted or inconclusive by Lab runs (builds on the Lab verdict redesign).
 - [ ] **`deep-research projects` CLI** (list, show, add, export) with `--json`.
 - [ ] **Optional dashboard login** (shared token) for use beyond a trusted network.

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.37.0 (package `deepresearch`) |
+| Applies to | deep-research v0.38.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -559,7 +559,7 @@ strings (K16).
 | `audio_exports` | features | `id`, `kind` (`session`/`notebook`), `ref_id`, `mode` (`full`/`summary`), `voice`, `path`, `seconds`, `cost_usd`, `script`, `created_at` | One row per generated audio file. |
 | `lab_runs` | lab | `id`, `session_id`, `scope` (`selection`/`document`), `selection`, `request`, `target`, `status`, `stage`, `plan` (JSON), `script`, `job_id`, `slurm_state`, `node`, `elapsed`, `exit_code`, `error`, `result_md`, `files` (JSON), `estimate_usd`, `ai_cost_usd`, `rerun_of`, `data_sources` (JSON names picked at launch), `created_at`, `updated_at`, `submitted_at`, `finished_at` | One row per lab run (section 20). A cache of the cluster's job folder. |
 | `lab_suggestions` | lab | `session_id` PK, `data` (JSON), `cost_usd`, `created_at` | Cached pre-run suggestions for a report. |
-| `data_sources` | sources | `id`, `name` (unique), `title`, `description`, `tags` (JSON), `kind`, `uri`, `options` (JSON: `include`, `exclude`, `region`, `max_relay_bytes`, `store`, `store_hash`), `auth_ref`, `protection_level`, `staging`, `temporary`, `status`, `last_checked`, `last_error`, `manifest` (JSON), timestamps | The data source registry (21.1). Credential references only, never secrets. |
+| `data_sources` | sources | `id`, `name` (unique), `title`, `description`, `tags` (JSON), `kind`, `uri`, `options` (JSON: `include`, `exclude`, `region`, `max_relay_bytes`, `store`, `store_hash`, `files` for Drive picks), `auth_ref`, `protection_level`, `staging`, `temporary`, `status`, `last_checked`, `last_error`, `manifest` (JSON), timestamps | The data source registry (21.1). Credential references only, never secrets. |
 | `data_source_uses` | sources | `id`, `source_id`, `manifest_hash`, `used_by_kind` (`session`/`lab_run`), `used_by_id`, `role`, `created_at`, `source_name`, `source_kind`, `source_uri` | Which data each report and Lab run used, with a snapshot of the source so deleting it keeps the record (21.9). |
 
 The CLI never reads the dashboard tables. Runs started from the CLI therefore have no
@@ -1590,7 +1590,7 @@ plus `data_source_uses`).
 | Field | Meaning |
 |---|---|
 | `name` | Unique slug; the Lab job variable is `DS_<NAME>` (upper case, `-` to `_`). Lookups try the name first, so a source named `12` is found by name, not as id 12. |
-| `kind` | `web`, `gcs`, `s3`, `public_bucket` (21.8a), `local_folder`, `local_file`, `report`, `notebook`. |
+| `kind` | `web`, `gcs`, `s3`, `public_bucket` (21.8a), `local_folder`, `local_file`, `report`, `notebook`, `gdrive` (21.9). |
 | `uri` | `https://...`, `gs://bucket/prefix`, `s3://bucket/prefix`, an absolute path, or a session/notebook id. |
 | `auth_ref` | How to reach it: `rclone:<remote>` for S3, `gcloud` for GCS, empty for public web, public buckets and local. |
 | `protection` | P1-P4, shown for information. Nothing is blocked on it (decision 2026-09-28). |
@@ -1744,6 +1744,52 @@ drops the other's result.
 
 ---
 
+### 21.9 File browser and Google Drive sources (v0.38.0)
+
+"+ Add source" (Data sources page) and "Browse files" (project page) open a file browser
+(`static/filebrowser.js`, `sources/browse.py`). It shows only places already signed in on
+this machine; nothing new is stored and no credential passes through deep-research:
+
+| Place | From | Browsing |
+|---|---|---|
+| This computer | `DR_LOCAL_ROOTS` or `$HOME` | folders under the allowed roots; dot-files and symlinks never listed or previewed |
+| Google Drive: *remote* | each rclone remote of type `drive` (`rclone listremotes --long`) | My Drive, Shared with me, Shared drives, and search by name or full text; a remote pinned to one shared drive (`team_drive` in rclone.conf) opens at that drive |
+| Google Cloud Storage | the gcloud account (`gcloud config get account`) | projects (current first) > buckets > folders, via the Cloud Resource Manager and GCS JSON APIs with a gcloud access token |
+| S3: *remote* | each rclone remote of type `s3` (CephRDS) | buckets > folders, `rclone lsjson --max-depth 1`, 25 s timeout (Ceph without the campus VPN fails fast with that hint) |
+
+Only remote names and types are read from rclone (`listremotes --long`), plus the
+`team_drive` values from rclone.conf; tokens and keys are never read into a response.
+Lists show at most 500 items per folder (with a note). Clicking a file previews its first
+64 KB: Google Docs render as Markdown, Sheets and CSV as a table. Drive files are
+exported whole to preview them, so files over 20 MB are not previewed.
+
+Picking becomes one source (`POST /api/browse/spec`, then `POST /api/sources` after the
+user names it; a taken name gets `-2`, `-3`):
+
+- one folder: a folder source (`local_folder`, `gcs` with `auth_ref gcloud`, `s3` with
+  `auth_ref rclone:<remote>`, or `gdrive://folder/<ID>`);
+- one local file: `local_file`;
+- several items from one folder (local, GCS, S3): that folder with an exact-name
+  `include` filter (glob characters escaped); items from different folders are refused;
+- Drive files (from any folders or a search): `gdrive://files/<ID>,...` with
+  `options.files` holding each file's id, name, MIME type and parents.
+
+Top-level containers are not sources (My Drive root, a GCS project, an S3 remote root).
+Google Forms, Sites and Maps cannot be exported and cannot be picked.
+
+**Kind `gdrive`** (`sources/gdrive.py`, `auth_ref rclone:<remote>`): Docs export as
+Markdown, Sheets as CSV, Slides and Drawings as PDF (`--drive-export-formats md,csv,pdf`);
+shortcuts are skipped. A folder source lists and copies recursively with
+`--drive-root-folder-id`. Picked files are found again through their parent folders
+(survives renames) or by name (survives moves) and fetched with `rclone backend copyid`;
+a file that is gone is reported by name. File names are made safe (`/`, `:` and `\`
+become full-width look-alikes; a leading dot gets `_`). Lab staging is always relay (a
+cluster node has no Drive login). An expired rclone sign-in is reported as "Run: rclone
+config reconnect <remote>:".
+
+Routes: `GET /api/browse/places`, `GET /api/browse/list?place=&path=&q=`,
+`GET /api/browse/preview?place=&path=&size=`, `POST /api/browse/spec` `{place, items}`.
+
 ## 22. Projects
 
 A **project** is a container above reports, data sources, notebooks and (through its
@@ -1895,6 +1941,7 @@ project's centroid (cosine >= 0.72).
 | 2026-09-29 | v0.28.2 | Lab: OR-Tools plans on a Python module get an isolated venv (CP-SAT segfaulted on top of python-sci). |
 | 2026-09-29 | v0.29.0 | Lab: lessons (curated + learned) in plan/fix prompts, science guards, known-answer verdicts (20.10). |
 | 2026-09-29 | v0.37.0 | Projects (section 22): container above reports, sources, notebooks and Lab runs; home project defaults; project AI summary, Ask, briefs (grant, lay, literature review), voice overview; Inbox sorting from tags and embeddings; dossier, BibTeX/CSV, JSON and research package (Obsidian folder, Lab results, RO-Crate) exports. |
+| 2026-09-30 | v0.38.0 | File browser for adding sources (21.9): this computer, Google Drive (search, shared drives), GCS by project, S3/CephRDS; new source kind `gdrive` (Docs as Markdown, Sheets as CSV). |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |
