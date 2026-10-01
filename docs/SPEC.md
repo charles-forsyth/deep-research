@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.50.1 (package `deepresearch`) |
-| Status | Living document. Describes the system as built. Reference tables (modules, routes, settings, CLI) re-checked against the source on 2026-10-01 for v0.50.1; `tests/test_spec_sync.py` keeps routes, settings and modules in sync. |
+| Applies to | deep-research v0.50.2 (package `deepresearch`) |
+| Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
 This document is normative for behaviour: if the code and this document
@@ -66,6 +66,13 @@ report leaves, and no comfortable place to read, compare or reuse the output.
    watches runs, renders reports with citation cards, supports highlights,
    notes and notebooks, shows actual cost, maps related research, compares
    reruns, builds briefs, and reads reports aloud.
+5. **Data sources** (section 21): named web datasets, buckets, Drive files and local
+   folders, searchable by research runs and staged for Lab jobs.
+6. **Lab runs** (section 20): turn a claim in a report into a real computation on a
+   Slurm cluster, reviewed before submit, judged by checks the job writes, and attached
+   to the report as a note.
+7. **Projects** (section 22) and **workspaces** (section 23): containers for a grant,
+   paper or thesis, and separate libraries (for example a clean demo library).
 
 ### 1.3 Goals
 
@@ -76,9 +83,12 @@ report leaves, and no comfortable place to read, compare or reuse the output.
 - **G3 Truthful state.** A run that is not running must never be shown as
   running.
 - **G4 Low friction.** One `uv tool install`, one API key, no build step, no
-  external database, no background LLM calls the user did not ask for.
+  external database, no background LLM calls the user did not ask for. (Lab planning
+  steps the user started, such as the automatic referee and its fixer rounds, count as
+  asked for; 20.15, 20.17.)
 - **G5 Private by default.** Everything stays on the user's machine except the
-  calls to Google that the user starts.
+  calls to Google that the user starts and, for Lab runs, the job and staged data sent
+  to the user's own cluster account.
 
 ### 1.4 Non-goals
 
@@ -111,7 +121,12 @@ report leaves, and no comfortable place to read, compare or reuse the output.
 | **Project** | A container for the reports, data sources, notebooks and Lab runs of one grant, paper, proposal or thesis, with defaults for new work (section 22). |
 | **Inbox** | Top-level reports that are in no project. |
 | **Audio export** | A Gemini TTS rendering (full text or spoken summary) of a report or notebook, stored as MP3 (WAV if ffmpeg is missing). |
-| **State dir** | `$XDG_CONFIG_HOME/deepresearch` (default `~/.config/deepresearch`): settings, database, logs, uploads, audio, dashboard pid file. |
+| **State dir** | `$XDG_CONFIG_HOME/deepresearch` (default `~/.config/deepresearch`): settings, database, logs, uploads, audio, dashboard pid file. Main's data lives here; other workspaces under `workspaces/<id>/`. |
+| **Workspace** | A separate library (database, logs, uploads, audio, Lab results). `main` is the default and never moves (section 23). |
+| **Data source** | A named place data lives (web, GCS, S3/CephRDS, Drive, local folder), registered once and reused (section 21). |
+| **Lab run** | A computation planned from a report and run on a Slurm cluster; outcome CONFIRMED, REFUTED, INCONCLUSIVE or BROKEN (section 20). |
+| **Warm node** | A long-running Slurm job on the cluster that runs pilots, fact checks and short Lab jobs without waiting for a new node (20.11, 20.16). |
+| **Referee** | A second model pass that asks whether a Lab plan's test could ever fail or ever pass; advice only (20.15). |
 
 ---
 
@@ -144,6 +159,9 @@ External actors:
 | User (browser) | HTTP on `127.0.0.1:7420` by default (this machine only); single-page app | in/out |
 | Google Gemini API | HTTPS via `google-genai` SDK and one raw `urllib` health probe | out |
 | ffmpeg (optional) | subprocess, WAV to MP3 conversion | out |
+| Slurm cluster (optional) | `ssh` (through `gcloud compute ssh --tunnel-through-iap` or a plain host), `sbatch`/`squeue`/`sacct`; Lab runs (section 20) | out |
+| `gcloud`, `rclone` (optional) | subprocess; GCS, Drive and S3/CephRDS data sources (section 21) | out |
+| Public websites | HTTPS fetches of data-source and Lab URLs (21, 20.18) | out |
 | Local filesystem | state dir (section 12) | in/out |
 
 ---
@@ -202,7 +220,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | REQ-DASH-2 | The server shall bind `127.0.0.1:7420` by default, refuse a non-loopback `--host` unless `--allow-remote` is given, reject requests from other machines while loopback-only, and serve the whole UI from packaged static files with no build step and no CDN. | `test_index_and_static_served`, `test_local_only_handler_refuses_other_machines`, `test_start_refuses_non_loopback_without_allow_remote` |
 | REQ-DASH-3 | The dashboard and every process it spawns shall use the user settings file for the API key even when started from a folder containing another `.env`. Variables exported in the real shell still win. | `test_service_env_*`, `test_children_and_server_do_not_run_in_callers_cwd` |
 | REQ-DASH-4 | `/api/health?check=1` shall report whether Google accepts the key (cached 10 minutes; `null` when it cannot check). The UI shall block launching research when the key is missing or rejected. | `test_health_reports_invalid_key` |
-| REQ-DASH-5 | Cancelling a run shall cancel the Google interaction (when one exists), terminate the worker's process group, and mark the row `cancelled`. | `test_cancel_only_running` (state check only) |
+| REQ-DASH-5 | Cancelling a run shall cancel the Google interaction (when one exists) and those of its running children, terminate the worker's process group, and mark those rows `cancelled`. | `test_cancel_only_running` (state check only) |
 | REQ-DASH-6 | Deleting a session shall also delete its annotations and tags; with `recursive=1` it shall delete all descendants too. | `test_delete_recursive_purges_children_and_annotations` |
 | REQ-DASH-12 | Every non-GET API request shall be `application/json` (with or without a body), shall be refused when its `Origin` differs from its `Host`, and every request shall be refused when its `Host` is not an IP address, a single-label name, a local or tailnet suffix, or listed in `DR_ALLOWED_HOSTS`. | `test_bodyless_cross_site_post_cannot_cancel`, `test_foreign_origin_write_refused`, `test_dns_rebinding_host_refused`, `test_local_host_names_allowed` |
 | REQ-DASH-7 | Uploads shall only be accepted as JSON (base64), limited to 25 MB per request, stored under a random folder in `uploads/`, and research may only reference upload paths inside that folder. | `test_upload_then_research_with_upload`, `test_json_content_type_required_for_writes`, `test_start_research_validation` |
@@ -216,9 +234,9 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | ID | Requirement |
 |---|---|
 | REQ-NF-1 | Python 3.12 and 3.13 on Linux and macOS. Runtime dependencies are limited to those in `pyproject.toml`; the dashboard uses only the standard library on the server and vanilla JavaScript on the client. |
-| REQ-NF-2 | The test suite shall make no network calls and finish in under a minute. |
+| REQ-NF-2 | The test suite shall make no network calls and finish in about two minutes (587 tests at v0.50.1: about 110 s). |
 | REQ-NF-3 | All SQLite access shall tolerate concurrent writers (worker processes, the dashboard, the CLI) through WAL mode and a 10 s busy timeout. Session writes on the research path shall also retry on `OperationalError`. **Partly met:** several writes have no retry (K1). |
-| REQ-NF-4 | The dashboard shall make no Gemini calls on its own schedule; every paid call is the direct result of a user action. (The only unprompted outbound call is the free key check at page load.) |
+| REQ-NF-4 | The dashboard shall make no Gemini calls on its own schedule; every paid model call is the direct result of a user action (the Lab referee and refine rounds follow a plan the user asked for). Unprompted outbound calls: the free key check at page load, the Lab watcher while runs are active, and, only when a target sets `warm.always_on`, the warm-node keeper every 5 minutes (it keeps a cluster node running, which costs cluster money; 20.16). |
 | REQ-NF-5 | The dashboard shall stay responsive with thousands of sessions: session lists are capped (500 default, 5,000 max) and the report reader renders one session at a time. |
 | REQ-NF-6 | No secret (API key) shall be written to logs, the database, exports or the browser. |
 
@@ -275,12 +293,13 @@ Total Python: about 21,600 lines. Total client: about 5,300 lines plus vendored 
 |---|---|---|---|
 | Foreground CLI | the user | one command | a `DeepResearchAgent` when researching |
 | Research worker | `start` or `POST /api/research`, as `deep-research research ... --adopt-session N` | one research run | the agent; for recursion, one thread per child task |
-| Dashboard server | `dashboard --start` (detached) or `--foreground` | until stopped | one `Api` instance, one thread per HTTP request, one thread per audio job |
+| Dashboard server | `dashboard --start` (detached) or `--foreground` | until stopped | one `Api` instance (a context per workspace), one thread per HTTP request, one thread per audio job, Lab watcher, planning and keeper threads (5.4) |
+| Cluster jobs (optional) | the Lab, over SSH | per job; the warm worker until stopped or its time limit | Slurm batch jobs and the warm worker (`warm_worker.sh`) on the cluster, never on the login node (section 20) |
 
 Workers are started with `start_new_session=True`, so each is the leader of its own
 process group and survives the terminal or the dashboard exiting. Cancel kills the
 whole group (`os.killpg`). The dashboard starts workers with `python -I -u -c <boot>`
-from the state dir, so neither a stray `./deepresearch` package nor a stray `./.env`
+from the state dir (with `--workspace ID` for runs in another workspace), so neither a stray `./deepresearch` package nor a stray `./.env`
 in the launch folder can leak in (REQ-DASH-3).
 
 The CLI `start` command uses a different launcher (`detach_process` in
@@ -323,9 +342,17 @@ sequenceDiagram
 - **Recursion** uses a `ThreadPoolExecutor(max_workers=breadth)` per level. Each child
   builds its own `DeepResearchAgent` (own Gemini client, own `FileManager`) so threads
   share no mutable objects except the database.
-- **Dashboard** request threads share one `Api`. Shared mutable state is limited to the
+- **Dashboard** request threads share one `Api`. Each request runs in its workspace's
+  context (one `Api` context per workspace, created on first use under `_ctx_lock`, each
+  with its own database, store, features and `Lab`). Other shared mutable state: the
   audio job table (`_jobs`, guarded by `_jobs_lock`), the embedding backfill (guarded by
-  `_embed_lock`), the key-check cache and the lazily created Gemini client in `Features`.
+  `_embed_lock`), the key-check cache and the lazily created Gemini clients in `Features`
+  and `Lab` (one shared client each, under `_client_lock`).
+- **Lab threads**: one watcher thread per workspace while runs are active (polls every
+  15 s), planning, review and fix work on short-lived threads, and, when a target sets
+  `warm.always_on`, one keeper thread per process (`_KEEPER_LOCK`) shared by all
+  workspaces (20.16). The SSH ControlMaster connection per target is opened under the
+  target's own lock.
 
 ---
 
@@ -542,7 +569,8 @@ their parent.
 
 ## 8. Data model
 
-All tables live in one SQLite file, `history.db`, in WAL mode. Tables are created with
+All tables live in one SQLite file, `history.db`, in WAL mode (one file per workspace;
+Main's is in the state dir, others under `workspaces/<id>/`, section 23). Tables are created with
 `CREATE TABLE IF NOT EXISTS` by whichever component first needs them; columns are only
 ever added (`ALTER TABLE ... ADD COLUMN`), never renamed or dropped. There are no foreign
 keys; related rows are cleaned up in code (see K10). Timestamps are naive local-time ISO
@@ -574,14 +602,17 @@ strings (K16).
 | `run_meta` | server | `session_id` PK, `depth`, `breadth`, `estimate_usd`, `rerun_of`, `launched_at` | Launch parameters and estimate for dashboard runs; re-run links. |
 | `session_usage` | features | `session_id` PK, `usage` (JSON), `fetched_at`, `error` | Cached usage block or definitive "not available" (REQ-COST-3). |
 | `audio_exports` | features | `id`, `kind` (`session`/`notebook`), `ref_id`, `mode` (`full`/`summary`), `voice`, `path`, `seconds`, `cost_usd`, `script`, `created_at`, `src_hash` (hash of the text it was made from; a changed report makes new audio) | One row per generated audio file. |
-| `lab_runs` | lab | `id`, `session_id`, `scope` (`selection`/`document`), `selection`, `request`, `target`, `status`, `stage`, `plan` (JSON), `script`, `job_id`, `slurm_state`, `node`, `elapsed`, `exit_code`, `error`, `result_md`, `files` (JSON), `estimate_usd`, `ai_cost_usd`, `rerun_of`, `data_sources` (JSON names picked at launch), `created_at`, `updated_at`, `submitted_at`, `finished_at` | One row per lab run (section 20). A cache of the cluster's job folder. |
+| `lab_runs` | lab | `id`, `session_id`, `scope` (`selection`/`document`/`suggestion`), `selection`, `request`, `target`, `status`, `stage`, `plan` (JSON, 20.2a), `script`, `job_id`, `slurm_state`, `node`, `elapsed`, `exit_code`, `error`, `result_md`, `files` (JSON), `estimate_usd`, `ai_cost_usd`, `rerun_of`, `data_sources` (JSON names picked at launch), `verdict` (JSON from `outputs/verdict.json`, 20.13), `smoke` (JSON pilot rounds, 20.11), `created_at`, `updated_at`, `submitted_at`, `finished_at` | One row per lab run (section 20). A cache of the cluster's job folder. |
+| `projects` | projects | see 22.1 | Projects (section 22). |
+| `project_items` | projects | see 22.1 | Membership of reports, sources and notebooks in projects (section 22). |
 | `lab_suggestions` | lab | `session_id` PK, `data` (JSON), `cost_usd`, `created_at` | Cached pre-run suggestions for a report. |
 | `data_sources` | sources | `id`, `name` (unique), `title`, `description`, `tags` (JSON), `kind`, `uri`, `options` (JSON: `include`, `exclude`, `region`, `max_relay_bytes`, `store`, `store_hash`, `files` for Drive picks), `auth_ref`, `protection_level`, `staging`, `temporary`, `status`, `last_checked`, `last_error`, `manifest` (JSON), timestamps | The data source registry (21.1). Credential references only, never secrets. |
 | `data_source_uses` | sources | `id`, `source_id`, `manifest_hash`, `used_by_kind` (`session`/`lab_run`), `used_by_id`, `role`, `created_at`, `source_name`, `source_kind`, `source_uri` | Which data each report and Lab run used, with a snapshot of the source so deleting it keeps the record (21.9). |
 
-The CLI never reads the dashboard tables. Runs started from the CLI therefore have no
-`run_meta` row: no estimate is shown next to their actual cost and they cannot appear as
-re-runs.
+The research CLI commands never read the dashboard tables. Runs started from the CLI
+therefore have no `run_meta` row: no estimate is shown next to their actual cost and they
+cannot appear as re-runs. (The `projects`, `sources` and `workspace` commands do read and
+write their own tables.)
 
 ### 8.3 Files outside the database
 
@@ -737,7 +768,7 @@ had it earlier). Implemented in `cli/jsonout.py`.
 
 | Method and path | Paid | Behaviour |
 |---|---|---|
-| `GET /api/health[?check=1]` | no | `{ok, version, api_key}`; with `check=1` adds `api_key_valid` (true, false or null) from a cached key probe (REQ-DASH-4). |
+| `GET /api/health[?check=1]` | no | `{ok, version, api_key, workspace}`; with `check=1` adds `api_key_valid` (true, false or null) from a cached key probe (REQ-DASH-4). |
 | `GET /api/stats` | no | Counts by status, total, roots, total report characters, notebook and annotation counts. Runs liveness. |
 
 **Sessions**
@@ -746,9 +777,9 @@ had it earlier). Implemented in `cli/jsonout.py`.
 |---|---|---|
 | `GET /api/sessions[?q=&limit=500]` | no | Session rows (no report text) with child, annotation, star and tag data; newest id first; `q` is a LIKE match on prompt and report; limit capped at 5,000. Runs liveness. |
 | `GET /api/sessions/{id}` | no | Full row minus embedding, plus `meta`, `children`, `annotations`, `log_available`, `run` (run_meta) and `reruns`. |
-| `DELETE /api/sessions/{id}[?recursive=1]` | no | Deletes the row (and descendants with `recursive=1`) plus their annotations and meta (REQ-DASH-6, K10). |
+| `DELETE /api/sessions/{id}[?recursive=1]` | no | Deletes the row (and descendants with `recursive=1`) plus their annotations, meta, project memberships and Lab runs; 409 while a Lab run of theirs is still on the cluster (REQ-DASH-6, K10). |
 | `PATCH /api/sessions/{id}/meta` | no | Body `{starred?, tags?}`. |
-| `POST /api/sessions/{id}/cancel` | no | 409 unless `running`. Cancels the Google interaction, kills the process group, sets `cancelled`, returns notes (REQ-DASH-5, K4). |
+| `POST /api/sessions/{id}/cancel` | no | 409 unless `running`. Cancels the Google interaction and every running child's, kills the process group, sets those rows `cancelled`, returns notes (REQ-DASH-5, K4). |
 | `POST /api/sessions/{id}/followup` | yes | Body `{prompt}`. 400 empty, 409 no interaction, 502 no text. Returns the full result and the appended part. Synchronous. |
 | `GET /api/sessions/{id}/log[?offset=]` | no | Log text from `offset` (or the last 200 KB) with ANSI codes stripped, plus the new size. |
 | `GET /api/sessions/{id}/tree` | no | Nested `{id, status, depth, prompt, children}`. |
@@ -793,7 +824,10 @@ had it earlier). Implemented in `cli/jsonout.py`.
 ### 11.1 Stack and layout
 
 - `index.html` shell, `app.css`, `app.js` (core, dialogs, tabs, reader, notes), `features.js`
-  (cost, map, compare, audio, briefs), `lab.js` (Lab runs), `sources.js` (data sources), `projects.js` (projects, 22.7).
+  (cost, map, compare, audio, briefs), `lab.js` (Lab runs), `sources.js` (data sources),
+  `filebrowser.js` (the "+ Add source" file browser, 21.11), `projects.js` (projects, 22.7),
+  `workspaces.js` (switcher and Workspaces dialog, section 23). Every API call sends the
+  current workspace in `X-DR-Workspace`.
   Vanilla JavaScript in strict mode, no framework, no build step, no network calls
   except to the dashboard's own API.
 - Markdown is rendered with vendored `marked` (GFM) and always passed through vendored
@@ -802,15 +836,18 @@ had it earlier). Implemented in `cli/jsonout.py`.
 - Three panes: **archive** (left: session list, filter, stars, tags), **stage** (centre:
   tabs), **inspector** (right: Details, Notes, Outline, Live log). Below 1200 px the inspector becomes a slide-out drawer; below 820 px the archive does
   too, and split views (notebook, compare) stack vertically.
-- Top bar: brand, version, live telemetry counters (running, completed, failed, corpus
-  size, key health), Lab runs, Notes, Data sources, the command palette button and New
-  research. On phones those pages move into the archive drawer's menu. The FAILED counter
-  counts failed, crashed and cancelled sessions, the same set as the Failed filter.
+- Top bar: brand, version, the workspace switcher (a subtle pill with a coloured dot,
+  23), live telemetry counters (running, completed, failed, corpus size, key health),
+  Projects, Lab runs, Notes, Data sources, the command palette button and New research.
+  Telemetry chips that do not fit are hidden rather than wrapping (v0.43.1). On phones
+  those pages move into the archive drawer's menu. The FAILED counter counts failed,
+  crashed and cancelled sessions, the same set as the Failed filter.
 
 ### 11.2 Tabs
 
 Tab kinds: `home` (Mission control, always present), `session`, `notebook`, `launch`,
-`search`, `tree`, `map`, `compare`, `sources`, `source`, `labruns`, `notes`. Open tabs and
+`search`, `tree`, `map`, `compare`, `sources`, `source`, `labruns`, `notes`, `projects`,
+`project`, `sorter` (Inbox sort, 22.4). Open tabs and
 the active tab persist in `localStorage` (`dr.tabs.v1`); launch tabs are not persisted.
 
 Tabs are a keyboard tab list (arrow keys move, Enter opens, Delete closes) and the active
@@ -829,6 +866,8 @@ generation after each request and stop if the user has moved on.
 | Notebook autosave | 900 ms after the last keystroke; also on tab switch and page unload | saved |
 | Notebook preview | 250 ms debounce | |
 | Actual cost | once when a finished session opens | |
+| Timeline | 3 s while the tree is running, otherwise 30 s | tab closes |
+| Lab panel of the open report | while any of its runs is active | no active runs |
 
 When the open session leaves `running`, the reader reloads it (whichever inspector tab
 is showing), shows a toast and, if the page is hidden and permission was granted, a
@@ -855,7 +894,10 @@ older keystroke is dropped.
 | Read aloud | Browser `speechSynthesis`, free, paragraph highlighting, voice and rate saved as `dr.voice` and `dr.rate`. Reads `speakable()` text (REQ-DASH-9). |
 | Audio export | Full text, or a spoken summary (2-3 minutes for a short report, up to about 5 for a long one, covering every section and the report's Lab results), in one of 8 Gemini voices (`dr.aivoice`); estimate first; plays in an inline player; listed on the report. Re-made when the report text changes. |
 | Command palette | Ctrl/Cmd K: commands, notebooks and sessions, arrow keys and Enter; the highlighted item stays in view (listbox semantics). |
-| Lab runs page | Every Lab run with status, report, partition, worst-case cost and age; rows open the report at that run's card (section 20). |
+| Lab runs page | Every Lab run with status, outcome, report, partition, worst-case cost and age; rows open the report at that run's card (section 20). |
+| Lab plan review | Plan sections, "Revised by AI after the referee" (20.17), the Referee box, "Blocked from the cluster" with Fetch on this laptop (20.18), pre-flight warnings with Fix with AI and Undo, the pilot rounds, the diff of AI changes and the generated script (20.1). |
+| Projects | Projects home, project page with summary, claims board, items, Ask, briefs and exports; Inbox sort (section 22). |
+| Workspaces | Switcher, Workspaces dialog (create, duplicate, rename, archive, delete to trash with typed confirmation, export and import zip), "Copy to..." on reports and projects (section 23). |
 | Data sources | Library, add form (checked before sending), source page with test, edit, index, folder browser and preview, "Find open datasets" with a per-catalog filter and an inline add form (section 21). |
 | Dialogs | One modal helper for every dialog: `role=dialog`, Escape and backdrop close, Tab stays inside, focus returns to where it was. Confirm dialogs never confirm on a document-wide Enter; destructive ones start on Cancel; a dialog replaced by another settles as cancelled. Closing the Lab plan review with unsaved edits asks first; Submit takes a second click that shows the worst-case cost. |
 | Accessibility | Session rows, tabs, table rows, tree nodes, folder items and the upload drop zone are focusable and work with Enter; a visible focus ring; labelled fields; small text meets 4.5:1 contrast; reduced motion respected. Buttons for paid or destructive actions are disabled while their request runs. |
@@ -926,6 +968,15 @@ environment, so it follows the CLI order.
 | `lab/run_<N>/` | fetched Lab job outputs, log, plan and write-up | Lab watcher |
 | `uploads/<hex>/<name>` | files uploaded through the dashboard | `POST /api/uploads` (never cleaned up, K10) |
 | `audio/<kind>_<id>_<mode>_<voice>.mp3` | audio exports (WAV if ffmpeg is missing) | `POST /api/audio` |
+| `lab_pitfalls.json` | learned Lab lessons (20.10); shared by all workspaces | Lab |
+| `dashboard_remote` | optional flag file read by the user's restart script (not by deep-research) | the user |
+| `workspaces/<id>/` | another workspace: its own `history.db`, `logs/`, `uploads/`, `audio/`, `lab/` and `workspace.json` (name, colour, archived, created) (section 23) | workspace commands |
+| `workspaces/main.json` | Main's name and colour (Main's data stays in the state dir) | workspace commands |
+| `workspaces/.trash/` | deleted workspaces; files are never removed (23) | workspace delete |
+
+Outside the state dir: `~/research-data/lab-fetch/fetch-<ws>-run<N>/` holds files fetched
+on this laptop for Lab runs (20.18); the cluster side lives under the target's
+`remote_root` (`run_<N>/`, `ws-<id>/run_<N>/`, `data/`, `envs/`, `warm/`).
 
 ---
 
@@ -942,7 +993,7 @@ environment, so it follows the CLI order.
 | Embeddings | `models.embed_content` | `gemini-embedding-001` | search backfill and query |
 | Compare summary, briefs, audio summary script | `models.generate_content` | `gemini-3.8-flash` | dashboard |
 | Lab suggestions, plan, results note | `models.generate_content` (suggestions and plan with Google Search) | `gemini-3.8-flash` | dashboard Lab runs (section 20) |
-| Lab cluster fact selection | `models.generate_content` | `gemini-3.8-flash` | planning: picks which software, version and URL facts to check on the warm node (20.10) |
+| Lab cluster fact selection | `models.generate_content` | `gemini-3.8-flash` | planning: picks which software, version and URL facts to check on the warm node (20.11) |
 | Lab fixer | `models.generate_content`, one retry on a bad reply | `gemini-3.8-flash` | Fix with AI, pilot repairs, Fix failed run, laptop fetch rewiring (20.11, 20.12, 20.18) |
 | Lab referee | `models.generate_content` | `gemini-3.8-flash` | every new draft (auto), Re-run (20.15) |
 | Lab refine rounds | referee + fixer calls above | `gemini-3.8-flash` | a new draft the referee calls flawed, up to 2 rounds (20.17) |
@@ -1014,14 +1065,15 @@ shows "not available from Google (interaction expired)" and caches that answer.
 ### 13.5 Audio estimate
 
 ```
-words   = word count of speakable text   (summary mode: min(words, 450))
+words   = word count of speakable text   (summary mode: min(words, 400 / 650 / 800)
+          for reports under 4,000 / under 9,000 / longer)
 seconds = words / 2.5                    (150 words a minute)
 cost    = chars/4 * 0.50/1M + seconds * 25 * 9.00/1M
         (+ chars/4 * 0.75/1M + 700 * 3.75/1M for the summary script)
 ```
 
-Example: a 5,000-word report is about 33 minutes and $0.45 as full text, or $0.05 as a
-summary. Cost after generation is recomputed from the real audio length.
+Example: a 5,000-word report is about 33 minutes and $0.45 as full text, or about $0.07
+as a summary (650 words, about 4 minutes). Cost after generation is recomputed from the real audio length.
 
 ---
 
@@ -1035,7 +1087,10 @@ listens on `127.0.0.1` only (this machine) and says so in its help text. A non-l
 also answers any request from another address with 403. A dashboard started by an older
 version on `0.0.0.0` comes back on `127.0.0.1` at `--restart`. Anyone who can reach the
 port can read all research, start paid runs, cancel and delete, so `--allow-remote` is
-for a network you trust. An optional login is on the roadmap.
+for a network you trust (the author shares it over Tailscale and the home LAN). With Lab
+runs configured, it can also submit cluster jobs on the user's account and, through
+laptop fetch (20.18), make this machine download public URLs a plan names. An optional
+login is on the roadmap.
 
 ### 14.2 Controls in place
 
@@ -1047,7 +1102,11 @@ for a network you trust. An optional login is on the roadmap.
 | Script injection from report content | Reports contain text from the open web. All Markdown goes through DOMPurify; log text is escaped. |
 | Path traversal (static) | `.` and `..` segments are dropped; unknown paths serve `index.html`. |
 | Path traversal (uploads) | Upload names are reduced to `[A-Za-z0-9._-]`, max 120 characters, inside a fresh random folder; research may only reference paths that resolve inside `uploads/`. |
-| Oversized requests | 25 MB body limit. |
+| Oversized requests | 25 MB body limit for JSON; workspace zip import is streamed to a temp file, up to 5 GB (23.8). |
+| Untrusted archives | Workspace zips are validated before anything is added: member names, symlinks, sizes, compression ratio, checksums, SQLite integrity (23.8). |
+| Laptop fetch (SSRF) | URLs come from AI-written plans, so `http(s)` only; private, loopback, link-local and Tailscale (100.64.0.0/10) addresses are refused, after every redirect too; 200 MB per file, 1 GB per fetch (20.18). |
+| Workspace isolation | Every request names its workspace; an unknown id is 404 and creates nothing; ids are `[a-z0-9-]` so they can't escape the workspaces folder (23.1, 23.2). |
+| Cluster commands | Planner probes accept only read-only command forms (20.11); jobs never run on the login node; SSH uses the user's own `gcloud`/ssh identity, nothing stored by deep-research. |
 | MIME sniffing, referrer leaks | `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`. |
 | API key exposure | The key is never sent to the browser (health returns booleans), never logged, never stored in the database or exports (REQ-NF-6). `auth login` reads it with hidden input. |
 | Stale key from a folder `.env` | The user `.env` wins over `./.env` for both the CLI and the dashboard (12.2). |
@@ -1088,6 +1147,10 @@ mode the umask gives it (K15).
 | Non-loopback `--host` without `--allow-remote` | `--start` and `--foreground` exit 2 with a message; nothing starts. |
 | Browser disconnects mid-response | Ignored quietly (no traceback in the log). |
 | Dashboard stops during a Lab submit | The run is failed by the watcher ("Submit interrupted"); cancel also works (20.6). |
+| Cluster unreachable (expired gcloud sign-in, VPN, IAP) | Submit keeps the run as a draft with the reason; the watcher retries on its next poll; the always-on keeper logs and tries again in 5 minutes. |
+| Lab AI reply unusable | One retry naming what was wrong, then the step fails with the reason (20.14). |
+| Automatic referee fails | Retried once; `review_error` records why, and the draft can still be submitted (20.15). |
+| Lab job fails | Failure class and advice added to the error; Fix with AI offered; the pilot loop fixes up to 3 rounds by itself (20.11, 20.12). |
 | Data source preparation fails for a dashboard research | The session is marked failed with the reason instead of staying running. |
 | Stale pid file | Ignored if that pid is not alive. |
 
@@ -1097,24 +1160,45 @@ mode the umask gives it (K15).
 
 ### 16.1 Suite
 
-326 tests in 23 files, about 55 s, no network and no API key. Gemini, the cluster and
-bucket tools are faked; the dashboard tests run a real HTTP server on an ephemeral port
-against a temporary database.
+587 tests in 43 files (v0.50.1), about 110 s, no network and no API key. Gemini,
+the cluster and bucket tools are faked; the dashboard tests run a real HTTP server on an
+ephemeral port against a temporary database. Two autouse fixtures in `tests/conftest.py`
+turn off the automatic Lab referee and refine rounds (`DR_LAB_REVIEW=0`,
+`DR_LAB_REFINE=0`); tests that need them call the methods directly with a stubbed model.
 
 | File | Tests | Covers |
 |---|---|---|
 | `tests/cli/test_commands.py` | 13 | Command handlers, start, estimate, follow-up by id |
 | `tests/cli/test_help.py` | 13 | Help text and option consistency |
-| `tests/core/test_agent.py` | 18 | Stream processing, reconnect, uploads, recursion, adoption, failures, task limit |
+| `tests/cli/test_json_output.py` | 24 | `--json` on every command: one JSON document on stdout, exit codes |
+| `tests/cli/test_projects_cli.py` | 5 | `deep-research projects` against the dashboard API in-process |
+| `tests/core/test_agent.py` | 19 | Stream processing, reconnect, uploads, recursion, adoption, failures, task limit |
 | `tests/core/test_config.py` | 12 | Key loading, `service_env` precedence |
+| `tests/core/test_full_report_text.py` | 6 | Multi-part report text, `repair`, audio completeness (v0.38.2) |
 | `tests/core/test_session.py` | 9 | Session CRUD and liveness rules |
+| `tests/core/test_workspaces.py` | 12 | Workspaces: Main never moved, isolation of runs, cluster folders, task names, watchers per workspace, trash |
+| `tests/core/test_wscopy.py` | 6 | Copy into another workspace: id remapping, Lab folders, all-or-nothing |
+| `tests/core/test_wszip.py` | 16 | Zip export/import: round trip, privacy scrub, one test per refused archive |
+| `tests/dashboard/test_claims.py` | 6 | Claims board ordering and grouping |
 | `tests/dashboard/test_cli.py` | 13 | Dashboard flags, loopback default, `--allow-remote`, working directory |
 | `tests/dashboard/test_daemon.py` | 7 | Start, status, restart, stop, stale pid, loopback refusal, restart back to local |
 | `tests/dashboard/test_dashboard_review_fixes.py` | 9 | Resource parsing, partition sanitising, SVG download, temp store grace, atomic cache, child failure, source edit, notes list |
 | `tests/dashboard/test_features.py` | 16 | Usage cost, speakable text, chunks, compare, audio, Range |
-| `tests/dashboard/test_lab.py` | 72 | Script builder, estimate, plan-submit-watch-fetch-write-up loop, cancel races, catalog, pre-flight, AI fix |
-| `tests/dashboard/test_lab_races.py` | 10 | One job per submit, stuck submitting, edit/fix vs submit, Slurm forgetting a job |
-| `tests/dashboard/test_server.py` | 38 | Routes, validation, uploads, delete, health, estimate parity, cross-site and host checks, loopback guard, sources API |
+| `tests/dashboard/test_lab.py` | 73 | Script builder, estimate, plan-submit-watch-fetch-write-up loop, cancel races, catalog, pre-flight, AI fix |
+| `tests/dashboard/test_lab_fetch.py` | 16 | Laptop fetch: blocked-URL detection, address and size refusals, staging and fixer wiring |
+| `tests/dashboard/test_lab_races.py` | 15 | One job per submit, stuck submitting, edit/fix vs submit, Slurm forgetting a job, submit/pilot race |
+| `tests/dashboard/test_lab_referee.py` | 10 | Referee: normalized findings, staleness, retry, advice only |
+| `tests/dashboard/test_lab_refine.py` | 10 | Referee -> fixer rounds, stop rules, undo, planning rules |
+| `tests/dashboard/test_lab_selfrepair.py` | 13 | Retry on unusable replies, backslash repair, failure classes, lessons, package lists |
+| `tests/dashboard/test_lab_v3.py` | 37 | Warm node, pilot and AI fix loop, install ladder, probes, partition matching, backlog workers |
+| `tests/dashboard/test_labguard.py` | 15 | Lessons and science guards on plans |
+| `tests/dashboard/test_labverdict.py` | 17 | Outcomes, notes on the report, pilot gate, one automatic re-plan |
+| `tests/dashboard/test_mobile_layout.py` | 3 | No horizontal overflow at phone width (CSS guards) |
+| `tests/dashboard/test_projects.py` | 22 | Projects store rules, API, AI features with fakes, exports |
+| `tests/dashboard/test_server.py` | 40 | Routes, validation, uploads, delete, health, estimate parity, cross-site and host checks, loopback guard, sources API |
+| `tests/dashboard/test_warm_always_on.py` | 8 | computehigh default, always-on keeper, pause and resume, warm partition steering |
+| `tests/dashboard/test_workspace_ui.py` | 6 | Workspace header on every request and link, switcher wiring |
+| `tests/sources/test_browse.py` | 14 | File browser and Google Drive sources (CLIs faked) |
 | `tests/sources/test_discover.py` | 6 | Catalog searches and parsing |
 | `tests/sources/test_index.py` | 4 | Saved indexes |
 | `tests/sources/test_lab_sources.py` | 9 | Relay and direct staging, pre-flight, provenance |
@@ -1124,6 +1208,7 @@ against a temporary database.
 | `tests/sources/test_sources_review_fixes.py` | 18 | Safe paths, hidden files, filters on fetch, binary preview, name lookup, stable hashes, provenance on delete, relay re-list and cap |
 | `tests/sources/test_usage.py` | 8 | Research and Ask inclusion |
 | `tests/storage/test_files.py` | 6 | Store creation, upload, cleanup rules |
+| `tests/test_spec_sync.py` | 6 | This document lists every route, setting, module, static file and command; header version |
 | `tests/utils/test_exporters.py` | 6 | Code-block extraction, JSON and CSV export |
 | `tests/utils/test_retry.py` | 4 | Retry decorators |
 
@@ -1139,7 +1224,9 @@ Run locally before a pull request and enforced by CI (`.github/workflows/ci.yml`
 
 CI also runs the suite on Python 3.13 and builds the wheel, failing if the dashboard
 static files are missing from it. Pre-commit runs ruff, whitespace, YAML/TOML checks, a
-1 MB file-size limit and private-key detection.
+1 MB file-size limit and private-key detection; the local git hook also runs the full
+test suite before every commit. `tests/test_spec_sync.py` makes the suite fail when this
+document misses a route, setting, module, static file or command.
 
 ### 16.3 Test debt
 
@@ -1161,20 +1248,23 @@ Before tagging a release that touches the affected area:
 ## 17. Known gaps and limitations
 
 Real current behaviour, first recorded against v0.17.5 by reading the source and, where
-noted, confirmed by test; items fixed since are marked with the version. Each is a candidate issue.
+noted, confirmed by test; items fixed since are marked with the version. Each is a candidate
+issue. Re-checked against the source on 2026-10-01 (v0.50.1): K1, K6, K7, K9, K10, K11, K15,
+K17, K18 and K19 still hold; K4 is mostly fixed. Feature-area gaps are listed in their own
+sections (20.8, 21.10, 22.8).
 
 | ID | Area | Gap | Effect |
 |---|---|---|---|
 | K1 | Storage | `db_retry` wraps only some `SessionManager` methods (create, update, fail, list, get). `update_session_pid`, `update_session_interaction_id`, `append_to_result`, `update_embedding`, `delete_session` and every write in `store.py`, `server.py` and `features.py` rely on the 10 s busy timeout alone. | A long lock can surface as a 500 in the dashboard or a lost pid or interaction id in a worker. REQ-NF-3 is only partly met. |
 | K2 | Security | **Fixed in v0.18.0.** A cross-site bodyless `POST /api/sessions/{id}/cancel` was accepted (confirmed by test), and there was no `Host` check against DNS rebinding. Now covered by REQ-DASH-12. | |
 | K3 | Recursion | **Fixed in v0.18.0.** The 600 s level timeout bounded nothing (the executor waited for all threads anyway) and dropped every child report that arrived after it: 48 of 51 completed children in the author's history ran longer than 10 minutes. Now every report is synthesized and each task has its own limit that cancels at Google (6.4a). | |
-| K4 | Cancel | Cancel stops the root interaction and kills the worker's process group, but child interactions already running on Google are not cancelled. The row is set to `cancelled` even if both steps failed. | Children keep billing until they finish; their rows become `crashed`. |
+| K4 | Cancel | **Mostly fixed.** Dashboard cancel now cancels the root and every running child interaction at Google, kills the worker's process group, and marks the root and those children `cancelled`. Still: rows are set to `cancelled` even if the cloud calls failed (the failures are listed in the returned notes), and the CLI has no cancel command. | A failed cloud cancel can leave a child billing while its row says cancelled. |
 | K5 | Engine | **Fixed in v0.18.0.** The stream reconnect loop had no deadline and the poll loop only exited on `completed` or `failed`. Both now stop on any terminal status or the task limit. | |
 | K6 | Engine | If an upload fails, nothing is written: an adopted row stays `running` until liveness marks it `crashed`, with no error message. (A streamed interaction that ends without text and without `completed` is now recorded as failed with its status, since v0.18.0.) | "Crashed" hides the real cause. |
 | K7 | Recursion | The CLI does not bound `--depth` or `--breadth` (the dashboard allows up to 5 and 10). (The gap list is now truncated to B, since v0.18.0.) | A typo can start a very expensive run. |
 | K8 | Tests | No dedicated test for: synthesis fallback (REQ-REC-3), embeddings leaving `updated_at` alone (REQ-HIS-4), cancel's cloud call and process-group kill (REQ-DASH-5, state change only). | Regressions in these paths would not be caught. |
 | K9 | Uploads | Folder uploads take only top-level files. After uploading to a store the code waits a fixed 5 s for ingestion rather than checking. | Nested files are silently skipped; large uploads may not be searchable when the run starts. |
-| K10 | Cleanup | CLI `delete` removes one row and leaves children (orphaned), annotations, meta, run_meta, usage and audio. Dashboard delete removes annotations and meta but leaves `run_meta`, `session_usage`, `audio_exports` rows and audio files. Uploaded files are never removed. | Orphan rows and disk growth. |
+| K10 | Cleanup | CLI `delete` removes one row and leaves children (orphaned), annotations, meta, run_meta, usage and audio. Dashboard delete removes annotations, meta, project memberships, the report's Lab runs (rows, suggestions and fetched outputs; refused with 409 while any of its runs is still on the cluster) but leaves `run_meta`, `session_usage`, `audio_exports` rows and audio files. Uploaded files are never removed. | Orphan rows and disk growth. |
 | K11 | CLI | Every command except `dashboard` exits 0, including on errors. | Scripts cannot detect failure. Fixed for `--json` output in v0.36.0 (9.6); plain output unchanged. |
 | K12 | Cost | The estimate leaves out gap analysis, synthesis, follow-ups and search grounding. Actual cost covers the session's own interaction only (a recursive root's figure leaves out its children). The estimate formula is duplicated in two modules. | Shown costs understate recursive runs. |
 | K13 | Dashboard | No authentication (by design; 14.1). Since v0.28.0 it listens on this machine only unless `--allow-remote` is given. | With `--allow-remote`, anyone on that network can use and spend. |
@@ -1184,6 +1274,8 @@ noted, confirmed by test; items fixed since are marked with the version. Each is
 | K17 | Dashboard | Audio jobs live in memory: lost on restart, never pruned. | A restart mid-job loses the job's status (a finished file is still listed). |
 | K18 | Packaging | `deepresearch/__init__.py` re-executes into `<project>/.venv/bin/python` when that path exists relative to the installed package. Intended for source checkouts, surprising elsewhere. | Hard-to-debug interpreter switch. |
 | K19 | Scale | The research map is O(n^2 x d) in pure Python on every request: 144 reports took 3.3 s on the author's laptop. Liveness runs over up to 10,000 rows on every session list poll. | The dashboard slows as history grows (REQ-NF-5). |
+| K20 | Lab | `dashboard/lab.py` is 5,400 lines; cluster access (SSH command strings in about 24 places plus `warm_worker.sh`) is not a separate layer. Two 2026-09-30 bugs lived there (submit/pilot race, an always-on setting applied to backlog workers). | Cluster logic is hard to test in isolation (see the hpc-agent design note in the nexus repo). |
+| K21 | Lab | The Lab watcher and keeper need the dashboard running; there is no notification when a job ends (also L4). | Results appear the next time the report is opened. |
 
 ---
 
@@ -1207,7 +1299,13 @@ uv run deep-research dashboard --foreground --host 127.0.0.1 --port 7421
    checks that the tag matches `pyproject.toml`, builds the sdist and wheel, and creates a
    GitHub release whose notes are that version's CHANGELOG section.
 5. Install: `uv tool install --force git+https://github.com/charles-forsyth/deep-research.git`,
-   then `deep-research dashboard --restart` so the server runs the new code.
+   then `deep-research dashboard --restart` so the server runs the new code (add
+   `--host 0.0.0.0 --allow-remote` again if the dashboard was shared). Confirm
+   `/api/health` reports the new version.
+
+Before a risky change, snapshot the installed version and the live database so it can be
+rolled back; the database is shared by every version (additive schema), so a rollback is
+only of the code.
 
 ### 18.3 Operations
 
@@ -1220,6 +1318,8 @@ uv run deep-research dashboard --foreground --host 127.0.0.1 --port 7421
 | Leftover cloud stores | `deep-research cleanup` removes temporary stores (not source indexes or named stores); `--all` removes every store on the key. |
 | Use the dashboard from another machine | SSH tunnel (`ssh -L 7420:127.0.0.1:7420 host`), or `dashboard --restart --host 0.0.0.0 --allow-remote` on a trusted network. |
 | A Lab run stuck in "submitting" | Stop run on its card, or let the watcher fail it; then check `squeue --me` on the cluster for a stray job. |
+| Warm node | `GET /api/lab/warm` lists workers and queue counts; Stop / Start in the Lab panel (or `POST /api/lab/warm/stop|start`). With `always_on`, Stop pauses the keeper until Start (20.16). Expect exactly one always-on worker. |
+| Which workspace am I in? | `GET /api/health` (`workspace`), the switcher in the top bar, or `deep-research workspace list`. |
 | Back up history | `sqlite3 history.db ".backup backup.db"` (copying the file alone can miss the WAL). |
 | Change the key | `deep-research auth login`, then `dashboard --restart`. |
 
@@ -1229,12 +1329,14 @@ uv run deep-research dashboard --foreground --host 127.0.0.1 --port 7421
 
 | To add | Do this |
 |---|---|
-| A CLI command | Add the parser in `build_parser()`, add the name to `known_commands` (otherwise the bare-prompt shortcut swallows it), add a `handle_*` in `cli/commands.py`, dispatch it in `main()`, and add a help test in `tests/cli/test_help.py`. |
-| An API endpoint | Add a `self._route(...)` line and a handler in `Api`. Raise `ApiError(status, message)` for expected failures. Add a test in `tests/dashboard/test_server.py` using the real HTTP server fixture. Update the table in section 10.2. |
+| A CLI command | Add the parser in `build_parser()` (or a module's `add_parser`, as `cli/projects.py` does), add the name to `known_commands` (otherwise the bare-prompt shortcut swallows it and starts a paid run), add a handler, dispatch it in `main()`, support `--json` (9.6), and add a help test in `tests/cli/test_help.py`. |
+| An API endpoint | Add an `r("METHOD", r"/api/...", self.handler)` line in the route table (project routes: `register_project_routes`) and a handler in `Api`. Raise `ApiError(status, message)` for expected failures. Handlers run in the request's workspace context; use `self.db_path`, `self.lab`, etc., never Main's paths. Add a test in `tests/dashboard/test_server.py` using the real HTTP server fixture. Document the route in this file (`tests/test_spec_sync.py` fails otherwise). |
 | A table or column | `CREATE TABLE IF NOT EXISTS` or a guarded `ALTER TABLE ADD COLUMN` in the owning component. Additive only: never rename or drop, because older CLIs share the file. When a table is keyed by `session_id`, clean it up in `purge_session_workspace` (see K10). Update section 8. |
 | A paid feature | Show an estimate before calling Google (G1, REQ-COST-4); compute the real cost from `usage_metadata` afterwards; never call it on a timer (REQ-NF-4). Update section 13. |
-| A model or price change | Constants live in `core/config.py` (agent, follow-up model), `cli/commands.py` and `dashboard/server.py` (estimate), and `dashboard/features.py` (actual cost, Flash, TTS). Change all that apply and re-check the price date in the comment. |
-| Client features | Plain JavaScript in `app.js` or `features.js`; no build step, no CDN. Sanitise any HTML built from report or user text. Check at 390 px and desktop, run `node --check`, keep the console clean. |
+| A model or price change | Constants live in `core/config.py` (agent, follow-up model), `cli/commands.py` and `dashboard/server.py` (estimate), `dashboard/features.py` (actual cost, Flash, TTS) and `dashboard/lab.py` (`PLAN_MODEL`, `FLASH_*_1M`, `SEARCH_PER_1K` for Lab AI cost). Change all that apply and re-check the price date in the comment. |
+| A Lab step that calls a model | Go through `Lab._ask` / `_ask_plan` (shared client, cost accounting, one retry on a bad reply); keep bookkeeping keys out of prompts (`PLAN_DIFF_SKIP`); never submit from AI code, only produce drafts. |
+| An environment variable | Read it with `os.getenv("NAME")` and add a row to 12.1 (the sync test checks). |
+| Client features | Plain JavaScript in the page's module (`app.js`, `features.js`, `lab.js`, `projects.js`, `sources.js`, `workspaces.js`); no build step, no CDN. Use `api()` so the workspace header is sent. Sanitise any HTML built from report or user text. Check at 390 px and desktop, run `node --check`, keep the console clean. |
 | A requirement | Give it the next free ID in its group, name the test that covers it, and update this document in the same pull request as the code. |
 
 ---
@@ -1417,14 +1519,20 @@ The estimate before submit is `partition hourly price x nodes x time limit`, fro
 cluster catalog's partition prices when loaded (the same table as the cluster's
 `ursa-cost`, Google list prices; `spot` $0.74 against `standard` $1.45 per node-hour),
 else from the target config. It is an upper bound: jobs usually end
-early, and the node's ~90 s boot is not billed to the job. AI cost (suggestions, plan,
-write-up) is computed from `usage_metadata` (cached input at the cached rate, thinking
+early, and the node's ~90 s boot is not billed to the job. AI cost (suggestions, cluster fact selection, plan, referee, fixes, write-up) is computed
+from `usage_metadata` (cached input at the cached rate, thinking
 as output) plus $14 per 1,000 Google Search queries the reply reports, and shown on the
 run. The free monthly search quota is shared and not visible here, so that part is a
 worst case. Measured on
-`gemini-3.8-flash` (v0.19.1): suggestions about $0.01, a plan about $0.10. (On
-`gemini-3.1-pro-preview` in v0.19.0 they were $0.04-0.05 and $0.10-0.30, and a write-up
-about $0.02.)
+`gemini-3.8-flash` (v0.19.1): suggestions about $0.01, a plan about $0.10; a referee pass
+about $0.01; a plan with two referee -> fixer rounds about $0.25-0.35 in all (v0.50.0).
+(On `gemini-3.1-pro-preview` in v0.19.0 they were $0.04-0.05 and $0.10-0.30, and a
+write-up about $0.02. A 2026-09-30 comparison put Pro first plans at $0.34-0.38 against
+Flash's $0.08-0.17, with no better referee verdicts; planning stays on Flash.)
+
+Cluster cost beyond a run's own estimate: with `warm.always_on` (20.16) one node of the warm
+partition runs around the clock (computehigh, about $1.87 per node-hour at list price,
+roughly $45 a day before credits); backlog workers add more only while there is a queue.
 
 ### 20.6 Reliability
 
@@ -1451,8 +1559,9 @@ about $0.02.)
 - Resource values are parsed leniently (`"2"`, `2.0`); values such as `auto` or `4h` fall
   back to the defaults instead of failing. The card marks the step a failed run stopped
   at (Running for a job that failed, Fetch or Write-up when those failed), never Done.
-- The watcher lives in the dashboard process. If the dashboard is stopped, jobs keep
-  running on the cluster and are picked up when it starts again (checked on start).
+- The watcher lives in the dashboard process, one per workspace with active runs. If the
+  dashboard is stopped, jobs keep running on the cluster and are picked up when it starts
+  again (every workspace is checked on start, v0.41.0).
 - Runs are fetched once; a run stuck in `fetching` or `analyzing` retries that step. A
   fetch that fails `MAX_FETCH_TRIES` (5) times marks the run failed, noting the outputs
   are still on the cluster, so one bad fetch cannot stall the single watcher thread.
@@ -1521,7 +1630,10 @@ about $0.02.)
 
 ### 20.7 Tests
 
-`tests/dashboard/test_lab.py` covers the script builder (install order, sanitising,
+Lab tests are spread over `test_lab.py`, `test_lab_v3.py`, `test_lab_races.py`,
+`test_labguard.py`, `test_labverdict.py`, `test_lab_selfrepair.py`,
+`test_lab_referee.py`, `test_lab_refine.py`, `test_lab_fetch.py` and
+`test_warm_always_on.py` (counts in 16.1). `tests/dashboard/test_lab.py` covers the script builder (install order, sanitising,
 parameters, index URLs, containers), the cost estimate, the plan-review-submit-watch-
 fetch-write-up loop and rerun against an in-memory fake target and fake Gemini, cancel
 races (during planning, between watcher read and write, after the job ended), the fetch
@@ -1539,7 +1651,9 @@ catalog endpoints. Live checks are listed in the v0.19.0 and v0.20.0 changelogs.
 | L1 | One target type (Slurm over SSH); no target picker in the UI yet. | Other clusters need a new target class. |
 | L2 | Mostly closed in v0.20.0: the planner sees the live catalog and every plan is checked against it before submit. Still possible: wrong command-line flags or a package that fails to install from conda/pip (not in the catalog). | A wasted run; fixed by editing and rerunning. |
 | L3 | No sweeps, result comparison or cluster-side caching of outputs yet. | Reruns are one at a time. |
-| L4 | Watching requires the dashboard to be running; no notification when a job ends. | You see results the next time the report is open. |
+| L4 | Watching requires the dashboard to be running; no notification when a job ends (K21). | You see results the next time the report is open. |
+| L7 | The referee and fixer run on the same model (Flash) and their judgments vary between calls; two refine rounds can leave a plan flawed, or make it worse (measured once: flawed -> concerns -> flawed). | Review still matters; the draft records each round. |
+| L8 | Laptop fetch only covers URLs that failed the pre-flight check; data a job builds URLs for at run time (query loops) is not seen. | Such plans still need the fetch designed in (as run #48 was). |
 | L5 | Outcomes of pre-v0.39.0 runs rest on inferred check kinds (names and `expected` strings). A check named like a claim but meant as validation can be misfiled. | A run may show REFUTED where BROKEN fits; the card says "check kinds inferred". |
 | L6 | The pilot gate needs the pilot to compute the informative checks (`LAB_SMOKE=1`). Plans written before v0.39.0 usually do not, so their pilots only check that the script runs. | Saturation is then caught only after the full run (and re-planned once). |
 
@@ -1584,10 +1698,12 @@ Added in v0.29.0 (Lab plan v3, nexus `2026-09-29_Deep_Research_Lab_Plan_v3.md`).
 `dashboard/labguard.py`, deterministic, no model calls.
 
 - **Pitfalls in every prompt.** The plan, Fix-with-AI and fix-failed prompts get a
-  "Rules learned from earlier runs" block: five general rules (compute every reported
-  number, download reference data instead of typing it, read tool output folders instead
-  of guessing file names, write `outputs/verdict.json` with a `kind` per check, support
-  `LAB_SMOKE=1` as a pilot that writes the same checks), the four design rules of 20.13
+  "Rules learned from earlier runs" block: the general rules (`GENERAL_RULES`, 10 at
+  v0.50.1: compute every reported number, download reference data instead of typing it,
+  read tool output folders instead of guessing file names, write `outputs/verdict.json`
+  with a `kind` per check, support `LAB_SMOKE=1` as a pilot that writes the same checks,
+  record failures instead of falling back to reference values, check optional program
+  features in `verify`, and the three check-design rules of 20.17), the four design rules of 20.13
   (`labverdict.PLANNER_RULES`) plus the software-specific lessons whose keywords appear in the request,
   report excerpt or plan. Curated lessons live in code; learned ones in
   `<state_dir>/lab_pitfalls.json`.
@@ -1618,11 +1734,15 @@ Added in v0.33.0 (Lab plan v3 releases 2-5).
   its own session with a private TMPDIR; an `exclusive` task (a full run) runs alone. Workers scale out: `ensure_warm()` keeps 1 + queued/2 workers
   (running or pending, not draining), capped at `max_workers` (3). A task
   that can't finish before the job's limit marks the worker draining, and the dashboard starts
-  a fresh one. Exits after `idle_min` (20) idle minutes. `SlurmSSHTarget.ensure_warm()` starts
-  one unless a non-draining worker is running or one is pending.
+  a fresh one. Exits after `idle_min` (20) idle minutes (`idle_min: 0` = never, for the
+  always-on node; extra backlog workers then use `burst_idle_min`, 20.16).
+  `SlurmSSHTarget.ensure_warm()` starts one unless a non-draining worker is running or one
+  is pending; the dashboard re-checks at most every `WARM_RECHECK_S` (120 s) while work is
+  queued, and the always-on keeper every `KEEPER_INTERVAL_S` (300 s).
 - **Pilot (smoke test; renamed in the UI in v0.39.0, still `smoke` in code and data).**
   `submit()` on a CPU plan with a warm-capable target uploads the run folder
-  and queues `smoke-<run>-<round>`: `run.sbatch` copied to `run_N/smoke/` and run with
+  and queues `smoke-<run>-<round>` (task names carry a workspace prefix outside Main, so
+  workspaces never collide on the shared spool): `run.sbatch` copied to `run_N/smoke/` and run with
   `LAB_SMOKE=1` under `timeout` (`smoke_min`, 15). Status `smoke`. Pass = exit 0 and every
   `expected_outputs` pattern has a non-empty match (a clean timeout with no error lines also
   passes). Pass with the plan unchanged: dispatch. Pass after AI fixes: back to `draft`
@@ -1644,13 +1764,15 @@ Added in v0.33.0 (Lab plan v3 releases 2-5).
   when nothing verifies (unless the plan lists a container). Modules that fail to load go to
   `LADDER_MOD_FALLBACK` and are installed from conda-forge/bioconda. `install.spack` builds in
   `~/deep-research-lab/spack` with `/apps/spack` as upstream.
-- **Probes.** `PROBE_PROMPT` (no search) returns up to 6 checks of kinds module, help,
-  pyversion, pyhelp, url; `_probe_cmd()` accepts only read-only forms (help flags from a fixed
+- **Probes.** `PROBE_PROMPT` (no search) returns up to `PROBE_MAX` (6) checks of kinds
+  module, help, pyversion, pyhelp, url (features and conda since v0.34.0), run as one warm
+  task with a `PROBE_WAIT_S` (420 s) limit; `_probe_cmd()` accepts only read-only forms (help flags from a fixed
   list, http(s) URLs, dotted Python names) and refuses the rest. Output (24 KB max) goes into
   the plan prompt as "FACTS CHECKED ON THE CLUSTER". After planning, `_check_urls()` fetches
   each script/input URL from the warm node; failures become warnings (`plan.url_checks`).
 - **Matching.** `workload_shape()` (gpu, mpi, bigmem, sweep, cpu) and `suggest_partition()`
-  add a pre-flight hint; `time_from_history()` suggests 3x the longest similar completed run
+  add a pre-flight hint (since v0.48.1 a single-node CPU plan on another partition is
+  pointed at the default partition when it has the always-on warm node); `time_from_history()` suggests 3x the longest similar completed run
   plus 5 minutes. When a queued job reaches `NODE_FAIL_WARN` node failures and `sinfo -R`
   shows its partition stocked out, `_switch_partition()` cancels it and resubmits the same plan
   on the suggested partition once (`plan.partition_switched`).
@@ -1757,17 +1879,6 @@ tell) and run #78 "failed" because diffusion and discrete agreed exactly; the fa
   only one re-plan; refuted and confirmed not re-planned; the pilot gate stopping and
   passing; outcomes in `lab_findings`.
 
-## 21. Data sources
-
-A data source is a named reference to data that lives somewhere else: an open dataset
-on the web, a GCS bucket or prefix, an S3 bucket (including CephRDS) through an rclone
-remote, a folder or file under the user's home directory, or one of the user's own
-reports or notebooks. The registry stores the reference and a credential *reference*
-(`auth_ref`, for example `rclone:ceph` or `gcloud`), never data or secret values. The CLI,
-the dashboard and Lab runs share one registry (table `data_sources` in the history DB,
-plus `data_source_uses`).
-
-
 ### 20.14 Self-repair hardening (v0.44.0)
 
 Every AI call that must return a plan (pre-flight fix, pilot fix, failed-run fix, automatic
@@ -1794,7 +1905,6 @@ Curated pitfalls added: `https-ca-bundle`, `loc-gov-slow`, `lightkurve-quarter`,
 match as substrings (dotted calls such as `urllib.request.urlopen` are one token).
 
 Tests: `tests/dashboard/test_lab_selfrepair.py`.
-
 
 ### 20.15 Referee: adversarial review before submit (v0.46.0)
 
@@ -1833,7 +1943,6 @@ pilot) so the referee does not flag them.
   opinion.
 - Tests: `tests/dashboard/test_lab_referee.py`.
 
-
 ### 20.16 Default partition and the always-on warm node (v0.48.0)
 
 - `default_partition` in `lab_targets.json` now wins over the cluster catalog's default
@@ -1865,12 +1974,75 @@ pilot) so the referee does not flag them.
 - Tests: `tests/dashboard/test_warm_always_on.py` (catalog vs config default, keeper,
   pause/resume, unreachable cluster, worker with idle 0 keeps running, with a limit exits).
 
+### 20.17 Referee -> fixer rounds before the draft is shown (v0.50.0)
+
+- After planning and the automatic referee, a draft whose review is `flawed` or has any
+  high-severity finding goes to the fixer with the findings, and the referee reads the
+  result again. Up to `REFINE_MAX_ROUNDS` (2). Stops when the referee is satisfied (no
+  high finding, not flawed), when a round leaves the plan unchanged (judged by the plan
+  hash, not the fixer's change list: run #46 edited without listing changes), or when a
+  step fails. Medium and low concerns stay advice.
+- Only ever another draft: never submits. The first plan is kept in
+  `plan.plan_before_refine`; `POST /api/lab/{id}/undo-refine` ("Back to first plan")
+  restores it. `plan.refine` records each round (`round`, `before`, `after`, `findings`,
+  `changes`, `error`). The stage says how many rounds ran and the referee's last verdict.
+  `DR_LAB_REFINE=0` turns it off (tests do).
+- UI: a "Revised by AI after the referee" box above the Referee box.
+- Planner rules (labguard `GENERAL_RULES`, every planning prompt): cover every part of the
+  question with its own check and follow its logic ("A or B" is one check); compare the
+  same statistic computed the same way for both methods (no BLS power vs TLS SDE); every
+  check must be able to fail and to pass (no `count > 0`, no shared grids, injected
+  signals in the regime where methods differ, no hard-coded pilot passes). From the
+  Flash/Pro first-plan comparison of 2026-09-30, where 5 of 8 plans dropped part of the
+  question and most compared unlike scores. Pro (gemini-3.1-pro-preview) was not better
+  and cost 2-4x, so planning stays on Flash.
+- Measured on three flawed Flash drafts from that comparison (scratch DB, nothing run):
+  one went flawed -> flawed -> sound in two rounds; one improved then regressed (flawed ->
+  concerns -> flawed, a loc.gov design); one stopped because the fixer returned no change
+  list (fixed above). Model cost about $0.25-0.35 per draft for two rounds.
+- Tests: `tests/dashboard/test_lab_refine.py`.
+
+### 20.18 Fetch on this laptop when a site blocks the cluster (v0.50.0)
+
+- Module `dashboard/labfetch.py`. Some sites refuse the cluster (loc.gov answers 429/403
+  to Ursa Major) but serve a normal client. Run #48 worked only after the data was pulled
+  on the laptop by hand.
+- `blocked_urls(plan)`: URL checks that failed on a compute node with a status another
+  machine can get past (401/403/405/406/418/429/451/5xx, no answer, timeouts, resets). A
+  404 or unknown host is the plan's mistake and is not offered. Shown in the run view as
+  `blocked_urls` for drafts.
+- `POST /api/lab/{id}/laptop-fetch` (body `{"urls": [...]}` optional, subset of the
+  offered ones) or "Fetch on this laptop" in plan review: fetches one URL at a time with a
+  2 s pause and one backoff on 429/503 (Retry-After, max 60 s), into
+  `~/research-data/lab-fetch/fetch-<workspace>-run<N>/` with `urls.json` (file, URL,
+  status, bytes, sha256, content type, time). Registers it as a P1 `local_folder` source
+  (relay-staged like any local source), attaches it to the plan, and asks the fixer to
+  read `$DS_<NAME>/<file>` instead of downloading. Records `plan.laptop_fetch`.
+- AI-written URLs are untrusted: http(s) only; hosts that resolve to private, loopback,
+  link-local, reserved, multicast or carrier-grade NAT addresses (Tailscale 100.64.0.0/10,
+  the Core Pi) are refused, also after redirects; 200 MB per file, 1 GB per fetch; partial
+  files are removed.
+- Real test (scratch draft, nothing submitted): two loc.gov facet URLs recorded as 429 on
+  the cluster were fetched here (41 KB, 37 KB), staged, and the fixer replaced the `curl`
+  lines with `cp "$DS_FETCH_CMP_RUN52/..."`; pre-flight then had no warnings.
+- Tests: `tests/dashboard/test_lab_fetch.py`.
+
+## 21. Data sources
+
+A data source is a named reference to data that lives somewhere else: an open dataset
+on the web, a GCS bucket or prefix, an S3 bucket (including CephRDS) through an rclone
+remote, a folder or file under the user's home directory, or one of the user's own
+reports or notebooks. The registry stores the reference and a credential *reference*
+(`auth_ref`, for example `rclone:ceph` or `gcloud`), never data or secret values. The CLI,
+the dashboard and Lab runs share one registry (table `data_sources` in the history DB,
+plus `data_source_uses`).
+
 ### 21.1 Record
 
 | Field | Meaning |
 |---|---|
 | `name` | Unique slug; the Lab job variable is `DS_<NAME>` (upper case, `-` to `_`). Lookups try the name first, so a source named `12` is found by name, not as id 12. |
-| `kind` | `web`, `gcs`, `s3`, `public_bucket` (21.8a), `local_folder`, `local_file`, `report`, `notebook`, `gdrive` (21.9). |
+| `kind` | `web`, `gcs`, `s3`, `public_bucket` (21.8a), `local_folder`, `local_file`, `report`, `notebook`, `gdrive` (21.11). |
 | `uri` | `https://...`, `gs://bucket/prefix`, `s3://bucket/prefix`, an absolute path, or a session/notebook id. |
 | `auth_ref` | How to reach it: `rclone:<remote>` for S3, `gcloud` for GCS, empty for public web, public buckets and local. |
 | `protection` | P1-P4, shown for information. Nothing is blocked on it (decision 2026-09-28). |
@@ -2030,13 +2202,18 @@ runs that used it. Tests and index builds update only their own fields, so one n
 drops the other's result.
 
 ### 21.10 Known gaps
+
 - Read-only: nothing is written back to buckets.
-- The dashboard has no login; it listens on this machine only (see section 14).
-  Previews never show hidden files or follow links, matching the listing.
+- The dashboard has no login. It listens on this machine only unless started with
+  `--allow-remote` (then anyone on the network can use it; see section 14).
+- The cluster can't always reach what the laptop can: relay staging covers sources, and
+  laptop fetch (20.18) covers URLs in a plan that a site blocks from the cluster.
+- Browsing Drive and S3 from the CLI is not built (dashboard only); S3 browsing needs an
+  rclone remote with credentials.
+- Indexed sources go stale when the manifest changes and are rebuilt on the next research
+  run, which costs embedding time then.
 
----
-
-### 21.9 File browser and Google Drive sources (v0.38.0)
+### 21.11 File browser and Google Drive sources (v0.38.0)
 
 "+ Add source" (Data sources page) and "Browse files" (project page) open a file browser
 (`static/filebrowser.js`, `sources/browse.py`). It shows only places already signed in on
@@ -2081,60 +2258,6 @@ config reconnect <remote>:".
 
 Routes: `GET /api/browse/places`, `GET /api/browse/list?place=&path=&q=`,
 `GET /api/browse/preview?place=&path=&size=`, `POST /api/browse/spec` `{place, items}`.
-
-
-### 20.17 Referee -> fixer rounds before the draft is shown (v0.50.0)
-
-- After planning and the automatic referee, a draft whose review is `flawed` or has any
-  high-severity finding goes to the fixer with the findings, and the referee reads the
-  result again. Up to `REFINE_MAX_ROUNDS` (2). Stops when the referee is satisfied (no
-  high finding, not flawed), when a round leaves the plan unchanged (judged by the plan
-  hash, not the fixer's change list: run #46 edited without listing changes), or when a
-  step fails. Medium and low concerns stay advice.
-- Only ever another draft: never submits. The first plan is kept in
-  `plan.plan_before_refine`; `POST /api/lab/{id}/undo-refine` ("Back to first plan")
-  restores it. `plan.refine` records each round (`round`, `before`, `after`, `findings`,
-  `changes`, `error`). The stage says how many rounds ran and the referee's last verdict.
-  `DR_LAB_REFINE=0` turns it off (tests do).
-- UI: a "Revised by AI after the referee" box above the Referee box.
-- Planner rules (labguard `GENERAL_RULES`, every planning prompt): cover every part of the
-  question with its own check and follow its logic ("A or B" is one check); compare the
-  same statistic computed the same way for both methods (no BLS power vs TLS SDE); every
-  check must be able to fail and to pass (no `count > 0`, no shared grids, injected
-  signals in the regime where methods differ, no hard-coded pilot passes). From the
-  Flash/Pro first-plan comparison of 2026-09-30, where 5 of 8 plans dropped part of the
-  question and most compared unlike scores. Pro (gemini-3.1-pro-preview) was not better
-  and cost 2-4x, so planning stays on Flash.
-- Measured on three flawed Flash drafts from that comparison (scratch DB, nothing run):
-  one went flawed -> flawed -> sound in two rounds; one improved then regressed (flawed ->
-  concerns -> flawed, a loc.gov design); one stopped because the fixer returned no change
-  list (fixed above). Model cost about $0.25-0.35 per draft for two rounds.
-- Tests: `tests/dashboard/test_lab_refine.py`.
-
-### 20.18 Fetch on this laptop when a site blocks the cluster (v0.50.0)
-
-- Module `dashboard/labfetch.py`. Some sites refuse the cluster (loc.gov answers 429/403
-  to Ursa Major) but serve a normal client. Run #48 worked only after the data was pulled
-  on the laptop by hand.
-- `blocked_urls(plan)`: URL checks that failed on a compute node with a status another
-  machine can get past (401/403/405/406/418/429/451/5xx, no answer, timeouts, resets). A
-  404 or unknown host is the plan's mistake and is not offered. Shown in the run view as
-  `blocked_urls` for drafts.
-- `POST /api/lab/{id}/laptop-fetch` (body `{"urls": [...]}` optional, subset of the
-  offered ones) or "Fetch on this laptop" in plan review: fetches one URL at a time with a
-  2 s pause and one backoff on 429/503 (Retry-After, max 60 s), into
-  `~/research-data/lab-fetch/fetch-<workspace>-run<N>/` with `urls.json` (file, URL,
-  status, bytes, sha256, content type, time). Registers it as a P1 `local_folder` source
-  (relay-staged like any local source), attaches it to the plan, and asks the fixer to
-  read `$DS_<NAME>/<file>` instead of downloading. Records `plan.laptop_fetch`.
-- AI-written URLs are untrusted: http(s) only; hosts that resolve to private, loopback,
-  link-local, reserved, multicast or carrier-grade NAT addresses (Tailscale 100.64.0.0/10,
-  the Core Pi) are refused, also after redirects; 200 MB per file, 1 GB per fetch; partial
-  files are removed.
-- Real test (scratch draft, nothing submitted): two loc.gov facet URLs recorded as 429 on
-  the cluster were fetched here (41 KB, 37 KB), staged, and the fixer replaced the `curl`
-  lines with `cp "$DS_FETCH_CMP_RUN52/..."`; pre-flight then had no warnings.
-- Tests: `tests/dashboard/test_lab_fetch.py`.
 
 ## 22. Projects
 
@@ -2253,8 +2376,8 @@ project's centroid (cosine >= 0.72).
 - Only the protection level label is inherited; it is never enforced (by design).
 - Group suggestions need embeddings; reports never indexed (no Semantic search since
   they finished) are not clustered until a search or project Ask embeds them.
-- The CLI has no `projects` command yet; projects are managed in the dashboard.
-
+- The CLI covers listing, showing, creating, filing and exporting (22.10); AI features
+  (summary, Ask, briefs, voice overview), Inbox sorting and settings are dashboard-only.
 
 ### 22.9 Claims board (v0.45.0)
 
@@ -2280,7 +2403,6 @@ failed are not claims yet.
   dossier and the research package gain a "Claims tested by Lab runs" section before
   "Lab runs" (claim checks only).
 - Tests: `tests/dashboard/test_claims.py`.
-
 
 ### 22.10 `deep-research projects` (v0.47.0)
 
@@ -2382,12 +2504,16 @@ touched. Shared by all workspaces: `.env` (Gemini key), `lab_targets.json`,
 | CLI | API | |
 |---|---|---|
 | `workspace list [--all] [--json]` | `GET /api/workspaces` | name, colour, counts (reports, projects, Lab runs, sources), size, archived, current, active Lab runs |
-| `workspace create NAME [--id ID]` | `POST /api/workspaces` `{name, id?, color?, description?}` | new empty workspace |
+| `workspace create NAME [--id ID] [--description]` | `POST /api/workspaces` `{name, id?, color?, description?}` | new empty workspace |
 | `workspace duplicate SRC NAME [--id]` | `POST /api/workspaces/{id}/duplicate` | full copy |
 | `workspace rename ID NAME` / `archive` / `unarchive` | `PATCH /api/workspaces/{id}` `{name?, color?, archived?, description?}` | |
 | `workspace delete ID [--yes]` | `DELETE /api/workspaces/{id}` `{confirm: id}` | to trash; refused for Main and while Lab runs are active |
+| `workspace copy --to ID ...` | `POST /api/workspaces/copy/plan`, `POST /api/workspaces/copy` | copy projects or reports into another workspace (23.7) |
+| `workspace export [ID] ...` / `import ZIP ...` | `GET /api/workspaces/{id}/export`, `POST /api/workspaces/import` | share or keep a workspace as a zip (23.8) |
 
-`GET /api/health` reports the request's `workspace`.
+`GET /api/health` reports the request's `workspace`. Workspace colours: slate, teal,
+violet, amber, rose, green (a thin band in the top bar and the switcher; Main has none by
+default).
 
 ### 23.5 Tests
 
@@ -2532,8 +2658,25 @@ building on the zip format.
 | 2026-09-29 | v0.28.1 | Lab submit: expired gcloud sign-in named plainly; a submit that never reached the cluster keeps the run as a draft (20.6). |
 | 2026-09-29 | v0.28.2 | Lab: OR-Tools plans on a Python module get an isolated venv (CP-SAT segfaulted on top of python-sci). |
 | 2026-09-29 | v0.29.0 | Lab: lessons (curated + learned) in plan/fix prompts, science guards, known-answer verdicts (20.10). |
+| 2026-09-29 | v0.33.0 | Lab: warm node, smoke test with AI fix loop, install ladder, planner probes, cluster matching (20.11). |
+| 2026-09-29 | v0.33.1 | Lab: catalog usage cards in the planner's cluster description. |
+| 2026-09-29 | v0.33.2 | Lab: warm workers scale out with the queue (max_workers, default 3). |
+| 2026-09-29 | v0.33.3 | Lab ladder: module rung first for module-only Python plans; verify imports installed in fallbacks; verify in env key. |
+| 2026-09-29 | v0.34.0 | Lab failure classes, AI-fix review gate, stuck-session detection, features/conda probes, local containers in place (20.12). |
+| 2026-09-29 | v0.34.1 | Stalled Google tasks cancelled after 4 empty reconnects; stuck detection ignores replayed log lines. |
+| 2026-09-29 | v0.35.0 | Weak reference checks warned; module-duplicate warning spares pinned feature builds. |
+| 2026-09-29 | v0.35.1 | Ladder: verify lines checked one by one; pinned compiled conda packages keep their pin, no forced python=3.12, no pip rung for binaries. |
+| 2026-09-29 | v0.35.2 | Missing-import pre-flight; .pth layering for venv modules; set +u around pixi hooks; restart-safe smoke fix. |
+| 2026-09-29 | v0.35.3 | Undefined-name and unset-heredoc-variable pre-flight; value-substitution warning; verify without pipefail; versioned .bad cache. |
+| 2026-09-29 | v0.35.4 | gmsh -> python-gmsh on conda; SU2/LAMMPS/gmsh known problems. |
+| 2026-09-29 | v0.35.5 | Static check (and one AI retry) on smoke fixes before they run. |
+| 2026-09-29 | v0.35.6 | Restart resumes smoke fixes; python-gmsh import name; mathtext escape check. |
+| 2026-09-29 | v0.35.7 | Sign-crossing pre-flight warning. |
+| 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |
+| 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
+| 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.37.0 | Projects (section 22): container above reports, sources, notebooks and Lab runs; home project defaults; project AI summary, Ask, briefs (grant, lay, literature review), voice overview; Inbox sorting from tags and embeddings; dossier, BibTeX/CSV, JSON and research package (Obsidian folder, Lab results, RO-Crate) exports. |
-| 2026-09-30 | v0.38.0 | File browser for adding sources (21.9): this computer, Google Drive (search, shared drives), GCS by project, S3/CephRDS; new source kind `gdrive` (Docs as Markdown, Sheets as CSV). |
+| 2026-09-30 | v0.38.0 | File browser for adding sources (21.11): this computer, Google Drive (search, shared drives), GCS by project, S3/CephRDS; new source kind `gdrive` (Docs as Markdown, Sheets as CSV). |
 | 2026-09-30 | v0.38.1 | Phone layout fix: app column capped at the screen width; phone rules for Lab runs, Data sources, project stats, launch dialog. |
 | 2026-09-30 | v0.38.2 | Report text is every `model_output` part joined (was only the last); `deep-research repair`; audio cache keyed on text hash; summary audio scales with length; Lab write-ups in summaries, briefs and audio. |
 | 2026-09-30 | v0.39.0 | Lab outcomes (confirmed/refuted/inconclusive/broken), check kinds, parameter sources, notes on the report, pilot gate, one automatic re-plan (20.13). |
@@ -2553,20 +2696,4 @@ building on the zip format.
 | 2026-09-30 | v0.48.2 | Only the first warm worker is always-on; backlog workers keep the burst idle limit (20.16). |
 | 2026-09-30 | v0.50.0 | Referee -> fixer rounds on new drafts; three planner rules on checks; laptop fetch for cluster-blocked URLs (20.17, 20.18). |
 | 2026-10-01 | v0.50.1 | Docs sync: module map regenerated (5.1), model calls (13.1), settings (12.1), plan fields (20.2a), target keys (20.3), Lab flow (20.1), CLI groups (9.4a), sources CLI options, warm and index routes; `tests/test_spec_sync.py`. |
-| 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
-| 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
-| 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |
-| 2026-09-29 | v0.35.7 | Sign-crossing pre-flight warning. |
-| 2026-09-29 | v0.35.6 | Restart resumes smoke fixes; python-gmsh import name; mathtext escape check. |
-| 2026-09-29 | v0.35.5 | Static check (and one AI retry) on smoke fixes before they run. |
-| 2026-09-29 | v0.35.4 | gmsh -> python-gmsh on conda; SU2/LAMMPS/gmsh known problems. |
-| 2026-09-29 | v0.35.3 | Undefined-name and unset-heredoc-variable pre-flight; value-substitution warning; verify without pipefail; versioned .bad cache. |
-| 2026-09-29 | v0.35.2 | Missing-import pre-flight; .pth layering for venv modules; set +u around pixi hooks; restart-safe smoke fix. |
-| 2026-09-29 | v0.35.1 | Ladder: verify lines checked one by one; pinned compiled conda packages keep their pin, no forced python=3.12, no pip rung for binaries. |
-| 2026-09-29 | v0.35.0 | Weak reference checks warned; module-duplicate warning spares pinned feature builds. |
-| 2026-09-29 | v0.34.1 | Stalled Google tasks cancelled after 4 empty reconnects; stuck detection ignores replayed log lines. |
-| 2026-09-29 | v0.34.0 | Lab failure classes, AI-fix review gate, stuck-session detection, features/conda probes, local containers in place (20.12). |
-| 2026-09-29 | v0.33.3 | Lab ladder: module rung first for module-only Python plans; verify imports installed in fallbacks; verify in env key. |
-| 2026-09-29 | v0.33.2 | Lab: warm workers scale out with the queue (max_workers, default 3). |
-| 2026-09-29 | v0.33.1 | Lab: catalog usage cards in the planner's cluster description. |
-| 2026-09-29 | v0.33.0 | Lab: warm node, smoke test with AI fix loop, install ladder, planner probes, cluster matching (20.11). |
+| 2026-10-01 | v0.50.2 | Prose review of the whole document against the code: scope (1), glossary (2), REQ-DASH-5, poll-error limit, table columns (8.2), API notes (10.2), client views (11), Lab cost and warm node (20.5), Lab limits L7-L8, K4 mostly fixed, K20-K21, test suite table regenerated (16.1), extension guide (19), sections 20.14-20.18 moved back into section 20, duplicate 21.9 renumbered 21.11. |
