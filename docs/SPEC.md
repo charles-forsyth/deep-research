@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.51.0 (package `deepresearch`) |
+| Applies to | deep-research v0.52.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -269,18 +269,19 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | `utils/retry.py` | 36 | `with_retry` (network) and `db_retry` (SQLite locks) tenacity decorators. |
 | `utils/logger.py` | 59 | Rich console logging with `[INFO]`/`[THOUGHT]`/`[WARN]`/`[ERROR]`/`[DB]` tags and optional timestamps. |
 | `dashboard/daemon.py` | 225 | `--start/--stop/--restart/--status`, pid file, loopback check, health probe, URL listing. |
-| `dashboard/server.py` | 2,288 | `Api` route table and handlers, workspace context per request (`X-DR-Workspace`), `ThreadingHTTPServer` plumbing, loopback-only guard, static files, Range support, streamed zip upload. |
+| `dashboard/server.py` | 2,355 | `Api` route table and handlers, workspace context per request (`X-DR-Workspace`), `ThreadingHTTPServer` plumbing, loopback-only guard, static files, Range support, streamed zip upload. |
 | `dashboard/store.py` | 289 | `DashboardStore`: notebooks, annotations, session meta (stars, tags), dashboard session queries. |
 | `dashboard/features.py` | 599 | Actual cost, research map, compare, briefs, text-to-speech audio. |
 | `dashboard/projects.py` | 1,028 | Projects: store, filing rules, citations, dossier and research package exports, summary/Ask prompts, Inbox grouping (22). |
 | `dashboard/project_api.py` | 752 | Project HTTP handlers mixed into `Api` (22.6), including the claims board in dossiers. |
 | `dashboard/claims.py` | 170 | Claims board (22.9): one claim per tested question, outcome ordering, deterministic. |
-| `dashboard/lab.py` | 5,411 | Lab runs (section 20): Slurm target, warm worker and always-on keeper, cluster catalog, planner, cluster fact checks, pre-flight, fixer, referee hook, refine rounds, laptop fetch, job harness and install ladder, pilot, watcher. |
+| `dashboard/cluster.py` | 908 | Cluster access (v0.52.0): `SlurmSSHTarget` (SSH via gcloud IAP or a plain host, one ControlMaster connection, sbatch/squeue/sacct, run folders, warm worker and spool, file transfer, catalog cache), `ScopedTarget` (a workspace's view), `load_targets`. No model or database code. |
+| `dashboard/lab.py` | 4,788 | Lab runs (section 20): always-on keeper, planner, cluster fact checks, pre-flight, fixer, referee hook, refine rounds, laptop fetch, job harness and install ladder, pilot, watcher. Drives `cluster.py`. |
 | `dashboard/labguard.py` | 1,004 | Lab lessons (curated and learned pitfalls), planning rules (`GENERAL_RULES`), science guards on plans. |
 | `dashboard/labverdict.py` | 230 | Outcomes CONFIRMED / REFUTED / INCONCLUSIVE / BROKEN from `verdict.json` checks (20.13). |
 | `dashboard/labloop.py` | 355 | Verdict loop (20.13): report notes, pilot gate, one automatic re-plan of an inconclusive run. |
 | `dashboard/labreview.py` | 162 | Referee (20.15): prompt, normalized findings, fixer input. |
-| `dashboard/labfetch.py` | 239 | Fetch on this laptop for cluster-blocked URLs (20.18): blocked-URL detection, safe fetch, provenance. |
+| `dashboard/labfetch.py` | 322 | Fetch on this laptop for cluster-blocked URLs (20.18): blocked-URL detection, safe fetch, provenance. |
 | `dashboard/warm_worker.sh` | 125 | Warm worker on the cluster: spool queue, parallel tasks, heartbeats, idle and time-limit handling (20.16). |
 | `sources/` | 3,458 | Data sources (section 21): `model`, `registry`, `adapters`, `public`, `staging`, `usage`, `index`, `discover`, `cloud_catalogs`, `provenance`, `service`, `browse`, `gdrive`. |
 | `dashboard/static/` | 5,261 | `index.html`, `app.css`, `app.js`, `features.js`, `lab.js`, `sources.js`, `filebrowser.js`, `projects.js`, `workspaces.js`, vendored `marked` and `DOMPurify`. |
@@ -1180,6 +1181,7 @@ turn off the automatic Lab referee and refine rounds (`DR_LAB_REVIEW=0`,
 | `tests/core/test_workspaces.py` | 12 | Workspaces: Main never moved, isolation of runs, cluster folders, task names, watchers per workspace, trash |
 | `tests/core/test_wscopy.py` | 6 | Copy into another workspace: id remapping, Lab folders, all-or-nothing |
 | `tests/core/test_wszip.py` | 16 | Zip export/import: round trip, privacy scrub, one test per refused archive |
+| `tests/dashboard/test_cluster.py` | 16 | Cluster layer alone with a fake ssh: connection reuse, unreachable cluster, timeouts, status parsing, warm spool, fetch caps and path safety, upload modes, workspace folders, no model or DB code |
 | `tests/dashboard/test_claims.py` | 6 | Claims board ordering and grouping |
 | `tests/dashboard/test_cli.py` | 13 | Dashboard flags, loopback default, `--allow-remote`, working directory |
 | `tests/dashboard/test_daemon.py` | 7 | Start, status, restart, stop, stale pid, loopback refusal, restart back to local |
@@ -1275,7 +1277,7 @@ sections (20.8, 21.10, 22.8).
 | K17 | Dashboard | Audio jobs live in memory: lost on restart, never pruned. | A restart mid-job loses the job's status (a finished file is still listed). |
 | K18 | Packaging | `deepresearch/__init__.py` re-executes into `<project>/.venv/bin/python` when that path exists relative to the installed package. Intended for source checkouts, surprising elsewhere. | Hard-to-debug interpreter switch. |
 | K19 | Scale | The research map is O(n^2 x d) in pure Python on every request: 144 reports took 3.3 s on the author's laptop. Liveness runs over up to 10,000 rows on every session list poll. | The dashboard slows as history grows (REQ-NF-5). |
-| K20 | Lab | `dashboard/lab.py` is 5,400 lines; cluster access (SSH command strings in about 24 places plus `warm_worker.sh`) is not a separate layer. Two 2026-09-30 bugs lived there (submit/pilot race, an always-on setting applied to backlog workers). | Cluster logic is hard to test in isolation (see the hpc-agent design note in the nexus repo). |
+| K20 | Lab | **Mostly fixed in v0.52.0.** Cluster access is its own module, `dashboard/cluster.py` (908 lines, moved unchanged and checked: every moved class and function is identical), with its own tests (`test_cluster.py`, fake ssh). `lab.py` is still 4,788 lines (planning, prompts, install ladder, watcher). | Planning and the watcher are still large; the hpc-agent MCP server can now build on `cluster.py`. |
 | K21 | Lab | **Mostly fixed in v0.51.0.** Any open dashboard tab announces a finished Lab run (toast, browser notification when hidden; 20.19). Still needs a tab open: no phone push. | Results seen late when no tab is open. |
 
 ---
@@ -1335,6 +1337,7 @@ only of the code.
 | A table or column | `CREATE TABLE IF NOT EXISTS` or a guarded `ALTER TABLE ADD COLUMN` in the owning component. Additive only: never rename or drop, because older CLIs share the file. When a table is keyed by `session_id`, clean it up in `purge_session_workspace` (see K10). Update section 8. |
 | A paid feature | Show an estimate before calling Google (G1, REQ-COST-4); compute the real cost from `usage_metadata` afterwards; never call it on a timer (REQ-NF-4). Update section 13. |
 | A model or price change | Constants live in `core/config.py` (agent, follow-up model), `cli/commands.py` and `dashboard/server.py` (estimate), `dashboard/features.py` (actual cost, Flash, TTS) and `dashboard/lab.py` (`PLAN_MODEL`, `FLASH_*_1M`, `SEARCH_PER_1K` for Lab AI cost). Change all that apply and re-check the price date in the comment. |
+| A cluster command | Put it in `dashboard/cluster.py` (on `SlurmSSHTarget`, and on `ScopedTarget` if it builds a run folder path) and test it in `tests/dashboard/test_cluster.py` with the fake ssh; never run anything on the login node except Slurm and file commands. |
 | A Lab step that calls a model | Go through `Lab._ask` / `_ask_plan` (shared client, cost accounting, one retry on a bad reply); keep bookkeeping keys out of prompts (`PLAN_DIFF_SKIP`); never submit from AI code, only produce drafts. |
 | An environment variable | Read it with `os.getenv("NAME")` and add a row to 12.1 (the sync test checks). |
 | Client features | Plain JavaScript in the page's module (`app.js`, `features.js`, `lab.js`, `projects.js`, `sources.js`, `workspaces.js`); no build step, no CDN. Use `api()` so the workspace header is sent. Sanitise any HTML built from report or user text. Check at 390 px and desktop, run `node --check`, keep the console clean. |
@@ -2743,3 +2746,4 @@ building on the zip format.
 | 2026-10-01 | v0.50.2 | Prose review of the whole document against the code: scope (1), glossary (2), REQ-DASH-5, poll-error limit, table columns (8.2), API notes (10.2), client views (11), Lab cost and warm node (20.5), Lab limits L7-L8, K4 mostly fixed, K20-K21, test suite table regenerated (16.1), extension guide (19), sections 20.14-20.18 moved back into section 20, duplicate 21.9 renumbered 21.11. |
 | 2026-10-01 | v0.50.3 | K4 (unconfirmed cloud cancels shown and retried, `POST /api/sessions/{id}/cancel/retry`), K7 (CLI depth and breadth limits), K10 (CLI delete = dashboard delete; usage, launch meta and audio removed too), K15 (`auth login`/`logout` change only the key line, atomic, mode 600). |
 | 2026-10-01 | v0.51.0 | Best refine round kept, not the last (20.17, L7); refusals in a job's own log offered as a new draft, `POST /api/lab/{id}/fix-blocked` (20.18, L8); Lab finish notifications from any page, `GET /api/lab/pulse` (20.19, K21). |
+| 2026-10-01 | v0.52.0 | Cluster layer moved out of `lab.py` into `dashboard/cluster.py` with its own tests (5.1, 19, K20). No behaviour change. |
