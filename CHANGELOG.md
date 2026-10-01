@@ -7,6 +7,25 @@ releases.
 
 ## [Unreleased]
 
+## [0.50.2] - 2026-10-01
+
+### Documentation
+
+- docs/SPEC.md read section by section against the code. Corrected: scope and glossary
+  now cover data sources, Lab runs, projects and workspaces; system context lists the
+  cluster, gcloud/rclone and public sites; REQ-DASH-5 and K4 (dashboard cancel now
+  cancels running child tasks too); dashboard delete (also removes Lab runs, refused
+  while one is on the cluster); concurrency (per-workspace contexts, Lab threads, keeper);
+  table columns; API notes; client views; Lab cost (refine rounds, always-on warm node
+  about $45 a day); warm-node and probe limits; security controls for laptop fetch,
+  workspace zips and isolation; error handling for the cluster and Lab AI; extension
+  guide; new limits L7-L8 and gaps K20-K21; the test suite table regenerated (587 tests
+  in 43 files).
+- Sections 20.14-20.18 had drifted into section 21 and two sections were numbered 21.9;
+  both fixed. Document history sorted by version.
+- tests/test_spec_sync.py also checks section order, duplicate section numbers and
+  history order.
+
 ## [0.50.1] - 2026-10-01
 
 ### Documentation

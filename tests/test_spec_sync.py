@@ -93,3 +93,26 @@ def test_header_version_matches_the_package():
     pv = re.search(r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(), re.M)
     hv = re.search(r"Applies to \| deep-research v(\S+)", SPEC)
     assert pv and hv and pv.group(1) == hv.group(1)
+
+
+def test_sections_are_in_order_and_numbered_once():
+    """Subsections sit under their own section, in order (20.14-20.18 once drifted into 21)."""
+    seen: set[str] = set()
+    prev = (0, 0)
+    for level, major, minor, suffix in re.findall(
+        r"^(##|###) (\d+)\.(\d*)([a-z]?) ", SPEC, re.M
+    ):
+        cur = (int(major), 0 if level == "##" else int(minor or 0))
+        label = f"{major}.{minor}{suffix}"
+        assert cur >= prev, f"section {label} comes after {prev[0]}.{prev[1]}"
+        if level == "###":
+            assert label not in seen, f"section {label} is numbered twice"
+            seen.add(label)
+        prev = cur
+
+
+def test_document_history_is_in_version_order():
+    i = SPEC.index("## Document history")
+    versions = re.findall(r"^\| [\d-]+ \| v(\d+)\.(\d+)\.(\d+)", SPEC[i:], re.M)
+    keys = [tuple(int(x) for x in v) for v in versions]
+    assert keys == sorted(keys), "Document history rows are out of version order"
