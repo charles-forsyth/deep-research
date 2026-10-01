@@ -612,6 +612,7 @@ async function renderSession(v, t) {
     const why = (s.result || "").trim();
     art.innerHTML = `<div class="run-error"><div class="run-error-h">This research ${s.status === "cancelled" ? "was cancelled" : s.status === "crashed" ? "stopped unexpectedly" : "failed"}${why ? "" : " before it produced a report"}.</div>
       ${why ? `<pre class="run-error-msg">${esc(clip(why, 2000))}</pre>` : ""}
+      ${(s.cancel_unconfirmed || []).length ? `<div class="run-error-msg" data-a="cancel-warn"><b>Google did not confirm the cancel</b> for ${s.cancel_unconfirmed.map((c) => `#${c.id}`).join(", ")}. That task may still be running and billing until it finishes. <button class="btn small" data-a="cancel-retry">Retry cancel</button></div>` : ""}
       <div class="dim">Re-run asks the same question again${s.parent_id ? " (from the parent report)" : ""}. ${/api key/i.test(why) ? "The API key was rejected: run <span class=\"mono\">deep-research auth login</span> first." : ""}</div></div>`;
   } else {
     art.innerHTML = `<div class="empty-result ${running ? "scan" : ""}">${running ? "Research in progress. The live log is streaming in the right panel." : "No result stored for this session."}</div>`;
@@ -678,9 +679,22 @@ async function renderSession(v, t) {
   v.querySelector('[data-a="stall-stop"]')?.addEventListener("click", stallGo(false));
   v.querySelector('[data-a="cancel"]')?.addEventListener("click", async () => {
     if (!(await confirmBox("Stop this research?", "Stops the background process and asks Gemini to cancel the interaction.", "Stop research", "Keep running"))) return;
-    try { const r = await api(`/api/sessions/${s.id}/cancel`, { method: "POST" }); toast(r.notes.join("; ") || "Cancelled"); }
+    try {
+      const r = await api(`/api/sessions/${s.id}/cancel`, { method: "POST" });
+      const left = (r.cancel_unconfirmed || []).length;
+      toast(left ? `Stopped here, but Google did not confirm ${left} cancel(s); retry from the report` : (r.notes.join("; ") || "Cancelled"), left ? "err" : undefined);
+    }
     catch (err) { toast(err.message, "err"); }
     delete S.cache[s.id]; loadSessions(); renderStage();
+  });
+  v.querySelector('[data-a="cancel-retry"]')?.addEventListener("click", async (e) => {
+    const b = e.currentTarget; b.disabled = true;
+    try {
+      const r = await api(`/api/sessions/${s.id}/cancel/retry`, { method: "POST" });
+      const left = (r.cancel_unconfirmed || []).length;
+      toast(left ? `Still not confirmed: ${r.notes.join("; ")}` : "Cancel confirmed by Google", left ? "err" : undefined);
+    } catch (err) { toast(err.message, "err"); }
+    delete S.cache[s.id]; renderStage();
   });
   const delBtn = v.querySelector('[data-a="delete"]');
   delBtn.onclick = () => busy(delBtn, async () => {

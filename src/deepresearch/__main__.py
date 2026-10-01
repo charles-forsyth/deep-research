@@ -79,11 +79,14 @@ key to that user file. Session history lives in history.db in the same folder.
 """
 
 ID_HELP = "Session ID (integer, from `list`) or Interaction ID"
+MAX_DEPTH = 5  # same limits as the dashboard (POST /api/research)
+MAX_BREADTH = 10
 DEPTH_HELP = (
-    "Recursion depth; 1 = a single research task, no recursion (default: %(default)s)"
+    "Recursion depth, 1-5; 1 = a single research task, no recursion "
+    "(default: %(default)s)"
 )
 BREADTH_HELP = (
-    "Max follow-up child tasks per recursion level. Total tasks grow as "
+    "Max follow-up child tasks per recursion level, 1-10. Total tasks grow as "
     "1 + B + B^2 + ... for depth levels (default: %(default)s)"
 )
 UPLOAD_HELP = (
@@ -268,8 +271,9 @@ def build_parser() -> argparse.ArgumentParser:
         "delete",
         help="Delete a session from local history",
         description=(
-            "Delete a session from the local history database. There is no "
-            "confirmation prompt. Child sessions are not deleted."
+            "Delete a session from the local history database, with its "
+            "sub-reports, notes, audio and Lab runs. There is no confirmation "
+            "prompt. Refused while one of its Lab runs is still on the cluster."
         ),
     )
     parser_delete.add_argument("id", help=ID_HELP)
@@ -596,6 +600,16 @@ def main():
     if not args.command:
         parser.print_help()
         return
+
+    # K7: the same limits as the dashboard, so a typo can't start a huge run
+    if args.command in ("research", "start", "estimate"):
+        d, b = getattr(args, "depth", 1), getattr(args, "breadth", 3)
+        if not (1 <= d <= MAX_DEPTH and 1 <= b <= MAX_BREADTH):
+            msg = f"depth must be 1-{MAX_DEPTH} and breadth 1-{MAX_BREADTH}"
+            print(f"[ERROR] {msg}", file=sys.stderr)
+            if _json_flag(args):
+                print(json.dumps({"error": msg}))
+            sys.exit(2)
 
     if _json_flag(args):
         from deepresearch.cli.jsonout import json_mode

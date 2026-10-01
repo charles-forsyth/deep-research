@@ -7,6 +7,24 @@ releases.
 
 ## [Unreleased]
 
+## [0.50.3] - 2026-10-01
+
+### Fixed
+
+- `auth login` no longer wipes the rest of the user `.env`: it replaces only the
+  `GEMINI_API_KEY` line, keeps every other setting and comment, writes atomically
+  (temporary file renamed into place) and leaves the file readable by the owner only.
+  `auth logout` removes only that line instead of deleting the file (K15).
+- Stopping a research run: when Google does not confirm a cloud cancel, the report now
+  says so ("may still be running and billing") with a Retry cancel button
+  (`POST /api/sessions/{id}/cancel/retry`), instead of a silent "cancelled" (K4).
+- `deep-research delete` now deletes like the dashboard: the whole tree with its notes,
+  meta, usage, launch meta, audio, project memberships and Lab runs, and is refused while
+  a Lab run is still on the cluster. Dashboard delete now also removes usage, launch meta
+  and audio rows and files (K10).
+- `research`, `start` and `estimate` refuse depth outside 1-5 and breadth outside 1-10,
+  the dashboard's limits, so a typo can't start a huge run (K7).
+
 ## [0.50.2] - 2026-10-01
 
 ### Documentation

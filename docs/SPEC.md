@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.50.2 (package `deepresearch`) |
+| Applies to | deep-research v0.50.3 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -598,7 +598,7 @@ strings (K16).
 |---|---|---|---|
 | `notebooks` | store | `id`, `title` (max 200), `content`, `created_at`, `updated_at` | Markdown notebooks. |
 | `annotations` | store | `id`, `session_id`, `quote` (max 5,000), `occurrence`, `note`, `color` (`amber`/`cyan`/`magenta`/`green`), timestamps. Index on `session_id`. | Highlights anchored by quote text and which occurrence of it. |
-| `session_meta` | store | `session_id` PK, `starred`, `tags` (JSON list, max 20) | Stars and tags. |
+| `session_meta` | store | `session_id` PK, `starred`, `tags` (JSON list, max 20), `cancel_unconfirmed` (JSON list of cloud cancels Google did not confirm, K4) | Stars, tags, unconfirmed cancels. |
 | `run_meta` | server | `session_id` PK, `depth`, `breadth`, `estimate_usd`, `rerun_of`, `launched_at` | Launch parameters and estimate for dashboard runs; re-run links. |
 | `session_usage` | features | `session_id` PK, `usage` (JSON), `fetched_at`, `error` | Cached usage block or definitive "not available" (REQ-COST-3). |
 | `audio_exports` | features | `id`, `kind` (`session`/`notebook`), `ref_id`, `mode` (`full`/`summary`), `voice`, `path`, `seconds`, `cost_usd`, `script`, `created_at`, `src_hash` (hash of the text it was made from; a changed report makes new audio) | One row per generated audio file. |
@@ -644,8 +644,8 @@ Shared options for `research` and `start`:
 | `--upload PATH ...` | none | Files or folders for a temporary store (deleted afterwards). |
 | `--format TEXT` | none | Extra output instructions appended to the prompt. |
 | `--output FILE` | none | Export the report (6.7). |
-| `--depth N` | 1 | Recursion levels. No upper bound in the CLI (K7). |
-| `--breadth N` | 3 | Max child tasks per node. No upper bound in the CLI (K7). |
+| `--depth N` | 1 | Recursion levels, 1-5 (the dashboard's limit; outside it the command exits 2, K7). |
+| `--breadth N` | 3 | Max child tasks per node, 1-10 (K7). |
 
 `research` only: `-q/--quiet` (errors only, then the bare report on stdout),
 `--stream` (stream thoughts; ignored when depth > 1), and the hidden
@@ -660,7 +660,7 @@ Shared options for `research` and `start`:
 | `tree [ID]` | One tree, or the 10 most recently updated roots with their children. |
 | `followup ID PROMPT` | Follow-up (6.5); the answer is printed and appended. |
 | `search QUERY [--limit 3]` | Semantic search (6.8). |
-| `delete ID` | Deletes one row. No prompt; children and dashboard data are left behind (K10). |
+| `delete ID` | Deletes the report and its whole tree with everything attached (notes, meta, usage, audio, project memberships, Lab runs), as the dashboard does. No prompt. Refused while one of its Lab runs is on the cluster (K10, v0.50.3). |
 
 `ID` is a local integer id or an interaction id in every command that takes one
 (REQ-HIS-5), except `tree`, which takes an integer.
@@ -669,8 +669,8 @@ Shared options for `research` and `start`:
 
 | Command | Behaviour |
 |---|---|
-| `auth login` | Prompts (hidden) for a key, warns if it does not start with `AIza`, overwrites the user `.env` with `GEMINI_API_KEY=...` (K15). |
-| `auth logout` | Deletes the user `.env`. |
+| `auth login` | Prompts (hidden) for a key, warns if it does not start with `AIza`, and sets the `GEMINI_API_KEY` line of the user `.env`; every other line is kept, the write is atomic and the file is mode 600 (K15, v0.50.3). |
+| `auth logout` | Removes the `GEMINI_API_KEY` line from the user `.env`; other settings stay. |
 | `cleanup [--force]` | Lists and deletes **all** File Search Stores on the key, with documents. Confirms unless `--force`. |
 | `repair [IDS] [--apply] [--resynthesize] [--json]` | Restores reports stored with only their last part (before v0.38.2) by re-reading every `model_output` step from Google, while Google still keeps the interaction (older ones report `gone`). Changes a row only when its stored text (before appended follow-ups) is exactly the last part; keeps follow-ups; clears the embedding. `--resynthesize` rebuilds synthesized recursive reports from the full main report and their children, deepest first (one Flash call each). Dry run unless `--apply`. |
 
@@ -777,9 +777,10 @@ had it earlier). Implemented in `cli/jsonout.py`.
 |---|---|---|
 | `GET /api/sessions[?q=&limit=500]` | no | Session rows (no report text) with child, annotation, star and tag data; newest id first; `q` is a LIKE match on prompt and report; limit capped at 5,000. Runs liveness. |
 | `GET /api/sessions/{id}` | no | Full row minus embedding, plus `meta`, `children`, `annotations`, `log_available`, `run` (run_meta) and `reruns`. |
-| `DELETE /api/sessions/{id}[?recursive=1]` | no | Deletes the row (and descendants with `recursive=1`) plus their annotations, meta, project memberships and Lab runs; 409 while a Lab run of theirs is still on the cluster (REQ-DASH-6, K10). |
+| `DELETE /api/sessions/{id}[?recursive=1]` | no | Deletes the row (and descendants with `recursive=1`) plus their annotations, meta, launch meta, usage, audio rows and files, project memberships and Lab runs; 409 while a Lab run of theirs is still on the cluster (REQ-DASH-6, K10). |
 | `PATCH /api/sessions/{id}/meta` | no | Body `{starred?, tags?}`. |
-| `POST /api/sessions/{id}/cancel` | no | 409 unless `running`. Cancels the Google interaction and every running child's, kills the process group, sets those rows `cancelled`, returns notes (REQ-DASH-5, K4). |
+| `POST /api/sessions/{id}/cancel` | no | 409 unless `running`. Cancels the Google interaction and every running child's, kills the process group, sets those rows `cancelled`, returns notes and `cancel_unconfirmed` (the interactions Google did not confirm, also stored and shown on the report; REQ-DASH-5, K4). |
+| `POST /api/sessions/{id}/cancel/retry` | no | Retries the unconfirmed cloud cancels; returns what is still unconfirmed; 409 when nothing is pending (K4, v0.50.3). |
 | `POST /api/sessions/{id}/followup` | yes | Body `{prompt}`. 400 empty, 409 no interaction, 502 no text. Returns the full result and the appended part. Synchronous. |
 | `GET /api/sessions/{id}/log[?offset=]` | no | Log text from `offset` (or the last 200 KB) with ANSI codes stripped, plus the new size. |
 | `GET /api/sessions/{id}/tree` | no | Nested `{id, status, depth, prompt, children}`. |
@@ -1250,7 +1251,7 @@ Before tagging a release that touches the affected area:
 Real current behaviour, first recorded against v0.17.5 by reading the source and, where
 noted, confirmed by test; items fixed since are marked with the version. Each is a candidate
 issue. Re-checked against the source on 2026-10-01 (v0.50.1): K1, K6, K7, K9, K10, K11, K15,
-K17, K18 and K19 still hold; K4 is mostly fixed. Feature-area gaps are listed in their own
+K17, K18 and K19 still hold; K4 is mostly fixed. (v0.50.3 then fixed K4, K7 and K15 and most of K10.) Feature-area gaps are listed in their own
 sections (20.8, 21.10, 22.8).
 
 | ID | Area | Gap | Effect |
@@ -1258,18 +1259,18 @@ sections (20.8, 21.10, 22.8).
 | K1 | Storage | `db_retry` wraps only some `SessionManager` methods (create, update, fail, list, get). `update_session_pid`, `update_session_interaction_id`, `append_to_result`, `update_embedding`, `delete_session` and every write in `store.py`, `server.py` and `features.py` rely on the 10 s busy timeout alone. | A long lock can surface as a 500 in the dashboard or a lost pid or interaction id in a worker. REQ-NF-3 is only partly met. |
 | K2 | Security | **Fixed in v0.18.0.** A cross-site bodyless `POST /api/sessions/{id}/cancel` was accepted (confirmed by test), and there was no `Host` check against DNS rebinding. Now covered by REQ-DASH-12. | |
 | K3 | Recursion | **Fixed in v0.18.0.** The 600 s level timeout bounded nothing (the executor waited for all threads anyway) and dropped every child report that arrived after it: 48 of 51 completed children in the author's history ran longer than 10 minutes. Now every report is synthesized and each task has its own limit that cancels at Google (6.4a). | |
-| K4 | Cancel | **Mostly fixed.** Dashboard cancel now cancels the root and every running child interaction at Google, kills the worker's process group, and marks the root and those children `cancelled`. Still: rows are set to `cancelled` even if the cloud calls failed (the failures are listed in the returned notes), and the CLI has no cancel command. | A failed cloud cancel can leave a child billing while its row says cancelled. |
+| K4 | Cancel | **Fixed in v0.50.3.** Dashboard cancel cancels the root and every running child interaction at Google, kills the worker's process group and marks the rows `cancelled`; interactions Google did not confirm are stored (`session_meta.cancel_unconfirmed`), shown on the report with a Retry cancel button, and retried by `POST .../cancel/retry`. The CLI still has no cancel command. | none for the dashboard |
 | K5 | Engine | **Fixed in v0.18.0.** The stream reconnect loop had no deadline and the poll loop only exited on `completed` or `failed`. Both now stop on any terminal status or the task limit. | |
 | K6 | Engine | If an upload fails, nothing is written: an adopted row stays `running` until liveness marks it `crashed`, with no error message. (A streamed interaction that ends without text and without `completed` is now recorded as failed with its status, since v0.18.0.) | "Crashed" hides the real cause. |
-| K7 | Recursion | The CLI does not bound `--depth` or `--breadth` (the dashboard allows up to 5 and 10). (The gap list is now truncated to B, since v0.18.0.) | A typo can start a very expensive run. |
+| K7 | Recursion | **Fixed in v0.50.3.** `research`, `start` and `estimate` refuse depth outside 1-5 and breadth outside 1-10 (the dashboard's limits), exit 2. (The gap list is truncated to B, since v0.18.0.) | none |
 | K8 | Tests | No dedicated test for: synthesis fallback (REQ-REC-3), embeddings leaving `updated_at` alone (REQ-HIS-4), cancel's cloud call and process-group kill (REQ-DASH-5, state change only). | Regressions in these paths would not be caught. |
 | K9 | Uploads | Folder uploads take only top-level files. After uploading to a store the code waits a fixed 5 s for ingestion rather than checking. | Nested files are silently skipped; large uploads may not be searchable when the run starts. |
-| K10 | Cleanup | CLI `delete` removes one row and leaves children (orphaned), annotations, meta, run_meta, usage and audio. Dashboard delete removes annotations, meta, project memberships, the report's Lab runs (rows, suggestions and fetched outputs; refused with 409 while any of its runs is still on the cluster) but leaves `run_meta`, `session_usage`, `audio_exports` rows and audio files. Uploaded files are never removed. | Orphan rows and disk growth. |
+| K10 | Cleanup | **Mostly fixed in v0.50.3.** CLI `delete` now goes through the dashboard's own delete: the whole tree, annotations, meta, `run_meta`, `session_usage`, audio rows and files, project memberships and Lab runs; refused while a Lab run is on the cluster. Still: uploaded files are never removed, and audio for notebooks or projects stays until removed. | Uploads folder grows. |
 | K11 | CLI | Every command except `dashboard` exits 0, including on errors. | Scripts cannot detect failure. Fixed for `--json` output in v0.36.0 (9.6); plain output unchanged. |
 | K12 | Cost | The estimate leaves out gap analysis, synthesis, follow-ups and search grounding. Actual cost covers the session's own interaction only (a recursive root's figure leaves out its children). The estimate formula is duplicated in two modules. | Shown costs understate recursive runs. |
 | K13 | Dashboard | No authentication (by design; 14.1). Since v0.28.0 it listens on this machine only unless `--allow-remote` is given. | With `--allow-remote`, anyone on that network can use and spend. |
 | K14 | Cost | REQ-COST-4 is only met for audio. The brief dialog says "usually under a cent" without an estimate; the compare "What changed? (AI)" button, semantic search synthesis (which sends the full text of the top matches) and follow-ups show no cost before running. | Paid actions without a figure up front. |
-| K15 | Config | `auth login` overwrites the whole user `.env`, dropping any other variables in it, and does not set file permissions explicitly. | Lost settings; key file mode depends on umask. |
+| K15 | Config | **Fixed in v0.50.3.** `auth login` replaces only the `GEMINI_API_KEY` line (`set_env_value`), keeps every other line and comment, writes through a temporary file renamed into place, and leaves the file mode 600. `auth logout` removes only that line. | none |
 | K16 | Data | Timestamps are naive local time. Usage times from Google are passed through as given. | Wrong elapsed times across time-zone or DST changes, and when mixing local and Google times. |
 | K17 | Dashboard | Audio jobs live in memory: lost on restart, never pruned. | A restart mid-job loses the job's status (a finished file is still listed). |
 | K18 | Packaging | `deepresearch/__init__.py` re-executes into `<project>/.venv/bin/python` when that path exists relative to the installed package. Intended for source checkouts, surprising elsewhere. | Hard-to-debug interpreter switch. |
@@ -2697,3 +2698,4 @@ building on the zip format.
 | 2026-09-30 | v0.50.0 | Referee -> fixer rounds on new drafts; three planner rules on checks; laptop fetch for cluster-blocked URLs (20.17, 20.18). |
 | 2026-10-01 | v0.50.1 | Docs sync: module map regenerated (5.1), model calls (13.1), settings (12.1), plan fields (20.2a), target keys (20.3), Lab flow (20.1), CLI groups (9.4a), sources CLI options, warm and index routes; `tests/test_spec_sync.py`. |
 | 2026-10-01 | v0.50.2 | Prose review of the whole document against the code: scope (1), glossary (2), REQ-DASH-5, poll-error limit, table columns (8.2), API notes (10.2), client views (11), Lab cost and warm node (20.5), Lab limits L7-L8, K4 mostly fixed, K20-K21, test suite table regenerated (16.1), extension guide (19), sections 20.14-20.18 moved back into section 20, duplicate 21.9 renumbered 21.11. |
+| 2026-10-01 | v0.50.3 | K4 (unconfirmed cloud cancels shown and retried, `POST /api/sessions/{id}/cancel/retry`), K7 (CLI depth and breadth limits), K10 (CLI delete = dashboard delete; usage, launch meta and audio removed too), K15 (`auth login`/`logout` change only the key line, atomic, mode 600). |

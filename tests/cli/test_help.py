@@ -71,7 +71,8 @@ def test_cleanup_help_explains_default_and_all():
 
 
 def test_delete_help_says_no_confirmation():
-    assert "no confirmation" in " ".join(_sub_help("delete").split())
+    text = " ".join(_sub_help("delete").split())
+    assert "no confirmation" in text and "sub-reports" in text
 
 
 def test_output_help_explains_extensions():

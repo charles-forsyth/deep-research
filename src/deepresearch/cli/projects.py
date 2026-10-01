@@ -24,23 +24,31 @@ def _emit(obj: Any) -> None:
     emit(obj)
 
 
-def _api():
-    """An Api bound to the current workspace, without starting watchers or servers."""
+def _api(db_path: str | None = None):
+    """An Api bound to the current workspace, without starting watchers or servers.
+
+    `db_path` overrides the workspace DB (it must be the same library the caller
+    resolved, e.g. `SessionManager().db_path`)."""
     from deepresearch.core import workspace as W
     from deepresearch.dashboard import server as srv
     from deepresearch.dashboard.lab import Lab
 
     ws = W.get()
+    db = db_path or ws.db_path
     lab = Lab(
-        ws.db_path,
+        db,
         lambda: None,
         srv.STATE_DIR,
-        results_dir=ws.lab_dir,
+        results_dir=ws.lab_dir if db == ws.db_path else Path(db).parent / "lab",
         workspace=ws.slug,
     )
     lab.ensure_watcher = lambda: None  # type: ignore[method-assign]
     lab.auto_review = False
-    api = srv.Api(ws.db_path, spawn=lambda *a: None, lab=lab)
+    api = srv.Api(db, spawn=lambda *a: None, lab=lab)
+    if db == ws.db_path:
+        api._main.fx.audio_dir = ws.audio_dir  # this workspace's audio, not Main's
+    else:
+        api._main.fx.audio_dir = Path(db).parent / "audio"
     return api
 
 

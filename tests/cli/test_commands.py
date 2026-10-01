@@ -89,9 +89,10 @@ def test_main_show_recursive_html(mock_session_manager):
 @patch("sys.argv", ["deepresearch", "delete", "1"])
 def test_main_delete(mock_session_manager):
     mgr_instance = mock_session_manager.return_value
-    mgr_instance.delete_session.return_value = True
+    mgr_instance.get_session.return_value = None  # not found: nothing deleted
     main()
-    mgr_instance.delete_session.assert_called_with("1")
+    mgr_instance.get_session.assert_called_with("1")
+    mgr_instance.delete_session.assert_not_called()
 
 
 @patch("sys.argv", ["deepresearch", "cleanup", "--force"])
@@ -162,10 +163,14 @@ def test_main_tree_single(mock_session_manager):
 
 
 @patch("sys.argv", ["deepresearch", "auth", "logout"])
-def test_main_auth_logout():
-    with patch("os.path.exists", return_value=True), patch("os.remove") as mock_remove:
-        main()
-        mock_remove.assert_called_once()
+def test_main_auth_logout(tmp_path, monkeypatch):
+    from deepresearch.cli import commands
+
+    p = tmp_path / ".env"
+    p.write_text("GEMINI_API_KEY=x\nOTHER=1\n")
+    monkeypatch.setattr(commands, "user_config_path", str(p))
+    main()
+    assert p.read_text() == "OTHER=1\n"
 
 
 @patch(
