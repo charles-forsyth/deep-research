@@ -7,6 +7,14 @@ releases.
 
 ## [Unreleased]
 
+## [0.48.2] - 2026-09-30
+
+### Fixed
+
+- The always-on setting applied to every warm worker, so a second worker started for a
+  burst of planning checks stayed on forever (two idle nodes). Only the first worker is
+  always-on now; extra workers exit after 20 idle minutes (`burst_idle_min`).
+
 ## [0.48.1] - 2026-09-30
 
 ### Fixed

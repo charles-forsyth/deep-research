@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.48.1 (package `deepresearch`) |
+| Applies to | deep-research v0.48.2 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1757,6 +1757,10 @@ pilot) so the referee does not flag them.
   plans that picked another one (multi-node and GPU plans keep theirs). The two Python
   package checks ("already provides" / "nothing installs") now share one list, which
   includes requests and certifi for python-sci (they had disagreed, run #42).
+- v0.48.2: only the first worker gets `idle_min` 0. Workers added for a backlog (one
+  per 2 queued tasks, up to `max_workers`) get `burst_idle_min` (default 20), so they
+  exit when the burst is over. Before this, a planning burst started a second worker
+  that also never exited.
 - Cost: one computehigh node around the clock (~$1.87/hour list, about $45/day,
   before credits).
 - Tests: `tests/dashboard/test_warm_always_on.py` (catalog vs config default, keeper,
@@ -2381,6 +2385,7 @@ building on the zip format.
 | 2026-09-30 | v0.47.1 | Automatic referee retries once and records why it did not run (20.15). |
 | 2026-09-30 | v0.48.0 | Default partition from lab_targets.json wins over the catalog; always-on warm node (20.16). |
 | 2026-09-30 | v0.48.1 | Planner steered to the default/warm partition; one Python package list for both pre-flight checks (20.16). |
+| 2026-09-30 | v0.48.2 | Only the first warm worker is always-on; backlog workers keep the burst idle limit (20.16). |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |

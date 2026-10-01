@@ -476,6 +476,8 @@ class SlurmSSHTarget:
         limit = int(cfg["hours"] * 3600)
         tl = f"{limit // 3600:02d}:{(limit % 3600) // 60:02d}:00"
         max_w = max(1, int(cfg.get("max_workers", 3)))
+        idle0 = int(cfg["idle_min"])
+        burst = idle0 if idle0 > 0 else max(1, int(cfg.get("burst_idle_min", 20)))
         part = (
             cfg["partition"]
             if re.fullmatch(r"[\w.-]+", cfg["partition"])
@@ -495,10 +497,14 @@ class SlurmSSHTarget:
             # scale out with the backlog: one worker, plus one per 2 queued tasks, capped
             f'q=$(ls "$W/queue" 2>/dev/null | wc -l); want=$((1 + q / 2)); '
             f'[ "$want" -gt {max_w} ] && want={max_w}; '
-            f'while [ "$n" -lt "$want" ]; do ok=started:$(sbatch --parsable --job-name=lab-warm '
+            # only the first worker may be always-on (idle_min 0); extra workers started
+            # for a backlog get the burst idle limit, or they would run forever (v0.48.2:
+            # a planning burst left a second always-on node idle)
+            f'while [ "$n" -lt "$want" ]; do idle={idle0}; [ "$n" -gt 0 ] && idle={burst}; '
+            f"ok=started:$(sbatch --parsable --job-name=lab-warm "
             f"-p {part} -N 1 --exclusive -t {tl} --signal=B:USR1@60 "
             f'-o "$W/worker-%j.log" '
-            f'--export=ALL,WARM="$W",IDLE_MIN={cfg["idle_min"]},MAX_PAR={cfg["max_par"]},'
+            f'--export=ALL,WARM="$W",IDLE_MIN=$idle,MAX_PAR={cfg["max_par"]},'
             f'WARM_LIMIT_SEC={limit} "$W/worker.sh"); n=$((n+1)); done; echo "$ok"'
         )
         out = self.sh(cmd, stdin=_worker_script().encode(), timeout=120).strip()
