@@ -290,6 +290,7 @@ class Api(ProjectApi):
         r("DELETE", r"/api/sessions/(\d+)", self.delete_session)
         r("PATCH", r"/api/sessions/(\d+)/meta", self.patch_meta)
         r("POST", r"/api/sessions/(\d+)/cancel", self.cancel_session)
+        r("POST", r"/api/sessions/(\d+)/cancel/retry", self.retry_cancel)
         r("POST", r"/api/sessions/(\d+)/followup", self.followup)
         r("GET", r"/api/sessions/(\d+)/log", self.session_log)
         r("GET", r"/api/sessions/(\d+)/tree", self.session_tree)
@@ -715,6 +716,7 @@ class Api(ProjectApi):
         s["annotations"] = self.store.list_annotations(int(sid))
         s["log_available"] = (self._log_dir() / f"session_{sid}.log").exists()
         s["stall"] = self._stall(s)
+        s["cancel_unconfirmed"] = self.store.cancel_unconfirmed(int(sid))
         s["run"] = self._run_meta(int(sid))
         from deepresearch.sources.provenance import session_provenance
 
@@ -827,10 +829,22 @@ class Api(ProjectApi):
             )
         for i in ids:
             self.sessions.delete_session(str(i))
-        self.store.purge_session_workspace(ids)
+        audio = self.store.purge_session_workspace(ids)
         self.lab.purge_session(ids)
         self.projects.purge("session", ids)
+        self._remove_audio_files(audio)
         return {"deleted": ids}
+
+    def _remove_audio_files(self, paths: list[str]) -> None:
+        """Delete audio files of deleted reports, only inside this library's audio folder."""
+        root = Path(self.fx.audio_dir).resolve()
+        for p in paths:
+            try:
+                f = Path(p).resolve()
+                if f.is_relative_to(root) and f.is_file():
+                    f.unlink()
+            except OSError:
+                pass
 
     def patch_meta(self, sid, query, body):
         self._session(sid)
@@ -851,21 +865,10 @@ class Api(ProjectApi):
             for c in self.store.descendants(int(sid))
             if (r := self.sessions.get_session(str(c))) and r["status"] == "running"
         ]
-        client = None
-        for row in rows:
-            iid = row.get("interaction_id") or ""
-            if not iid or iid.startswith("pending"):
-                continue
-            label = "cloud interaction" if row is s else f"child #{row['id']}"
-            try:
-                if client is None:
-                    from google import genai
-
-                    client = genai.Client(api_key=self._config().api_key)
-                client.interactions.cancel(iid)
-                notes.append(f"{label} cancelled")
-            except Exception as e:
-                notes.append(f"{label} cancel failed: {e}")
+        unconfirmed = self._cloud_cancel(
+            [(r, "cloud interaction" if r is s else f"child #{r['id']}") for r in rows],
+            notes,
+        )
         pid = s.get("pid")
         if pid:
             try:
@@ -877,7 +880,53 @@ class Api(ProjectApi):
                 notes.append(f"kill failed: {e}")
         for row in rows:
             self.store.set_status(int(row["id"]), "cancelled")
-        return {"status": "cancelled", "notes": notes}
+        # The local process is gone either way, but say plainly when Google did not
+        # confirm: that task may still be running (and billing) until it finishes.
+        self.store.set_cancel_unconfirmed(int(sid), unconfirmed)
+        return {
+            "status": "cancelled",
+            "notes": notes,
+            "cancel_unconfirmed": unconfirmed,
+        }
+
+    def _cloud_cancel(
+        self, rows: list[tuple[dict, str]], notes: list[str]
+    ) -> list[dict]:
+        """Ask Google to cancel each interaction; return the ones it did not confirm."""
+        client = None
+        failed: list[dict] = []
+        for row, label in rows:
+            iid = row.get("interaction_id") or ""
+            if not iid or iid.startswith("pending"):
+                continue
+            try:
+                if client is None:
+                    from google import genai
+
+                    client = genai.Client(api_key=self._config().api_key)
+                client.interactions.cancel(iid)
+                notes.append(f"{label} cancelled")
+            except Exception as e:
+                notes.append(f"{label} cancel failed: {e}")
+                failed.append(
+                    {"id": int(row["id"]), "interaction_id": iid, "error": str(e)[:300]}
+                )
+        return failed
+
+    def retry_cancel(self, sid, query, body):
+        """Retry cloud cancels that failed (K4). 409 when there is nothing to retry."""
+        self._session(sid)
+        pending = self.store.cancel_unconfirmed(int(sid))
+        if not pending:
+            raise ApiError(409, "Nothing to retry: every cancel was confirmed")
+        notes: list[str] = []
+        rows = [
+            ({"id": p["id"], "interaction_id": p["interaction_id"]}, f"#{p['id']}")
+            for p in pending
+        ]
+        left = self._cloud_cancel(rows, notes)
+        self.store.set_cancel_unconfirmed(int(sid), left)
+        return {"notes": notes, "cancel_unconfirmed": left}
 
     def followup(self, sid, query, body):
         s = self._session(sid)

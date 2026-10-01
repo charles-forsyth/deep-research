@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -124,9 +125,61 @@ def test_tree_json(db, monkeypatch, capsys):
 
 def test_delete_json(db, monkeypatch, capsys):
     d, _, code = _run(monkeypatch, capsys, ["delete", str(db.child), "--json"])
-    assert code == 0 and d == {"id": str(db.child), "deleted": True}
+    assert code == 0 and d == {"id": str(db.child), "deleted": True, "ids": [db.child]}
     d, _, code = _run(monkeypatch, capsys, ["delete", str(db.child), "--json"])
     assert code == 1 and d["deleted"] is False
+
+
+def test_delete_removes_the_whole_tree_and_its_rows(db, monkeypatch, capsys, tmp_path):
+    """K10: the CLI deletes like the dashboard: children, meta, usage, audio, notes."""
+    from deepresearch.dashboard.features import Features
+    from deepresearch.dashboard.store import DashboardStore
+
+    store = DashboardStore(db.path)
+    store.set_meta(db.root, starred=True)
+    Features(db.path, lambda: None, tmp_path / "audio")  # creates its tables
+    audio = tmp_path / "audio" / "session_1_full_Charon.mp3"
+    audio.parent.mkdir(exist_ok=True)
+    audio.write_bytes(b"x")
+    with sqlite3.connect(db.path) as c:
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS run_meta (session_id INTEGER PRIMARY KEY, "
+            "depth INTEGER, breadth INTEGER, estimate_usd REAL, rerun_of INTEGER, "
+            "launched_at TEXT)"
+        )
+        c.execute("INSERT INTO run_meta (session_id, depth) VALUES (?, 2)", (db.root,))
+        c.execute(
+            "INSERT INTO session_usage (session_id, usage) VALUES (?, '{}')", (db.root,)
+        )
+        c.execute(
+            "INSERT INTO audio_exports (kind, ref_id, mode, voice, path) "
+            "VALUES ('session', ?, 'full', 'Charon', ?)",
+            (db.root, str(audio)),
+        )
+    d, _, code = _run(monkeypatch, capsys, ["delete", str(db.root), "--json"])
+    assert code == 0 and sorted(d["ids"]) == sorted([db.root, db.child])
+    with sqlite3.connect(db.path) as c:
+        for table in ("session_meta", "run_meta", "session_usage", "audio_exports"):
+            assert c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0, table
+        left = c.execute("SELECT id FROM sessions").fetchall()
+    assert (db.child,) not in left and (db.root,) not in left
+    assert not audio.exists()
+
+
+def test_delete_refused_while_a_lab_run_is_on_the_cluster(db, monkeypatch, capsys):
+    from deepresearch.dashboard.lab import Lab
+
+    Lab(db.path, lambda: None, Path(db.path).parent)  # creates lab tables
+    with sqlite3.connect(db.path) as c:
+        c.execute(
+            "INSERT INTO lab_runs (session_id, scope, request, target, status) "
+            "VALUES (?, 'document', 'q', 'ursa-major', 'running')",
+            (db.root,),
+        )
+    d, _, code = _run(monkeypatch, capsys, ["delete", str(db.root), "--json"])
+    assert code == 1 and d["deleted"] is False and "Cancel the lab runs" in d["error"]
+    with sqlite3.connect(db.path) as c:
+        assert c.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
 
 
 def test_estimate_json_matches_formula(monkeypatch, capsys):
@@ -299,7 +352,7 @@ def test_auth_logout_json(tmp_path, monkeypatch, capsys):
     p.write_text("GEMINI_API_KEY=x\n")
     monkeypatch.setattr(commands, "user_config_path", str(p))
     d, _, _ = _run(monkeypatch, capsys, ["auth", "logout", "--json"])
-    assert d == {"logged_out": True, "path": str(p)} and not p.exists()
+    assert d == {"logged_out": True, "path": str(p)} and p.read_text() == ""
 
 
 def test_dashboard_status_json(monkeypatch, capsys):
@@ -344,3 +397,72 @@ def test_without_json_output_is_unchanged(db, monkeypatch, capsys):
     assert "Recent Research Sessions" in out
     with pytest.raises(json.JSONDecodeError):
         json.loads(out)
+
+
+def test_auth_login_keeps_every_other_setting(tmp_path, monkeypatch, capsys):
+    """K15: login replaces only GEMINI_API_KEY; comments and other keys survive."""
+    import stat
+
+    p = tmp_path / ".env"
+    before = (
+        "OPENAI_API_KEY=o\n# a comment\n\n  # indented comment\n"
+        "GEMINI_FOLLOWUP_MODEL=gemini-3.8-flash\nGEMINI_API_KEY=old\nDB_PASSWORD=p\n"
+    )
+    p.write_text(before)
+    p.chmod(0o644)
+    monkeypatch.setattr(commands, "user_config_path", str(p))
+    monkeypatch.setattr(commands.Prompt, "ask", lambda *a, **k: "AIzaNEW")
+    _run(monkeypatch, capsys, ["auth", "login", "--json"])
+    assert p.read_text() == before.replace(
+        "GEMINI_API_KEY=old", "GEMINI_API_KEY=AIzaNEW"
+    )
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    assert [f.name for f in tmp_path.iterdir()] == [".env"]  # no temp file left
+
+
+def test_auth_login_creates_the_file_owner_only(tmp_path, monkeypatch, capsys):
+    import stat
+
+    p = tmp_path / "sub" / ".env"
+    monkeypatch.setattr(commands, "user_config_path", str(p))
+    monkeypatch.setattr(commands.Prompt, "ask", lambda *a, **k: "AIzaX")
+    _run(monkeypatch, capsys, ["auth", "login", "--json"])
+    assert p.read_text() == "GEMINI_API_KEY=AIzaX\n"
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+
+
+def test_auth_logout_keeps_other_settings(tmp_path, monkeypatch, capsys):
+    p = tmp_path / ".env"
+    p.write_text("A=1\nGEMINI_API_KEY=x\n# note\nB=2\n")
+    monkeypatch.setattr(commands, "user_config_path", str(p))
+    d, _, _ = _run(monkeypatch, capsys, ["auth", "logout", "--json"])
+    assert d["logged_out"] is True and p.read_text() == "A=1\n# note\nB=2\n"
+    d, _, _ = _run(monkeypatch, capsys, ["auth", "logout", "--json"])
+    assert d["logged_out"] is False and p.read_text() == "A=1\n# note\nB=2\n"
+
+
+def test_set_env_value_failed_write_leaves_the_file(tmp_path, monkeypatch):
+    p = tmp_path / ".env"
+    p.write_text("A=1\nGEMINI_API_KEY=x\n")
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(commands.os, "replace", boom)
+    with pytest.raises(OSError):
+        commands.set_env_value(str(p), "GEMINI_API_KEY", "y")
+    assert p.read_text() == "A=1\nGEMINI_API_KEY=x\n"
+    assert [f.name for f in tmp_path.iterdir()] == [".env"]
+
+
+def test_research_refuses_depth_and_breadth_beyond_the_dashboard_limits(
+    monkeypatch, capsys
+):
+    """K7: the CLI has the dashboard's limits (depth 1-5, breadth 1-10)."""
+    for argv in (
+        ["research", "q", "--depth", "9", "--json"],
+        ["start", "q", "--breadth", "50", "--json"],
+        ["estimate", "q", "--depth", "0", "--json"],
+    ):
+        d, _, code = _run(monkeypatch, capsys, argv)
+        assert code == 2 and "depth must be 1-5 and breadth 1-10" in d["error"], argv

@@ -509,3 +509,44 @@ def test_log_idle_ignores_replayed_thoughts(tmp_path):
     assert Api._log_idle_min(log) >= 59
     log.write_text(log.read_text() + f"[{new}] [THOUGHT] writing the report\n")
     assert Api._log_idle_min(log) < 2
+
+
+def test_failed_cloud_cancel_is_recorded_and_can_be_retried(app, monkeypatch):
+    """K4: a cancel Google did not confirm is shown, not hidden behind 'cancelled'."""
+    import sys
+    import types
+    from unittest.mock import MagicMock
+
+    api = app["api"]
+    root = api.sessions.create_session("iid-r", "root question", pid=None)
+    kid = api.sessions.create_session("iid-k", "child", parent_id=root, depth=2)
+    for iid in ("iid-r", "iid-k"):
+        api.sessions.update_session(iid, "running")
+    client = MagicMock()
+
+    def cancel(iid):
+        if iid == "iid-k":
+            raise RuntimeError("503 unavailable")
+
+    client.interactions.cancel.side_effect = cancel
+    fake_genai = types.ModuleType("google.genai")
+    fake_genai.Client = lambda **kw: client  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setattr(sys.modules["google"], "genai", fake_genai, raising=False)
+    monkeypatch.setattr(api, "_config", lambda: types.SimpleNamespace(api_key="k"))
+    call = app["call"]
+
+    st, r = call("POST", f"/api/sessions/{root}/cancel")
+    assert st == 200 and [c["id"] for c in r["cancel_unconfirmed"]] == [kid]
+    assert "503" in r["cancel_unconfirmed"][0]["error"]
+    st, s = call("GET", f"/api/sessions/{root}")
+    assert s["status"] == "cancelled" and s["cancel_unconfirmed"][0]["id"] == kid
+
+    st, r = call("POST", f"/api/sessions/{root}/cancel/retry")  # still failing
+    assert st == 200 and len(r["cancel_unconfirmed"]) == 1
+
+    client.interactions.cancel.side_effect = None  # Google answers now
+    st, r = call("POST", f"/api/sessions/{root}/cancel/retry")
+    assert st == 200 and r["cancel_unconfirmed"] == []
+    assert call("GET", f"/api/sessions/{root}")[1]["cancel_unconfirmed"] == []
+    assert call("POST", f"/api/sessions/{root}/cancel/retry")[0] == 409

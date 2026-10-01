@@ -54,6 +54,12 @@ class DashboardStore:
                 );
                 """
             )
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(session_meta)")}
+            if "cancel_unconfirmed" not in cols:
+                # K4: interaction ids whose cloud cancel failed (JSON list)
+                conn.execute(
+                    "ALTER TABLE session_meta ADD COLUMN cancel_unconfirmed TEXT"
+                )
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -115,17 +121,62 @@ class DashboardStore:
                 out += frontier
         return out
 
-    def purge_session_workspace(self, session_ids: list[int]) -> None:
+    def purge_session_workspace(self, session_ids: list[int]) -> list[str]:
+        """Remove what belongs to deleted reports (K10).
+
+        Annotations, meta, launch meta (`run_meta`), token usage (`session_usage`)
+        and the reports' audio rows. Returns the audio file paths so the caller can
+        delete them; tables another part of the app has not created yet are skipped.
+        """
         if not session_ids:
-            return
+            return []
         marks = ",".join("?" * len(session_ids))
+        audio: list[str] = []
+        with self._conn() as conn:
+            have = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            for table in ("annotations", "session_meta", "run_meta", "session_usage"):
+                if table in have:
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE session_id IN ({marks})",
+                        session_ids,
+                    )
+            if "audio_exports" in have:
+                where = f"kind = 'session' AND ref_id IN ({marks})"
+                audio = [
+                    r[0]
+                    for r in conn.execute(
+                        f"SELECT path FROM audio_exports WHERE {where}", session_ids
+                    )
+                    if r[0]
+                ]
+                conn.execute(f"DELETE FROM audio_exports WHERE {where}", session_ids)
+        return audio
+
+    def set_cancel_unconfirmed(self, session_id: int, items: list[dict]) -> None:
+        """Remember cloud cancels that failed, so the page can say so and retry (K4)."""
         with self._conn() as conn:
             conn.execute(
-                f"DELETE FROM annotations WHERE session_id IN ({marks})", session_ids
+                "INSERT INTO session_meta (session_id) VALUES (?) "
+                "ON CONFLICT(session_id) DO NOTHING",
+                (session_id,),
             )
             conn.execute(
-                f"DELETE FROM session_meta WHERE session_id IN ({marks})", session_ids
+                "UPDATE session_meta SET cancel_unconfirmed = ? WHERE session_id = ?",
+                (json.dumps(items) if items else None, session_id),
             )
+
+    def cancel_unconfirmed(self, session_id: int) -> list[dict]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT cancel_unconfirmed FROM session_meta WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return _loads(row["cancel_unconfirmed"], []) if row else []
 
     def get_meta(self, session_id: int) -> dict:
         with self._conn() as conn:

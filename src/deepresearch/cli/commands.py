@@ -589,17 +589,36 @@ def handle_repair(args):
 
 
 def handle_delete(args):
+    """Delete a report and its whole tree, exactly as the dashboard does (K10).
+
+    Sub-reports, notes, meta, launch meta, usage, audio, project memberships and the
+    report's Lab runs go with it; refused while one of its Lab runs is on the cluster.
+    """
+    as_json = _json_flag(args)
     mgr = SessionManager()
-    success = mgr.delete_session(args.id)
-    if _json_flag(args):
-        if not success:
+    row = mgr.get_session(args.id)
+    if not row:
+        if as_json:
             fail(f"Session '{args.id}' not found.", 1, id=args.id, deleted=False)
-        emit({"id": args.id, "deleted": True})
-        return
-    if success:
-        console.print(f"[bold green][INFO][/] Session '{args.id}' deleted.")
-    else:
         console.print(f"[bold red][ERROR][/] Session '{args.id}' not found.")
+        return
+    from deepresearch.cli.projects import _api
+    from deepresearch.dashboard.server import ApiError
+
+    api = _api(mgr.db_path)
+    try:
+        out = api.delete_session(str(row["id"]), {"recursive": ["1"]}, None)
+    except ApiError as e:
+        if as_json:
+            fail(e.message, 1, id=args.id, deleted=False)
+        console.print(f"[bold red][ERROR][/] {e.message}")
+        return
+    ids = out["deleted"]
+    if as_json:
+        emit({"id": args.id, "deleted": True, "ids": ids})
+        return
+    extra = f" and {len(ids) - 1} sub-report(s)" if len(ids) > 1 else ""
+    console.print(f"[bold green][INFO][/] Session '{args.id}'{extra} deleted.")
 
 
 def _store_info(s) -> dict:
@@ -815,6 +834,51 @@ def handle_tree(args):
         console.print(forest)
 
 
+def set_env_value(path: str, name: str, value: str | None) -> bool:
+    """Set (or with None remove) one NAME=value line in a .env file (K15).
+
+    Every other line, comment and blank line is kept as it was. The file is
+    rewritten through a temporary file in the same folder and renamed into place,
+    so it is never half-written, and it is always left readable by the owner only.
+    Returns True when a line for NAME existed before.
+    """
+    import re as _re
+    import tempfile
+
+    lines: list[str] = []
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    pat = _re.compile(rf"^\s*(?:export\s+)?{_re.escape(name)}\s*=")
+    existed = any(pat.match(ln) for ln in lines)
+    out: list[str] = []
+    placed = False
+    for ln in lines:
+        if pat.match(ln):
+            if value is not None and not placed:
+                out.append(f"{name}={value}")
+                placed = True
+            continue
+        out.append(ln)
+    if value is not None and not placed:
+        out.append(f"{name}={value}")
+    if value is None and not existed:
+        return False
+    folder = os.path.dirname(path) or "."
+    os.makedirs(folder, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".env.", dir=folder)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + ("\n" if out else ""))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+    return existed
+
+
 def handle_auth(args):
     if args.action == "login":
         console.print(
@@ -829,19 +893,18 @@ def handle_auth(args):
                 "[yellow]Warning: Key does not start with 'AIza'. It might be invalid.[/]"
             )
 
-        os.makedirs(os.path.dirname(user_config_path), exist_ok=True)
-        with open(user_config_path, "w") as f:
-            f.write(f"GEMINI_API_KEY={key}\n")
+        set_env_value(user_config_path, "GEMINI_API_KEY", key)
 
         console.print(f"[bold green]Success![/] Key saved to {user_config_path}")
         if _json_flag(args):
             emit({"saved": user_config_path})
 
     elif args.action == "logout":
-        existed = os.path.exists(user_config_path)
+        existed = set_env_value(user_config_path, "GEMINI_API_KEY", None)
         if existed:
-            os.remove(user_config_path)
-            console.print("[green]Logged out. Config file deleted.[/]")
+            console.print(
+                "[green]Logged out. GEMINI_API_KEY removed; other settings kept.[/]"
+            )
         else:
             console.print("[yellow]Not logged in.[/]")
         if _json_flag(args):
