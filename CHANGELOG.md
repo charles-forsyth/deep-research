@@ -7,6 +7,24 @@ releases.
 
 ## [Unreleased]
 
+## [0.50.1] - 2026-10-01
+
+### Documentation
+
+- docs/SPEC.md brought up to date with the code: the module map (21 modules were
+  missing; line counts were from v0.2x), every model call, every setting, the Lab plan
+  fields and target keys, the current Lab flow (cluster facts, referee rounds, pilot,
+  verdicts, laptop fetch), CLI command groups and `sources` options, and three
+  undocumented routes (warm start/stop, drop index).
+- ARCHITECTURE.md rewritten for the current system (it still described the CLI only).
+- README: refine rounds, laptop fetch, always-on warm node, repair, workspace paths,
+  settings, test count.
+
+### Added
+
+- `tests/test_spec_sync.py`: CI fails when an API route, environment variable, module,
+  static file or CLI command is missing from docs/SPEC.md, or the header version is wrong.
+
 ## [0.50.0] - 2026-09-30
 
 ### Added

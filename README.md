@@ -64,11 +64,18 @@ real computations on an HPC cluster. Everything lives in a local SQLite history 
   suggests computations, writes a plan and a job script against the cluster's own catalog of
   modules and containers, and you always review and edit it (with a worst-case cost) before
   anything is submitted. A second AI pass, the referee, reads each plan first and flags
-  tests that could never fail or never pass (advice only). A short pilot runs first; the dashboard watches the job, fetches the
+  tests that could never fail or never pass; a plan it calls flawed is revised by the AI
+  and checked again (up to two rounds) before you see it, and "Back to first plan" undoes
+  that. If a website blocks the cluster (403/429), "Fetch on this laptop" downloads the
+  files here, stages them as a data source and rewires the plan to read them. A short
+  pilot runs first on an always-on warm node, so jobs start in seconds; a failed pilot is
+  repaired by the AI and retried. The dashboard watches the job, fetches the
   outputs and figures, and judges the result as confirmed, refuted, inconclusive or broken
   (a test that could not tell is re-planned once, for your review). The outcome is attached
   to the report as a note (the report itself is never edited) and included in its summaries
   and audio. A Lab runs page lists every run with its outcome.
+- **Report repair**: `deep-research repair` restores reports that were saved with only
+  their last part (before v0.38.2), while Google still keeps the run.
 - **Workspaces**: keep separate libraries (for example a clean one for demos). Switch,
   create, duplicate, rename or archive them from the name beside the logo in the top bar,
   or use `deep-research workspace ...` and `--workspace ID` on the command line. Your
@@ -207,16 +214,24 @@ Settings come from environment variables or `~/.config/deepresearch/.env` (a loc
 | `DR_ALLOWED_HOSTS` | unset | Extra host names the dashboard accepts (comma-separated) |
 | `DR_LOCAL_ROOTS` | your home folder | Folders local data sources may use |
 | `DATA_GOV_API_KEY` | `DEMO_KEY` | Data.gov searches in "Find open datasets" |
+| `DR_WORKSPACE` | unset (main) | Workspace for CLI commands (same as `--workspace`) |
+| `DR_LAB_REVIEW` | `1` | `0` turns off the automatic Lab referee on new plans |
+| `DR_LAB_REFINE` | `1` | `0` turns off the referee -> fixer rounds on new plans |
+| `DR_TASK_TIMEOUT_MIN` | `180` | Safety limit per research task in minutes (0 = none) |
 
-Data locations (all local):
+The full list is in [docs/SPEC.md](docs/SPEC.md) section 12.
+
+Data locations (all local; other workspaces live under `workspaces/<id>/` with the same layout):
 
 | Path | Contents |
 |---|---|
-| `~/.config/deepresearch/history.db` | Sessions, reports, embeddings, notebooks, annotations |
+| `~/.config/deepresearch/history.db` | Sessions, reports, embeddings, notebooks, annotations, projects, Lab runs, data sources |
 | `~/.config/deepresearch/logs/` | Per-session run logs and the dashboard log |
 | `~/.config/deepresearch/audio/` | Exported audio files |
 | `~/.config/deepresearch/lab/run_<N>/` | Fetched Lab run outputs, log, plan and results note |
 | `~/.config/deepresearch/lab_targets.json` | Your cluster targets for Lab runs (not in the repo) |
+| `~/.config/deepresearch/workspaces/` | Workspaces other than main |
+| `~/research-data/lab-fetch/` | Files fetched on this laptop for Lab runs whose sites block the cluster |
 | `~/.cache/deepresearch/` | Open-data catalog caches |
 
 ## Costs
@@ -229,7 +244,9 @@ first. The dashboard shows the estimate before launch and the actual cost afterw
 usage record, available for about a day after a run).
 
 Lab runs show a worst-case cluster cost (resources times the partition's hourly rate) before
-you submit; planning and the results note use Gemini 3.8 Flash. Audio export uses Gemini 3.8 Flash TTS: about $0.25 to read a long report word for word, a few cents
+you submit; planning, the referee, AI fixes and the results note use Gemini 3.8 Flash (a plan
+with two referee -> fixer rounds is typically $0.25-0.35). An always-on warm node, if you
+enable one, costs its partition's hourly rate around the clock. Audio export uses Gemini 3.8 Flash TTS: about $0.25 to read a long report word for word, a few cents
 for a spoken summary. Briefs and comparisons use Gemini 3.8 Flash and usually cost under a cent.
 Prices change; check [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing).
 
@@ -260,12 +277,14 @@ git clone https://github.com/charles-forsyth/deep-research.git
 cd deep-research
 uv sync                         # creates .venv with dev tools
 uv run pre-commit install       # ruff, formatting and hygiene checks on commit
-uv run pytest                   # 326 tests (about 80% coverage), no network or API key needed
+uv run pytest                   # about 590 tests, no network or API key needed
 uv run ruff check . && uv run ruff format --check . && uv run mypy src/
 ```
 
-CI runs the same lint, format, type and test checks on Python 3.12 and 3.13 for every push and pull
-request. See [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md).
+CI runs the same lint, format, type and test checks for every push and pull request,
+including `tests/test_spec_sync.py`, which fails when an API route, setting, module or
+command is missing from docs/SPEC.md. See [CONTRIBUTING.md](CONTRIBUTING.md) and
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Use case gallery
 
