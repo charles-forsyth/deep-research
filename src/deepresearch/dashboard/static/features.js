@@ -382,6 +382,31 @@ const NOTIFY = {
       try { new Notification(title, { body: clip(body, 140), tag: "dr" }); } catch { /* ignore */ }
     }
   },
+  // v0.51.0 (K21): Lab runs finishing anywhere, not only on an open report. Polls only
+  // while runs are in flight (the server answers from one small query; no cluster call).
+  lab: { active: null, seen: new Set(), timer: null },
+  async labPulse() {
+    const L = NOTIFY.lab;
+    let d;
+    try { d = await api("/api/lab/pulse"); } catch { d = null; }
+    if (d) {
+      const was = L.active;
+      if (was) {
+        for (const f of d.finished) {
+          if (was.has(f.id) && !L.seen.has(f.id)) {
+            L.seen.add(f.id);
+            const what = f.outcome && f.status === "completed" ? f.outcome.toUpperCase() : f.status;
+            NOTIFY.send(`Lab run #${f.id}: ${what}`, f.title || f.stage || "");
+            toast(`Lab run #${f.id}: ${what}${f.title ? ` (${clip(f.title, 60)})` : ""}`, f.status === "completed" ? "ok" : "err");
+          }
+        }
+      }
+      L.active = new Set(d.active);
+    }
+    clearTimeout(L.timer);
+    if (L.active && L.active.size) L.timer = setTimeout(() => NOTIFY.labPulse(), 30000);
+  },
+  labWake() { if (!NOTIFY.lab.timer || !(NOTIFY.lab.active && NOTIFY.lab.active.size)) NOTIFY.labPulse(); },
   diff(before, after) {
     if (!before.length) return;
     const old = new Map(before.map((s) => [s.id, s.status]));

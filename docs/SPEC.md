@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.50.3 (package `deepresearch`) |
+| Applies to | deep-research v0.51.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1276,7 +1276,7 @@ sections (20.8, 21.10, 22.8).
 | K18 | Packaging | `deepresearch/__init__.py` re-executes into `<project>/.venv/bin/python` when that path exists relative to the installed package. Intended for source checkouts, surprising elsewhere. | Hard-to-debug interpreter switch. |
 | K19 | Scale | The research map is O(n^2 x d) in pure Python on every request: 144 reports took 3.3 s on the author's laptop. Liveness runs over up to 10,000 rows on every session list poll. | The dashboard slows as history grows (REQ-NF-5). |
 | K20 | Lab | `dashboard/lab.py` is 5,400 lines; cluster access (SSH command strings in about 24 places plus `warm_worker.sh`) is not a separate layer. Two 2026-09-30 bugs lived there (submit/pilot race, an always-on setting applied to backlog workers). | Cluster logic is hard to test in isolation (see the hpc-agent design note in the nexus repo). |
-| K21 | Lab | The Lab watcher and keeper need the dashboard running; there is no notification when a job ends (also L4). | Results appear the next time the report is opened. |
+| K21 | Lab | **Mostly fixed in v0.51.0.** Any open dashboard tab announces a finished Lab run (toast, browser notification when hidden; 20.19). Still needs a tab open: no phone push. | Results seen late when no tab is open. |
 
 ---
 
@@ -1456,8 +1456,9 @@ The planner returns one JSON object. Fields written by the model:
 Fields added by the dashboard (never by the model): `data_sources`, `url_checks`,
 `warnings`, `catalog_generated`, `review` / `review_error` (20.15), `plan_before_fix`,
 `fix_changes`, `fix_concerns`, `fix_notes`, `fix_diff` (Fix with AI, 20.4 and 20.6), `refine`,
-`plan_before_refine` (20.17), `laptop_fetch` (20.18), `partition_switched` (20.16). These
-are kept out of model prompts and plan diffs.
+`plan_before_refine`, `refine_kept`, `plan_refine_discarded` (20.17), `laptop_fetch`,
+`runtime_blocked` (20.18), `partition_switched` (20.16). These are kept out of model
+prompts and plan diffs.
 
 ### 20.3 Targets
 
@@ -1652,9 +1653,9 @@ catalog endpoints. Live checks are listed in the v0.19.0 and v0.20.0 changelogs.
 | L1 | One target type (Slurm over SSH); no target picker in the UI yet. | Other clusters need a new target class. |
 | L2 | Mostly closed in v0.20.0: the planner sees the live catalog and every plan is checked against it before submit. Still possible: wrong command-line flags or a package that fails to install from conda/pip (not in the catalog). | A wasted run; fixed by editing and rerunning. |
 | L3 | No sweeps, result comparison or cluster-side caching of outputs yet. | Reruns are one at a time. |
-| L4 | Watching requires the dashboard to be running; no notification when a job ends (K21). | You see results the next time the report is open. |
-| L7 | The referee and fixer run on the same model (Flash) and their judgments vary between calls; two refine rounds can leave a plan flawed, or make it worse (measured once: flawed -> concerns -> flawed). | Review still matters; the draft records each round. |
-| L8 | Laptop fetch only covers URLs that failed the pre-flight check; data a job builds URLs for at run time (query loops) is not seen. | Such plans still need the fetch designed in (as run #48 was). |
+| L4 | Watching requires the dashboard to be running; finish notifications need a dashboard tab open (20.19, K21). | Results appear when a tab is next open. |
+| L7 | The referee and fixer run on the same model (Flash) and their judgments vary between calls. **Since v0.51.0** the best version the referee saw is kept, not the last; the referee can still be wrong in both directions. | Review still matters; the draft records each round. |
+| L8 | Laptop fetch covers fixed URLs. **Since v0.51.0** refusals in a job's own log are detected and offered as a new draft; a job that builds URLs is redesigned by the fixer, not fetched here. | A redesign still needs review. |
 | L5 | Outcomes of pre-v0.39.0 runs rest on inferred check kinds (names and `expected` strings). A check named like a claim but meant as validation can be misfiled. | A run may show REFUTED where BROKEN fits; the card says "check kinds inferred". |
 | L6 | The pilot gate needs the pilot to compute the informative checks (`LAB_SMOKE=1`). Plans written before v0.39.0 usually do not, so their pilots only check that the script runs. | Saturation is then caught only after the full run (and re-planned once). |
 
@@ -1989,6 +1990,14 @@ pilot) so the referee does not flag them.
   `changes`, `error`). The stage says how many rounds ran and the referee's last verdict.
   `DR_LAB_REFINE=0` turns it off (tests do).
 - UI: a "Revised by AI after the referee" box above the Referee box.
+- **Best round kept (v0.51.0, L7).** Every reviewed version (the first plan and each
+  round whose review matches its plan hash) is ranked by `Lab._review_rank`: verdict
+  (sound < concerns < flawed), then high findings, then all findings; the newest wins a
+  tie. When the last round is not the best, the best version is restored with its own
+  review (so it is not shown as out of date), `plan.refine_kept` records `{round,
+  verdict, instead_of, instead_of_verdict}`, the discarded last plan is kept in
+  `plan.plan_refine_discarded`, and the stage says "kept round N, the best the referee
+  saw" (or that the first plan is kept). The box explains it.
 - Planner rules (labguard `GENERAL_RULES`, every planning prompt): cover every part of the
   question with its own check and follow its logic ("A or B" is one check); compare the
   same statistic computed the same way for both methods (no BLS power vs TLS SDE); every
@@ -2026,7 +2035,41 @@ pilot) so the referee does not flag them.
 - Real test (scratch draft, nothing submitted): two loc.gov facet URLs recorded as 429 on
   the cluster were fetched here (41 KB, 37 KB), staged, and the fixer replaced the `curl`
   lines with `cp "$DS_FETCH_CMP_RUN52/..."`; pre-flight then had no warnings.
+- **Refused while it ran (v0.51.0, L8).** Pre-flight only sees a plan's fixed URLs. When a
+  pilot or a finished job's log shows a site refusing it (`labfetch.runtime_blocked`:
+  `HTTP 401/403/429/451/502-504` next to "HTTP", "Client Error", "Forbidden" or "Too Many
+  Requests"; bare numbers in tables and file sizes do not count; a plan with no web
+  access never matches), the run gets `plan.runtime_blocked` {statuses, count, hosts,
+  urls, lines}. A failing pilot passes the advice to the fixer. A completed or failed run
+  shows "Refused by a site while it ran" with one button, `POST /api/lab/{id}/fix-blocked`:
+  a new draft (`rerun_of` = the run, the run itself untouched). The plan's fixed URLs on
+  the refusing host are fetched on this laptop as above, and in every case the fixer is
+  told to stop the job's own requests from hammering the site (fewer, larger responses,
+  cached; missing data is a failed check, never zero), because the refusals may come
+  from a query loop the fixed URLs don't cover. If the fix step fails (for example the
+  model is busy), the new draft stays as a plain copy with a stage saying so. When the
+  new draft still calls a refusing host, its stage says so and points to the AI's notes.
+  Real test on a scratch copy of run #42 (2026-10-01): the fixed loc.gov URL was fetched
+  here (1.85 MB) and the script now reads it, but the fixer said honestly that the 600+
+  query responses cannot be pre-fetched, so the loop still calls loc.gov: that question
+  needs a redesign, as run #48 did with decade facets.
+- **Busy model (v0.51.0).** Every Lab model call (`Lab._ask`) retries Gemini 429 and
+  5xx answers after 5, 20 and 45 s before failing; other errors fail at once. Seen
+  2026-10-01: gemini-3.8-flash answered "503 high demand" for several minutes. Never submits. Checked on the 185
+  real job logs: only run #42 (loc.gov, 636 refusals) is flagged.
 - Tests: `tests/dashboard/test_lab_fetch.py`.
+
+### 20.19 Lab finish notifications (v0.51.0, K21)
+
+- `GET /api/lab/pulse`: run ids in flight and the 20 most recently finished runs (id,
+  report, status, stage, title, outcome, finished time). One small database query: no
+  cluster call and no model call.
+- The client asks for it once at page load and then every 30 s only while runs are in
+  flight (also woken by a submit), so an idle dashboard makes no Lab requests. A run that
+  was in flight and is now finished gives a toast and, when the tab is hidden and the
+  user allowed notifications, a browser notification ("Lab run #N: CONFIRMED"), on any
+  page, not only on the report's Lab panel. A run is announced once per page load. There
+  is no push to a phone and nothing is sent when no dashboard tab is open.
 
 ## 21. Data sources
 
@@ -2699,3 +2742,4 @@ building on the zip format.
 | 2026-10-01 | v0.50.1 | Docs sync: module map regenerated (5.1), model calls (13.1), settings (12.1), plan fields (20.2a), target keys (20.3), Lab flow (20.1), CLI groups (9.4a), sources CLI options, warm and index routes; `tests/test_spec_sync.py`. |
 | 2026-10-01 | v0.50.2 | Prose review of the whole document against the code: scope (1), glossary (2), REQ-DASH-5, poll-error limit, table columns (8.2), API notes (10.2), client views (11), Lab cost and warm node (20.5), Lab limits L7-L8, K4 mostly fixed, K20-K21, test suite table regenerated (16.1), extension guide (19), sections 20.14-20.18 moved back into section 20, duplicate 21.9 renumbered 21.11. |
 | 2026-10-01 | v0.50.3 | K4 (unconfirmed cloud cancels shown and retried, `POST /api/sessions/{id}/cancel/retry`), K7 (CLI depth and breadth limits), K10 (CLI delete = dashboard delete; usage, launch meta and audio removed too), K15 (`auth login`/`logout` change only the key line, atomic, mode 600). |
+| 2026-10-01 | v0.51.0 | Best refine round kept, not the last (20.17, L7); refusals in a job's own log offered as a new draft, `POST /api/lab/{id}/fix-blocked` (20.18, L8); Lab finish notifications from any page, `GET /api/lab/pulse` (20.19, K21). |

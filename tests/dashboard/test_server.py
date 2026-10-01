@@ -550,3 +550,20 @@ def test_failed_cloud_cancel_is_recorded_and_can_be_retried(app, monkeypatch):
     assert st == 200 and r["cancel_unconfirmed"] == []
     assert call("GET", f"/api/sessions/{root}")[1]["cancel_unconfirmed"] == []
     assert call("POST", f"/api/sessions/{root}/cancel/retry")[0] == 409
+
+
+def test_lab_pulse_lists_active_and_recently_finished_runs(app):
+    """K21: the client's notifier reads this while runs are in flight (no cluster call)."""
+    api = app["api"]
+    sid = api.sessions.create_session("iid-p", "q", pid=None)
+    a = api.lab.create(sid, "document", "x", plan={"title": "A", "script": "true"})
+    b = api.lab.create(sid, "document", "x", plan={"title": "B", "script": "true"})
+    api.lab._update(a["id"], status="running")
+    api.lab._update(
+        b["id"], status="completed", finished_at="2026-10-01T15:00:00Z",
+        verdict=json.dumps({"checks": [{"name": "c", "kind": "claim", "pass": True}], "pass": True}),
+    )  # fmt: skip
+    st, d = app["call"]("GET", "/api/lab/pulse")
+    assert st == 200 and d["active"] == [a["id"]]
+    f = d["finished"][0]
+    assert f["id"] == b["id"] and f["title"] == "B" and f["outcome"] == "confirmed"

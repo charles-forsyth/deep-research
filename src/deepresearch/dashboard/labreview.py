@@ -93,6 +93,10 @@ def build_prompt(plan: dict, question: str = "") -> str:
             "url_checks",
             "plan_before_refine",
             "refine",
+            "refine_kept",
+            "plan_refine_discarded",
+            "laptop_fetch",
+            "runtime_blocked",
         )  # fmt: skip
     }
     return REVIEW_PROMPT.format(
