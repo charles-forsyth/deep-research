@@ -2914,6 +2914,7 @@ def _pixi_fallback_only(chans: list[str]) -> str:
 PLAN_DIFF_SKIP = {
     "warnings", "plan_before_fix", "fix_changes", "fix_notes", "fix_diff",
     "catalog_generated", "caveats", "fix_concerns", "url_checks",
+    "plan_before_refine", "refine", "review", "review_error", "laptop_fetch",
 }  # fmt: skip
 
 
@@ -2978,6 +2979,8 @@ class Lab(LabVerdictMixin):
         self._client_lock = threading.Lock()
         # the referee reads every new draft (one Flash call, ~$0.01); tests switch it off
         self.auto_review = os.environ.get("DR_LAB_REVIEW", "1") != "0"
+        # referee -> fixer rounds on new drafts (v0.49.0); off with DR_LAB_REFINE=0
+        self.auto_refine = os.environ.get("DR_LAB_REFINE", "1") != "0"
         self._fetch_tries: dict[int, int] = {}
         self._warm_checked: dict[str, float] = {}  # target -> last ensure_warm()
         self._stocked_out: dict[
@@ -3614,6 +3617,178 @@ class Lab(LabVerdictMixin):
             return
         if self.auto_review:
             self._auto_review(run_id)
+            if self.auto_refine:
+                self._auto_refine(run_id)
+
+    # ---- referee -> fixer loop before the draft is shown (v0.49.0) -------------
+    REFINE_MAX_ROUNDS = 2
+
+    @staticmethod
+    def _needs_refine(review: dict | None) -> bool:
+        """'flawed', or any high-severity finding: worth one fixer round before a person
+        reads the draft. Medium/low concerns stay advice."""
+        if not review:
+            return False
+        return review.get("verdict") == "flawed" or any(
+            f.get("severity") == "high" for f in review.get("findings") or []
+        )
+
+    def _auto_refine(self, run_id: int) -> None:
+        """Referee findings -> fixer -> referee again, up to REFINE_MAX_ROUNDS, on a new
+        draft only. What I did by hand all day on 2026-09-30, every time with success.
+        The referee stays advice: this only ever produces another DRAFT (never submits),
+        keeps the first plan in `plan_before_refine` for Undo, and stops when the referee
+        is satisfied, a round changes nothing, or a step fails. History in `refine`."""
+        history: list[dict] = []
+        first: dict | None = None
+        for rnd in range(1, self.REFINE_MAX_ROUNDS + 1):
+            cur = self.get(run_id)
+            if not cur or cur["status"] != "draft":
+                return
+            plan = cur.get("plan") or {}
+            rv = plan.get("review")
+            if not self._needs_refine(rv) or self.review_stale(plan):
+                break
+            if first is None:
+                first = {
+                    k: v
+                    for k, v in plan.items()
+                    if k not in ("warnings", "plan_before_fix", "plan_before_refine")
+                }
+            entry: dict = {
+                "round": rnd,
+                "before": (rv or {}).get("verdict"),
+                "findings": len((rv or {}).get("findings") or []),
+            }
+            self._update(
+                run_id,
+                only_if=("draft",),
+                stage=f"Referee found problems; AI is revising the plan (round {rnd})",
+            )
+            h0 = self._plan_hash(plan)
+            try:
+                out = self.fix_plan(run_id)
+            except Exception as e:  # a failed fix leaves the reviewed draft as it was
+                entry["error"] = f"fix: {str(e)[:200]}"
+                history.append(entry)
+                break
+            fx = out.get("fix") or {}
+            entry["changes"] = list(fx.get("changes") or [])[:12]
+            # judge by the plan, not the fixer's change list: run #46 (2026-09-30)
+            # rewrote the script and returned an empty list
+            if self._plan_hash((self.get(run_id) or {}).get("plan") or {}) == h0:
+                entry["error"] = "the fixer changed nothing"
+                history.append(entry)
+                break
+            if not entry["changes"]:
+                entry["changes"] = [
+                    "(the fixer edited the plan without listing changes)"
+                ]
+            try:
+                self.review(run_id)
+            except Exception as e:
+                entry["error"] = f"referee: {str(e)[:200]}"
+                history.append(entry)
+                break
+            after = ((self.get(run_id) or {}).get("plan") or {}).get("review") or {}
+            entry["after"] = after.get("verdict")
+            history.append(entry)
+        if not history:
+            return
+        cur = self.get(run_id)
+        if not cur or cur["status"] != "draft":
+            return
+        plan = dict(cur.get("plan") or {})
+        plan["refine"] = history
+        if first is not None:
+            plan["plan_before_refine"] = first
+        last = history[-1]
+        verdict = last.get("after") or last.get("before")
+        stage = (
+            f"Plan ready for review (revised by AI after the referee, "
+            f"{len(history)} round{'s' if len(history) > 1 else ''}; referee now: {verdict})"
+        )
+        if plan.get("warnings"):
+            stage += f" ({len(plan['warnings'])} warnings)"
+        self._update(run_id, only_if=("draft",), plan=plan, stage=stage)
+
+    def undo_refine(self, run_id: int) -> dict:
+        """Back to the plan exactly as first written, before the referee/fixer rounds."""
+        run = self.get(run_id)
+        if not run:
+            raise KeyError(run_id)
+        if run["status"] != "draft":
+            raise ValueError(f"run is {run['status']}; only drafts can be changed")
+        first = (run.get("plan") or {}).get("plan_before_refine")
+        if not isinstance(first, dict):
+            raise ValueError("no AI revision to undo")
+        return self.edit_plan(run_id, first)
+
+    # ---- fetch on this laptop when a site blocks the cluster (v0.50.0) -----------
+    def laptop_fetch(self, run_id: int, urls: list[str] | None = None) -> dict:
+        """Fetch the plan's cluster-blocked URLs here, stage them as a local data source,
+        attach it, and have the fixer read `$DS_<NAME>` instead of downloading. Only ever
+        a draft; returns the run plus `laptop_fetch` = {source, files, failed}."""
+        from deepresearch.dashboard import labfetch
+        from deepresearch.sources import DataSource
+        from deepresearch.sources.service import check
+
+        run = self.get(run_id)
+        if not run:
+            raise KeyError(run_id)
+        if run["status"] != "draft":
+            raise ValueError(f"run is {run['status']}; only drafts can be changed")
+        plan = dict(run.get("plan") or {})
+        offer = [u["url"] for u in labfetch.blocked_urls(plan)]
+        want = [u for u in (urls or offer) if u in offer]
+        if not want:
+            raise ValueError("no blocked download URLs to fetch for this plan")
+        name = labfetch.source_name(self.workspace, run_id)
+        dest = labfetch.fetch_root() / name
+        self._update(
+            run_id,
+            only_if=("draft",),
+            stage=f"Fetching {len(want)} blocked URL(s) on this laptop",
+        )
+        got = labfetch.fetch(want, dest)
+        if not got["files"]:
+            self._update(run_id, only_if=("draft",), stage="Laptop fetch failed")
+            why = "; ".join(f"{f['url'][:80]}: {f['error']}" for f in got["failed"][:3])
+            raise ValueError(f"nothing could be fetched on this laptop either ({why})")
+        src = self.sources.get(name)
+        if src is None:
+            src = self.sources.add(
+                DataSource(
+                    name=name,
+                    title=f"Laptop fetch for Lab run #{run_id}",
+                    description="Fetched on the laptop because the site blocks the "
+                    "cluster. urls.json lists each file's URL, status, size and sha256.",
+                    kind="local_folder",
+                    uri=str(dest),
+                    protection_level="P1",
+                    tags=["lab-fetch"],
+                )
+            )
+        check(self.sources, src)
+        names = [str(n) for n in plan.get("data_sources") or []]
+        if name not in names:
+            names.append(name)
+        prior = plan.get("laptop_fetch") or {}
+        plan["data_sources"] = names
+        plan["laptop_fetch"] = {
+            "source": name,
+            "folder": str(dest),
+            "urls": sorted(
+                set(prior.get("urls") or []) | {f["url"] for f in got["files"]}
+            ),
+            "files": got["files"],
+            "failed": got["failed"],
+            "at": datetime.now().isoformat(timespec="seconds"),
+        }
+        self._update(run_id, only_if=("draft",), plan=plan)
+        problems = labfetch.problems_for_fixer(src.env_var, got["files"])
+        out = self.fix_plan(run_id, extra_problems=problems)
+        return {**out, "laptop_fetch": plan["laptop_fetch"]}
 
     def _auto_review(self, run_id: int) -> None:
         """The referee after planning: two tries (a busy model or a bad reply is common),
@@ -3724,7 +3899,7 @@ class Lab(LabVerdictMixin):
         r = plan.get("review") or {}
         return bool(r) and r.get("plan_hash") != self._plan_hash(plan)
 
-    def fix_plan(self, run_id: int) -> dict:
+    def fix_plan(self, run_id: int, extra_problems: list[str] | None = None) -> dict:
         """Ask the planner to fix only what pre-flight flagged, then check again.
 
         Never submits. Stores the corrected plan as the draft and keeps the previous
@@ -3752,7 +3927,7 @@ class Lab(LabVerdictMixin):
             if not self.review_stale(plan)
             else []
         )
-        warns = warns + referee
+        warns = list(extra_problems or []) + warns + referee
         if not warns:
             return {
                 **(self.get(run_id) or {}),
@@ -3771,8 +3946,9 @@ class Lab(LabVerdictMixin):
             body = {
                 k: v
                 for k, v in plan.items()
-                if k not in ("warnings", "plan_before_fix", "review")
-            }
+                if k not in ("warnings", "plan_before_fix", "review", "refine",
+                             "plan_before_refine", "laptop_fetch")
+            }  # fmt: skip
             prompt = FIX_PROMPT.format(
                 target=_describe(tgt, full=True),
                 lessons=labguard.prompt_block(json.dumps(body), self.state_dir),
@@ -3795,7 +3971,7 @@ class Lab(LabVerdictMixin):
         before = {
             k: v
             for k, v in original.items()
-            if k not in ("warnings", "plan_before_fix")
+            if k not in ("warnings", "plan_before_fix", "plan_before_refine", "refine")
         }
         if getattr(tgt, "catalog", None):
             plan["catalog_generated"] = tgt.catalog.get("generated")  # type: ignore[union-attr]
@@ -3805,6 +3981,11 @@ class Lab(LabVerdictMixin):
             notes.insert(0, "".join(f"REVIEW: {c}. " for c in concerns).strip())
         if original.get("review"):
             plan["review"] = original["review"]  # judged the old plan: shown as stale
+        for k in ("plan_before_refine", "refine", "laptop_fetch"):  # records survive
+            if k in original:
+                plan[k] = original[k]
+        if original.get("data_sources") and not plan.get("data_sources"):
+            plan["data_sources"] = list(original["data_sources"])
         plan = {
             **plan,
             "warnings": warns,

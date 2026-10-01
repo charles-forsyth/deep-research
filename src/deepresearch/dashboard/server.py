@@ -340,6 +340,8 @@ class Api(ProjectApi):
         r("POST", r"/api/lab/(\d+)/fix", self.lab_fix)
         r("POST", r"/api/lab/(\d+)/review", self.lab_review)
         r("POST", r"/api/lab/(\d+)/undo-fix", self.lab_undo_fix)
+        r("POST", r"/api/lab/(\d+)/undo-refine", self.lab_undo_refine)
+        r("POST", r"/api/lab/(\d+)/laptop-fetch", self.lab_laptop_fetch)
         r("POST", r"/api/lab/(\d+)/fix-failed", self.lab_fix_failed)
         r("GET", r"/api/lab/(\d+)/log", self.lab_log)
         r("GET", r"/api/lab/(\d+)/file", self.lab_file)
@@ -1674,6 +1676,10 @@ class Api(ProjectApi):
         plan = run.get("plan") or {}
         if isinstance(plan, dict) and plan.get("review"):
             run["review_stale"] = self.lab.review_stale(plan)
+        if isinstance(plan, dict) and run.get("status") == "draft":
+            from deepresearch.dashboard.labfetch import blocked_urls
+
+            run["blocked_urls"] = blocked_urls(plan)
         return run
 
     def lab_targets(self, query, body):
@@ -1957,6 +1963,29 @@ class Api(ProjectApi):
         self._lab_run(rid)
         try:
             return self._lab_view(self.lab.undo_fix(int(rid)))
+        except ValueError as e:
+            raise ApiError(409, str(e)) from e
+
+    def lab_laptop_fetch(self, rid, query, body):
+        self._lab_run(rid)
+        urls = (body or {}).get("urls")
+        if urls is not None and not (
+            isinstance(urls, list) and all(isinstance(u, str) for u in urls)
+        ):
+            raise ApiError(400, "urls must be a list of strings")
+        try:
+            run = self.lab.laptop_fetch(int(rid), urls)
+        except ValueError as e:
+            raise ApiError(409, str(e)) from e
+        view = self._lab_view(run)
+        view["fix"] = run.get("fix")
+        view["laptop_fetch"] = run.get("laptop_fetch")
+        return view
+
+    def lab_undo_refine(self, rid, query, body):
+        self._lab_run(rid)
+        try:
+            return self._lab_view(self.lab.undo_refine(int(rid)))
         except ValueError as e:
             raise ApiError(409, str(e)) from e
 

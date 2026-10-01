@@ -83,7 +83,17 @@ def build_prompt(plan: dict, question: str = "") -> str:
     body = {
         k: v
         for k, v in plan.items()
-        if k not in ("warnings", "review", "plan_before_fix", "fix_diff", "url_checks")
+        if k
+        not in (
+            "warnings",
+            "review",
+            "review_error",
+            "plan_before_fix",
+            "fix_diff",
+            "url_checks",
+            "plan_before_refine",
+            "refine",
+        )  # fmt: skip
     }
     return REVIEW_PROMPT.format(
         question=(question or plan.get("question") or plan.get("title") or "")[:2000],

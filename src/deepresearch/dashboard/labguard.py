@@ -266,6 +266,25 @@ GENERAL_RULES = [
     "Before relying on an optional feature of an installed program (a LAMMPS package, a "
     "solver option, a compiled-in library), check it exists in the verify step (e.g. "
     "`lmp -h | grep -q GRANULAR`) so a missing feature fails in seconds.",
+    # v0.49.0, from the Flash/Pro comparison of 2026-09-30: 5 of 8 first plans dropped
+    # part of the question from their checks, and most compared unlike scores
+    "Cover the whole question: every part of the claim (each method, each quantity, each "
+    "term such as 'frost AND smudging', each side of an 'A or B') gets its own check in "
+    "verdict.json, with kind 'claim' for the parts the question asks about. Follow the "
+    "question's logic exactly: 'more accurate OR more significant' is one check that "
+    "passes if either holds, not two that must both pass. A check that only covers one of "
+    "two compared methods does not answer a comparison.",
+    "Compare like with like: never compare raw scores whose scales differ (a BLS power vs "
+    "a TLS SDE, a z-score vs a likelihood ratio, counts from different-sized samples). "
+    "Compute the same statistic for both methods with the same code (for example SNR or "
+    "SDE from each periodogram with one formula, period error from a refined peak, rates "
+    "per page or per sample), and say in the check which statistic is compared.",
+    "Every check must be able to fail and able to pass: no pass condition that holds for "
+    "any data (a count > 0, a ratio compared with itself, two methods forced onto the same "
+    "discrete grid), and no thresholds that the design makes unreachable. A signal "
+    "injected to test a method must be in the regime where methods can differ (not so "
+    "strong both always find it, not so weak neither can), and pilot mode computes the "
+    "same checks from data, never hard-coded passes.",
 ]
 
 _LOCK = threading.Lock()

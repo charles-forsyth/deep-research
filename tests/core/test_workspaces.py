@@ -32,11 +32,30 @@ def home(tmp_path, monkeypatch):
 
 
 def _snapshot(p: Path) -> dict:
-    return {
-        str(f.relative_to(p)): f.stat().st_size
-        for f in p.rglob("*")
-        if f.is_file() and "workspaces" not in f.parts
-    }
+    """Main's files and their CONTENT. A WAL checkpoint moves pages from history.db-wal
+    into history.db whenever any connection closes (which test order decides), so raw
+    file sizes change without anything being written; compare the database's rows and
+    the other files' bytes instead."""
+    out: dict = {}
+    for f in sorted(p.rglob("*")):
+        if not f.is_file() or "workspaces" in f.parts:
+            continue
+        if f.name.endswith(("-wal", "-shm")):
+            continue
+        if f.suffix == ".db":
+            c = sqlite3.connect(f"file:{f}?mode=ro", uri=True)
+            tables = [
+                r[0]
+                for r in c.execute("select name from sqlite_master where type='table'")
+            ]
+            out[str(f.relative_to(p))] = {
+                t: c.execute(f'select * from "{t}" order by rowid').fetchall()
+                for t in sorted(tables)
+            }
+            c.close()
+        else:
+            out[str(f.relative_to(p))] = f.read_bytes()
+    return out
 
 
 def test_main_is_default_and_never_moved(home):

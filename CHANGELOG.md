@@ -7,6 +7,25 @@ releases.
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-09-30
+
+### Added
+
+- Referee -> fixer rounds on new Lab drafts: a plan the referee calls flawed (or with a
+  high-severity finding) is revised by the fixer and reviewed again, up to two rounds,
+  before you see it. Never submits; "Back to first plan" undoes it. `DR_LAB_REFINE=0`
+  turns it off.
+- Three planning rules: every part of the question gets its own check, methods are
+  compared on the same statistic, and every check must be able to fail and to pass.
+- "Fetch on this laptop": download URLs a site refuses to the cluster (403/429/5xx) are
+  fetched here, staged as a data source, and the plan is rewired to read them. Refuses
+  private, LAN and Tailscale addresses and caps sizes.
+
+### Notes
+
+- Planning stays on gemini-3.8-flash: a four-case comparison found gemini-3.1-pro-preview
+  no better at 2-4x the cost (one Pro plan would have crashed on a missing argument).
+
 ## [0.48.2] - 2026-09-30
 
 ### Fixed
