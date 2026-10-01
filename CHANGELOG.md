@@ -7,6 +7,22 @@ releases.
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-10-01
+
+### Changed
+
+- The cluster layer (SSH, Slurm, run folders, warm worker, file transfer, catalog cache)
+  moved out of `dashboard/lab.py` into its own module, `dashboard/cluster.py`
+  (908 lines), unchanged: every moved class and function was checked identical to
+  the original. `lab.py` re-exports the names, so nothing else had to change. Step 1 of
+  the hpc-agent plan; a read-only MCP server can build on it.
+
+### Added
+
+- `tests/dashboard/test_cluster.py`: 16 tests of the cluster layer on its own with a fake
+  ssh (connection reuse, unreachable cluster, timeouts, status parsing, warm spool,
+  fetch size caps and path safety, upload file modes, workspace folders).
+
 ## [0.51.0] - 2026-10-01
 
 ### Added

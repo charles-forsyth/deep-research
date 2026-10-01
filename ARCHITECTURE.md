@@ -52,8 +52,10 @@ graph TD
   real job on the cluster. Plan (Flash + Google Search + facts checked on the warm node),
   pre-flight, referee and up to two referee -> fixer rounds, human review, a pilot on the
   warm node, the full run, a verdict from `verdict.json`, a results note attached to the
-  report. Blocked downloads can be fetched on the laptop and staged. The cluster's job
-  folder is the source of truth; the `lab_runs` table is a cache.
+  report. Blocked downloads (before or during a run) can be fetched on the laptop and
+  staged. The cluster's job folder is the source of truth; the `lab_runs` table is a
+  cache. All cluster access (SSH, Slurm, warm worker, file transfer) is in
+  `dashboard/cluster.py`, which has no model or database code.
 - **Workspaces** (`core/workspace.py`, `wscopy.py`, `wszip.py`): separate libraries;
   Main never moves; copy between workspaces and zip export/import.
 

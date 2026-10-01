@@ -14,7 +14,8 @@ Where the project is heading. Items are ideas, not commitments; open an issue to
 - [x] Docs in sync with the code, with a spec guard test (0.50.1, 0.50.2).
 - [x] Honest cancel, CLI depth limits, full delete, safe `auth login` (0.50.3).
 - [x] Best refine round kept; refusals at run time offered as a fix; Lab finish notifications (0.51).
-- [ ] **Cluster layer out of `lab.py`** (SSH, Slurm, warm node, staging) as its own tested module; step 1 of the hpc-agent plan (0.52).
+- [x] Cluster layer out of `lab.py` into `dashboard/cluster.py`, with its own tests; step 1 of the hpc-agent plan (0.52).
+- [ ] **Read-only hpc-agent MCP server** on top of `cluster.py` (queue, job status, logs, catalog), after the design questions are answered.
 - [ ] **Live collaboration** on a shared workspace (sync), building on the zip export.
 - [ ] **Browse from the CLI**: `deep-research sources browse-place drive:gd` to pick Drive files without the dashboard.
 - [ ] **AWS S3 with credentials** in the file browser (needs an AWS profile or rclone S3 remote on this machine).

@@ -336,7 +336,8 @@ def test_a_real_submit_error_still_fails_the_run(lab):
 
 
 def test_ssh_failure_before_the_command_runs_is_not_submitted(monkeypatch):
-    from deepresearch.dashboard import lab as L
+    # the SSH layer lives in dashboard/cluster.py since v0.52.0 (K20)
+    from deepresearch.dashboard import cluster as L
 
     t = L.SlurmSSHTarget.__new__(L.SlurmSSHTarget)
     t._lock = threading.Lock()
