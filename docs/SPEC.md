@@ -38,6 +38,7 @@ in [section 17](#17-known-gaps-and-limitations).
 21. [Data sources](#21-data-sources)
 22. [Projects](#22-projects)
 23. [Workspaces](#23-workspaces)
+24. [Open items and future prospects](#24-open-items-and-future-prospects)
 
 ---
 
@@ -2674,6 +2675,67 @@ SQLite copy) and `lab/` (fetched outputs); `audio/` and `uploads/` only on reque
 Live collaboration (syncing a shared workspace between people) is an idea for later,
 building on the zip format.
 
+## 24. Open items and future prospects
+
+Everything still open at v0.52.0 (2026-10-01), in one place. Nothing listed here is half
+built: every shipped release is complete and live. Section 17 (K items) and 20.8 (L
+items) keep the detail; this section is the to-do list.
+
+### 24.1 Decisions waiting on the owner
+
+| ID | Item | Recommendation |
+|---|---|---|
+| D1 | Warm node: `always_on` was switched off in `lab_targets.json` at 14:41 on 2026-10-01 (idle limit 60 min; backup `lab_targets_before_warm_idle60_20261001_144105.json`). Keep off, or turn back on? | Owner's call: off saves about $45 a day; on makes pilots start in seconds. |
+| D2 | Dependabot PR #148 (urllib3 2.7.0 -> 2.8.0). | Merge after CI. |
+| D3 | hpc-agent design questions Q1-Q15 (nexus `2026-10-01_HPC_Agent_MCP_Spec_and_Design.md`, section 15). Blocking a first version: Q1 personal or staff scope, Q2 Go or Python, Q5 scheduler queries on the login node, Q7 submit/cancel in early versions, Q13 adopt or fork an existing Slurm MCP server. The others (accounts, cost source, Nexus, ServiceNow, privacy, audit, alerts) can wait. | Answer the five blockers, then build the read-only server (24.5). |
+
+### 24.2 Demo workspace
+
+| ID | Item |
+|---|---|
+| M1 | Run #42 (history, loc.gov) needs a redesign like run #48 (decade facets): its 600+ live queries are refused by loc.gov from the cluster and cannot be fetched ahead of time (20.18 real test). |
+| M2 | No ready-to-launch Ising draft for the live walkthrough: rerun #49 to get one. #44 (hash tables) is ready. |
+
+### 24.3 Blocked outside deep-research
+
+| ID | Item |
+|---|---|
+| B1 | rclone Drive sign-ins expired for `E-BEE-VET:`, `Nautilus:` and `Research_Computing_Drive:`; the owner runs `rclone config reconnect <remote>:`. |
+| B2 | 190 of 236 sessions from before #248 cannot be fetched again from Google (permanent). |
+
+### 24.4 Known gaps to fix next (small)
+
+| ID | Item | See |
+|---|---|---|
+| G1 | CLI commands exit 0 on errors unless `--json` is given; scripts cannot detect failure. | K11 |
+| G2 | A failed upload leaves the adopted report `running` until liveness marks it crashed, with no error text. | K6 |
+| G3 | Folder uploads take only top-level files and wait a fixed 5 s for ingestion. | K9 |
+| G4 | Deleting a report leaves its uploaded files; notebook and project audio stays until removed. | K10 |
+| G5 | `lab.py` is still 4,788 lines (planning, prompts, install ladder, watcher); split further when next touched. | K20 |
+| G6 | Finish notifications need an open dashboard tab; no phone push (would need an opt-in service such as ntfy, owner's call). | K21, L4 |
+
+Left alone on purpose for now: K1 (retry gaps, no failures seen), K12/K14 (estimates
+miss some steps), K16 (naive local timestamps), K17 (audio jobs lost on restart), K18
+(`.venv` re-exec quirk), K19 (research map speed; add a cache when it matters), L1 (one
+cluster type), L3 (no sweeps or result comparison), L5/L6 (inferred outcomes for runs
+before v0.39.0).
+
+### 24.5 Future prospects (roadmap)
+
+| ID | Item | Notes |
+|---|---|---|
+| F1 | Read-only hpc-agent MCP server | On top of `dashboard/cluster.py` (v0.52.0): queue, job status, logs, catalog. Waits on D3. Later: the Lab's cluster calls move onto it (Q14). |
+| F2 | Deep Research Max toggle in the launcher | |
+| F3 | Scheduled re-runs of saved questions with a "what changed" digest | Reuses the compare view. |
+| F4 | Review the agent's research plan before a run starts | |
+| F5 | Browse Drive and S3 places from the CLI | Dashboard-only today (21.10). |
+| F6 | S3 with credentials in the file browser | Needs an AWS profile or rclone S3 remote. |
+| F7 | Optional dashboard login (shared token) | Not wanted while use stays on the home LAN and Tailscale. |
+| F8 | Live collaboration on a shared workspace | Builds on the zip format (23.8). |
+| F9 | Citation integrity (Crossref), Zotero library grounding, BibTeX linting | ROADMAP "academic research edition". |
+| F10 | Lab: parameter sweeps and comparing results across runs | L3. |
+| F11 | Lab: more cluster types and a target picker | L1. |
+
 ## Document history
 
 | Date | Version | Change |
@@ -2747,3 +2809,4 @@ building on the zip format.
 | 2026-10-01 | v0.50.3 | K4 (unconfirmed cloud cancels shown and retried, `POST /api/sessions/{id}/cancel/retry`), K7 (CLI depth and breadth limits), K10 (CLI delete = dashboard delete; usage, launch meta and audio removed too), K15 (`auth login`/`logout` change only the key line, atomic, mode 600). |
 | 2026-10-01 | v0.51.0 | Best refine round kept, not the last (20.17, L7); refusals in a job's own log offered as a new draft, `POST /api/lab/{id}/fix-blocked` (20.18, L8); Lab finish notifications from any page, `GET /api/lab/pulse` (20.19, K21). |
 | 2026-10-01 | v0.52.0 | Cluster layer moved out of `lab.py` into `dashboard/cluster.py` with its own tests (5.1, 19, K20). No behaviour change. |
+| 2026-10-01 | v0.52.0 (docs) | Section 24: open decisions, demo items, blockers, gaps to fix next and future prospects in one list. |

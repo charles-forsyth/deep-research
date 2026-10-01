@@ -3,6 +3,8 @@
 Where the project is heading. Items are ideas, not commitments; open an issue to discuss or pick one up.
 
 ## Next up
+The full open list (decisions, demo items, gaps, prospects) is section 24 of docs/SPEC.md.
+
 - [x] Workspace switcher in the dashboard top bar (0.41).
 - [x] Copy projects and reports into a workspace (0.42).
 - [x] Export and import a workspace as a zip (0.43).
