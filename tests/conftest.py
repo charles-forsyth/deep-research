@@ -20,3 +20,4 @@ def _no_auto_referee(monkeypatch):
     """The Lab referee reads every new draft with a model call; tests that want it call
     `lab.review()` directly with a stubbed `_ask`."""
     monkeypatch.setenv("DR_LAB_REVIEW", "0")
+    monkeypatch.setenv("DR_LAB_REFINE", "0")

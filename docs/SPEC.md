@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.48.2 (package `deepresearch`) |
+| Applies to | deep-research v0.50.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1971,6 +1971,60 @@ config reconnect <remote>:".
 Routes: `GET /api/browse/places`, `GET /api/browse/list?place=&path=&q=`,
 `GET /api/browse/preview?place=&path=&size=`, `POST /api/browse/spec` `{place, items}`.
 
+
+### 20.17 Referee -> fixer rounds before the draft is shown (v0.50.0)
+
+- After planning and the automatic referee, a draft whose review is `flawed` or has any
+  high-severity finding goes to the fixer with the findings, and the referee reads the
+  result again. Up to `REFINE_MAX_ROUNDS` (2). Stops when the referee is satisfied (no
+  high finding, not flawed), when a round leaves the plan unchanged (judged by the plan
+  hash, not the fixer's change list: run #46 edited without listing changes), or when a
+  step fails. Medium and low concerns stay advice.
+- Only ever another draft: never submits. The first plan is kept in
+  `plan.plan_before_refine`; `POST /api/lab/{id}/undo-refine` ("Back to first plan")
+  restores it. `plan.refine` records each round (`round`, `before`, `after`, `findings`,
+  `changes`, `error`). The stage says how many rounds ran and the referee's last verdict.
+  `DR_LAB_REFINE=0` turns it off (tests do).
+- UI: a "Revised by AI after the referee" box above the Referee box.
+- Planner rules (labguard `GENERAL_RULES`, every planning prompt): cover every part of the
+  question with its own check and follow its logic ("A or B" is one check); compare the
+  same statistic computed the same way for both methods (no BLS power vs TLS SDE); every
+  check must be able to fail and to pass (no `count > 0`, no shared grids, injected
+  signals in the regime where methods differ, no hard-coded pilot passes). From the
+  Flash/Pro first-plan comparison of 2026-09-30, where 5 of 8 plans dropped part of the
+  question and most compared unlike scores. Pro (gemini-3.1-pro-preview) was not better
+  and cost 2-4x, so planning stays on Flash.
+- Measured on three flawed Flash drafts from that comparison (scratch DB, nothing run):
+  one went flawed -> flawed -> sound in two rounds; one improved then regressed (flawed ->
+  concerns -> flawed, a loc.gov design); one stopped because the fixer returned no change
+  list (fixed above). Model cost about $0.25-0.35 per draft for two rounds.
+- Tests: `tests/dashboard/test_lab_refine.py`.
+
+### 20.18 Fetch on this laptop when a site blocks the cluster (v0.50.0)
+
+- Module `dashboard/labfetch.py`. Some sites refuse the cluster (loc.gov answers 429/403
+  to Ursa Major) but serve a normal client. Run #48 worked only after the data was pulled
+  on the laptop by hand.
+- `blocked_urls(plan)`: URL checks that failed on a compute node with a status another
+  machine can get past (401/403/405/406/418/429/451/5xx, no answer, timeouts, resets). A
+  404 or unknown host is the plan's mistake and is not offered. Shown in the run view as
+  `blocked_urls` for drafts.
+- `POST /api/lab/{id}/laptop-fetch` (body `{"urls": [...]}` optional, subset of the
+  offered ones) or "Fetch on this laptop" in plan review: fetches one URL at a time with a
+  2 s pause and one backoff on 429/503 (Retry-After, max 60 s), into
+  `~/research-data/lab-fetch/fetch-<workspace>-run<N>/` with `urls.json` (file, URL,
+  status, bytes, sha256, content type, time). Registers it as a P1 `local_folder` source
+  (relay-staged like any local source), attaches it to the plan, and asks the fixer to
+  read `$DS_<NAME>/<file>` instead of downloading. Records `plan.laptop_fetch`.
+- AI-written URLs are untrusted: http(s) only; hosts that resolve to private, loopback,
+  link-local, reserved, multicast or carrier-grade NAT addresses (Tailscale 100.64.0.0/10,
+  the Core Pi) are refused, also after redirects; 200 MB per file, 1 GB per fetch; partial
+  files are removed.
+- Real test (scratch draft, nothing submitted): two loc.gov facet URLs recorded as 429 on
+  the cluster were fetched here (41 KB, 37 KB), staged, and the fixer replaced the `curl`
+  lines with `cp "$DS_FETCH_CMP_RUN52/..."`; pre-flight then had no warnings.
+- Tests: `tests/dashboard/test_lab_fetch.py`.
+
 ## 22. Projects
 
 A **project** is a container above reports, data sources, notebooks and (through its
@@ -2386,6 +2440,7 @@ building on the zip format.
 | 2026-09-30 | v0.48.0 | Default partition from lab_targets.json wins over the catalog; always-on warm node (20.16). |
 | 2026-09-30 | v0.48.1 | Planner steered to the default/warm partition; one Python package list for both pre-flight checks (20.16). |
 | 2026-09-30 | v0.48.2 | Only the first warm worker is always-on; backlog workers keep the burst idle limit (20.16). |
+| 2026-09-30 | v0.50.0 | Referee -> fixer rounds on new drafts; three planner rules on checks; laptop fetch for cluster-blocked URLs (20.17, 20.18). |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |

@@ -171,6 +171,15 @@ const LAB = {
   },
 
   // Write-ups are asked for plain Unicode; turn stray inline TeX ($\theta$, $\le$) into symbols.
+  refineHtml(p, editable) {
+    // v0.50.0: the referee -> fixer rounds that ran before this draft was shown
+    const h = p.refine || [];
+    if (!h.length) return "";
+    const v = (x) => ({ sound: "looks sound", concerns: "has concerns", flawed: "flawed" })[x] || x || "?";
+    const rows = h.map((x) => `<li>Round ${x.round}: referee ${esc(v(x.before))}${x.after ? ` \u2192 ${esc(v(x.after))}` : ""}${(x.changes || []).length ? `; ${x.changes.length} change${x.changes.length > 1 ? "s" : ""}: ${x.changes.slice(0, 4).map(esc).join("; ")}${x.changes.length > 4 ? "\u2026" : ""}` : ""}${x.error ? ` <span class="dim">(${esc(x.error)})</span>` : ""}</li>`).join("");
+    return `<div class="lab-fixed lab-refine"><div class="lab-fix-row"><span class="label">Revised by AI after the referee</span> <span class="dim" style="font-size:11.5px">before you saw it; nothing was run</span><span class="grow"></span>${editable && p.plan_before_refine ? '<button class="btn small" data-x="undorefine">Back to first plan</button>' : ""}</div><ul>${rows}</ul></div>`;
+  },
+
   refereeHtml(r, p, editable) {
     const rv = p.review;
     if (!editable && !rv) return "";
@@ -402,7 +411,10 @@ const LAB = {
       <div class="modal-head"><h3>${editable ? "Review lab run" : "Lab run"} #${r.id}: ${esc(p.title || "")}</h3><button class="icon-btn modal-x" data-x="0" aria-label="Close">\u2715</button></div>
       <nav class="lab-toc">${["What and why", "Software and data", "Settings", "Result check", "Script"].map((t, i) => `<a href="#" data-sec="${i + 1}">${i + 1}. ${t}</a>`).join("")}</nav>
       <div class="lab-q"><span class="label">Question</span> ${esc(p.question || "")}</div>
+      ${this.refineHtml(p, editable)}
       ${this.refereeHtml(r, p, editable)}
+      ${editable && (r.blocked_urls || []).length ? `<div class="lab-warn"><span class="label">Blocked from the cluster</span> <span class="dim" style="font-size:11.5px">${r.blocked_urls.length} download${r.blocked_urls.length > 1 ? "s" : ""} refused on a compute node (${esc([...new Set(r.blocked_urls.map((u) => u.status))].join(", "))}). This laptop can fetch ${r.blocked_urls.length > 1 ? "them" : "it"}, stage the files as a data source, and have the AI read them from there instead.</span><div class="lab-fix-row"><button class="btn small primary" data-x="lfetch">Fetch on this laptop</button><span class="dim" style="font-size:11px">one at a time, politely; nothing is submitted</span></div></div>` : ""}
+      ${p.laptop_fetch && editable ? `<div class="lab-fixed"><span class="label">Fetched on this laptop</span> <span class="dim" style="font-size:11.5px">${(p.laptop_fetch.files || []).length} file(s) in data source <b>${esc(p.laptop_fetch.source)}</b>${(p.laptop_fetch.failed || []).length ? `; ${p.laptop_fetch.failed.length} failed: ${p.laptop_fetch.failed.map((f) => esc(f.error)).join(", ")}` : ""}</span></div>` : ""}
       ${(p.warnings || []).length ? `<div class="lab-warn"><span class="label">Checked against the cluster: ${p.warnings.length} problem${p.warnings.length > 1 ? "s" : ""}</span><ul>${p.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul><div class="lab-fix-row">${editable ? `<button class="btn" data-x="fix" title="The AI fixes only what is flagged, then the plan is checked again. Nothing is submitted.">Fix with AI</button>` : ""}<span class="dim" style="font-size:11px">${editable ? "or edit the plan (modules, partition, GPUs) yourself, or submit anyway." : ""}</span></div></div>` : ""}
       ${!p.plan_before_fix && (p.fix_changes || []).length && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">AI fix of failed run #${esc(r.rerun_of || "")}</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "checks pass"}</span></div><ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>${this.concernsHtml(p)}${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(p.fix_notes.replace(/REVIEW: [^.]*\. ?/g, ""))}</div>` : ""}${this.diffHtml(p.fix_diff)}</div>` : ""}
       ${p.plan_before_fix && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">Fixed by AI and re-checked</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "no warnings"}</span> <button class="btn" data-x="undofix">Undo fix</button></div>${(p.fix_changes || []).length ? `<ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}${this.concernsHtml(p)}${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(p.fix_notes.replace(/REVIEW: [^.]*\. ?/g, ""))}</div>` : ""}${this.diffHtml(p.fix_diff)}</div>` : ""}
@@ -496,6 +508,23 @@ const LAB = {
     if (undoBtn) undoBtn.onclick = () => busy(undoBtn, async () => {
       const n = await api(`/api/lab/${r.id}/undo-fix`, { method: "POST" });
       toast("Restored the plan from before the AI fix", "ok");
+      snapshot = formState();
+      this.review(el, s, n);
+      this.refresh(document.querySelector("#lab-panel"), s);
+    });
+    const undoRefBtn = $('#modal [data-x="undorefine"]');
+    if (undoRefBtn) undoRefBtn.onclick = () => busy(undoRefBtn, async () => {
+      const n = await api(`/api/lab/${r.id}/undo-refine`, { method: "POST" });
+      toast("Back to the plan as first written", "ok");
+      snapshot = formState();
+      this.review(el, s, n);
+      this.refresh(document.querySelector("#lab-panel"), s);
+    });
+    const lfBtn = $('#modal [data-x="lfetch"]');
+    if (lfBtn) lfBtn.onclick = () => busy(lfBtn, async () => {
+      const n = await api(`/api/lab/${r.id}/laptop-fetch`, { method: "POST", body: {} });
+      const lf = n.laptop_fetch || {};
+      toast(`Fetched ${(lf.files || []).length} file(s) on this laptop; the plan now reads them from ${lf.source}`, "ok");
       snapshot = formState();
       this.review(el, s, n);
       this.refresh(document.querySelector("#lab-panel"), s);

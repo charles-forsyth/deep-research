@@ -7,7 +7,10 @@ Where the project is heading. Items are ideas, not commitments; open an issue to
 - [x] Copy projects and reports into a workspace (0.42).
 - [x] Export and import a workspace as a zip (0.43).
 - [x] Lab self-repair hardening (0.44).
-- [ ] **Demo workspace**: representative projects across disciplines with Lab runs.
+- [x] Demo workspace: seven disciplines, each with a report, data sources and finished Lab results (2026-09-30).
+- [x] Always-on warm node and computehigh default (0.48).
+- [x] Referee -> fixer rounds before a draft is shown; planning rules on checks (0.50).
+- [x] Fetch on this laptop when a site blocks the cluster (0.50).
 - [ ] **Live collaboration** on a shared workspace (sync), building on the zip export.
 - [ ] **Browse from the CLI**: `deep-research sources browse-place drive:gd` to pick Drive files without the dashboard.
 - [ ] **AWS S3 with credentials** in the file browser (needs an AWS profile or rclone S3 remote on this machine).
