@@ -755,3 +755,40 @@ def test_su2_max_time_warning():
         dict(PLAN, script=script.replace("TIME_ITER", "MAX_TIME= 10\nTIME_ITER")),
     )
     assert not any("MAX_TIME" in x for x in w)
+
+
+def test_only_the_first_warm_worker_is_always_on(tmp_path):
+    """Backlog workers get the burst idle limit; only one node stays on forever (v0.48.2)."""
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    (bin_ / "squeue").write_text("#!/bin/bash\ntrue\n")
+    (bin_ / "sbatch").write_text(
+        f'#!/bin/bash\nfor a in "$@"; do case "$a" in --export=*) echo "$a" >> {tmp_path}/sb.log;; esac; done; echo 77\n'
+    )
+    for f in bin_.iterdir():
+        f.chmod(0o755)
+    home = tmp_path / "home"
+    w = home / "deep-research-lab" / "warm"
+    for k in range(4):
+        (w / "queue" / f"t{k}").mkdir(parents=True)
+    tgt = labm.SlurmSSHTarget(
+        {
+            "name": "x",
+            "ssh_host": "h",
+            "partitions": {"computehigh": {}},
+            "warm": {"max_workers": 3, "always_on": True, "idle_min": 0},
+        }
+    )
+
+    def sh(cmd, stdin=None, timeout=0):
+        env = {"HOME": str(home), "PATH": f"{bin_}:/usr/bin:/bin"}
+        return subprocess.run(
+            ["bash", "-c", cmd], input=stdin, env=env, capture_output=True, timeout=30
+        ).stdout.decode()
+
+    tgt.sh = sh  # type: ignore[method-assign]
+    assert tgt.ensure_warm().startswith("started:")
+    exports = (tmp_path / "sb.log").read_text().splitlines()
+    assert len(exports) == 3
+    assert "IDLE_MIN=0," in exports[0]
+    assert all("IDLE_MIN=20," in e for e in exports[1:])
