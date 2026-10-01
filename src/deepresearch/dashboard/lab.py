@@ -2908,6 +2908,12 @@ def _pixi_fallback_only(chans: list[str]) -> str:
     )
 
 
+def labfetch_problem(info: dict) -> str:
+    from deepresearch.dashboard import labfetch
+
+    return labfetch.runtime_problem(info)
+
+
 # --------------------------------------------------------------------------- store + service
 
 
@@ -2915,6 +2921,7 @@ PLAN_DIFF_SKIP = {
     "warnings", "plan_before_fix", "fix_changes", "fix_notes", "fix_diff",
     "catalog_generated", "caveats", "fix_concerns", "url_checks",
     "plan_before_refine", "refine", "review", "review_error", "laptop_fetch",
+    "refine_kept", "plan_refine_discarded", "runtime_blocked",
 }  # fmt: skip
 
 
@@ -3063,6 +3070,8 @@ class Lab(LabVerdictMixin):
         cfg = self._config()
         return getattr(cfg, "followup_model", None) or PLAN_MODEL
 
+    BUSY_BACKOFF_S = (5.0, 20.0, 45.0)  # Gemini 429/5xx retries (v0.51.0)
+
     def _ask(self, prompt: str, search: bool) -> tuple[str, float | None]:
         from google.genai import types
 
@@ -3074,9 +3083,24 @@ class Lab(LabVerdictMixin):
             else None
         )
         client = self._client()  # hold a reference for the whole call
-        resp = client.models.generate_content(
-            model=self._model(), contents=prompt, config=cfg
-        )
+        resp = None
+        for attempt in range(len(self.BUSY_BACKOFF_S) + 1):
+            try:
+                resp = client.models.generate_content(
+                    model=self._model(), contents=prompt, config=cfg
+                )
+                break
+            except Exception as e:
+                # "503 UNAVAILABLE: high demand" and 429s pass in seconds to minutes
+                # (2026-10-01, a fix-blocked step failed on one); retry those, raise
+                # everything else at once
+                code = getattr(e, "code", None) or getattr(e, "status_code", None)
+                if code not in (429, 500, 502, 503, 504) or attempt >= len(
+                    self.BUSY_BACKOFF_S
+                ):
+                    raise
+                time.sleep(self.BUSY_BACKOFF_S[attempt])
+        assert resp is not None
         cost = _cost(getattr(resp, "usage_metadata", None), _search_count(resp))
         if not (resp.text or "").strip():
             # Flash with Google Search can stop on TOO_MANY_TOOL_CALLS with only
@@ -3206,6 +3230,41 @@ class Lab(LabVerdictMixin):
             str(d.get("status") or ""),
         )
         return d
+
+    def pulse(self) -> dict:
+        """Cheap state for the client's notifier: runs in flight and recently finished
+        ones (v0.51.0, K21). One small query; no cluster call, no model call."""
+        with self._conn() as conn:
+            marks = ",".join("?" * len(ACTIVE))
+            active = [
+                r[0]
+                for r in conn.execute(
+                    f"SELECT id FROM lab_runs WHERE status IN ({marks})", ACTIVE
+                )
+            ]
+            done = conn.execute(
+                "SELECT id, session_id, status, stage, plan, verdict, finished_at "
+                "FROM lab_runs WHERE status IN ('completed','failed','cancelled') "
+                "AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 20"
+            ).fetchall()
+        out = []
+        for r in done:
+            d = self._row(r)
+            out.append(
+                {
+                    "id": d["id"],
+                    "session_id": d["session_id"],
+                    "status": d["status"],
+                    "stage": d.get("stage"),
+                    "title": (
+                        (d.get("plan") or {}) if isinstance(d.get("plan"), dict) else {}
+                    ).get("title")
+                    or "",
+                    "outcome": (d.get("assessment") or {}).get("outcome"),
+                    "finished_at": d.get("finished_at"),
+                }
+            )
+        return {"active": active, "finished": out}
 
     def runs_for(self, session_id: int) -> list[dict]:
         with self._conn() as conn:
@@ -3633,6 +3692,19 @@ class Lab(LabVerdictMixin):
             f.get("severity") == "high" for f in review.get("findings") or []
         )
 
+    @staticmethod
+    def _review_rank(review: dict | None) -> tuple[int, int, int]:
+        """Lower is better: verdict (sound < concerns < flawed), then high findings,
+        then all findings. Used to keep the best refine round, not the last (L7)."""
+        rv = review or {}
+        order = {"sound": 0, "concerns": 1, "flawed": 2}
+        fs = rv.get("findings") or []
+        return (
+            order.get(str(rv.get("verdict")), 3),
+            sum(1 for f in fs if f.get("severity") == "high"),
+            len(fs),
+        )
+
     def _auto_refine(self, run_id: int) -> None:
         """Referee findings -> fixer -> referee again, up to REFINE_MAX_ROUNDS, on a new
         draft only. What I did by hand all day on 2026-09-30, every time with success.
@@ -3641,6 +3713,9 @@ class Lab(LabVerdictMixin):
         is satisfied, a round changes nothing, or a step fails. History in `refine`."""
         history: list[dict] = []
         first: dict | None = None
+        # every reviewed version (round 0 = as first written), to keep the best one
+        snaps: list[tuple[int, dict]] = []
+        skip = ("plan_before_refine", "refine")
         for rnd in range(1, self.REFINE_MAX_ROUNDS + 1):
             cur = self.get(run_id)
             if not cur or cur["status"] != "draft":
@@ -3655,6 +3730,7 @@ class Lab(LabVerdictMixin):
                     for k, v in plan.items()
                     if k not in ("warnings", "plan_before_fix", "plan_before_refine")
                 }
+                snaps.append((0, {k: v for k, v in plan.items() if k not in skip}))
             entry: dict = {
                 "round": rnd,
                 "before": (rv or {}).get("verdict"),
@@ -3690,23 +3766,77 @@ class Lab(LabVerdictMixin):
                 entry["error"] = f"referee: {str(e)[:200]}"
                 history.append(entry)
                 break
-            after = ((self.get(run_id) or {}).get("plan") or {}).get("review") or {}
+            now_plan = (self.get(run_id) or {}).get("plan") or {}
+            after = now_plan.get("review") or {}
             entry["after"] = after.get("verdict")
             history.append(entry)
+            if after and not self.review_stale(now_plan):
+                snaps.append(
+                    (rnd, {k: v for k, v in now_plan.items() if k not in skip})
+                )
         if not history:
             return
         cur = self.get(run_id)
         if not cur or cur["status"] != "draft":
             return
+        kept = None
+        if len(snaps) > 1:
+            # the referee's judgments vary and a revision can make a plan worse
+            # (2026-09-30: flawed -> concerns -> flawed); keep the best version,
+            # the newest among equals, never silently the last one
+            best_rank = min(self._review_rank(sp.get("review")) for _, sp in snaps)
+            best_rnd, best = [
+                (r, sp)
+                for r, sp in snaps
+                if self._review_rank(sp.get("review")) == best_rank
+            ][-1]
+            if best_rnd != snaps[-1][0] or self.review_stale(cur.get("plan") or {}):
+                review_kept = best.get("review")
+                discarded = {
+                    k: v for k, v in (cur.get("plan") or {}).items() if k not in skip
+                }
+                try:
+                    self.edit_plan(run_id, best)
+                except ValueError:
+                    return  # left draft meanwhile
+                kept = {
+                    "round": best_rnd,
+                    "verdict": (review_kept or {}).get("verdict"),
+                    "instead_of": snaps[-1][0],
+                    "instead_of_verdict": (snaps[-1][1].get("review") or {}).get(
+                        "verdict"
+                    ),
+                }
+                cur = self.get(run_id) or cur
+                plan_now = dict(cur.get("plan") or {})
+                plan_now["review"] = review_kept
+                plan_now["plan_refine_discarded"] = discarded
+                self._update(run_id, only_if=("draft",), plan=plan_now)
+                cur = self.get(run_id) or cur
         plan = dict(cur.get("plan") or {})
         plan["refine"] = history
         if first is not None:
             plan["plan_before_refine"] = first
+        if kept:
+            plan["refine_kept"] = kept
+        else:
+            plan.pop("refine_kept", None)
+            plan.pop("plan_refine_discarded", None)
         last = history[-1]
-        verdict = last.get("after") or last.get("before")
+        verdict = (
+            (plan.get("review") or {}).get("verdict")
+            or last.get("after")
+            or last.get("before")
+        )
+        if kept and kept["round"] == 0:
+            how = "the AI revisions were not better, so the first plan is kept"
+        elif kept:
+            how = f"kept round {kept['round']}, the best the referee saw"
+        else:
+            how = f"{len(history)} round{'s' if len(history) > 1 else ''}"
         stage = (
             f"Plan ready for review (revised by AI after the referee, "
-            f"{len(history)} round{'s' if len(history) > 1 else ''}; referee now: {verdict})"
+            f"{how}; referee now: {verdict})"
         )
         if plan.get("warnings"):
             stage += f" ({len(plan['warnings'])} warnings)"
@@ -3725,7 +3855,10 @@ class Lab(LabVerdictMixin):
         return self.edit_plan(run_id, first)
 
     # ---- fetch on this laptop when a site blocks the cluster (v0.50.0) -----------
-    def laptop_fetch(self, run_id: int, urls: list[str] | None = None) -> dict:
+    def laptop_fetch(
+        self, run_id: int, urls: list[str] | None = None,
+        extra_problems: list[str] | None = None,
+    ) -> dict:  # fmt: skip
         """Fetch the plan's cluster-blocked URLs here, stage them as a local data source,
         attach it, and have the fixer read `$DS_<NAME>` instead of downloading. Only ever
         a draft; returns the run plus `laptop_fetch` = {source, files, failed}."""
@@ -3787,8 +3920,103 @@ class Lab(LabVerdictMixin):
         }
         self._update(run_id, only_if=("draft",), plan=plan)
         problems = labfetch.problems_for_fixer(src.env_var, got["files"])
-        out = self.fix_plan(run_id, extra_problems=problems)
+        out = self.fix_plan(
+            run_id, extra_problems=problems + list(extra_problems or [])
+        )
         return {**out, "laptop_fetch": plan["laptop_fetch"]}
+
+    def _note_runtime_blocked(self, run_id: int, log: str, plan: dict) -> dict | None:
+        """Record on the plan when a job's log shows a site refusing the cluster (L8)."""
+        from deepresearch.dashboard import labfetch
+
+        info = labfetch.runtime_blocked(log, plan)
+        if not info:
+            return None
+        cur = self.get(run_id)
+        if cur:
+            p = dict(cur.get("plan") or {})
+            p["runtime_blocked"] = {
+                **info,
+                "at": datetime.now().isoformat(timespec="seconds"),
+            }
+            self._update(run_id, plan=p)
+        return info
+
+    def fix_blocked(self, run_id: int) -> dict:
+        """A finished run whose log shows a site refusing the cluster (v0.51.0, L8):
+        a new draft (`rerun_of` = the run) with the blocked fixed URLs fetched on this
+        laptop and staged, or, when the job builds its URLs, a fixer pass told to fetch
+        fewer, larger responses and cache them. Never submits."""
+        from deepresearch.dashboard import labfetch
+
+        run = self.get(run_id)
+        if not run:
+            raise KeyError(run_id)
+        rb = (run.get("plan") or {}).get("runtime_blocked")
+        if run["status"] not in ("completed", "failed") or not rb:
+            raise ValueError("this run's log shows no site refusing the cluster")
+        plan = {
+            k: v
+            for k, v in (run.get("plan") or {}).items()
+            if k not in PLAN_DIFF_SKIP - {"catalog_generated", "caveats"}
+        }
+        new = self.create(
+            run["session_id"],
+            run["scope"],
+            run.get("selection") or "",
+            run.get("request") or "",
+            run.get("target"),
+            rerun_of=run_id,
+            plan=plan,
+        )
+        nid = new["id"]
+        urls = [u for u in rb.get("urls") or [] if u in script_urls(plan)]
+        if urls:
+            # the same path as pre-flight's "Fetch on this laptop", for these URLs
+            p = dict((self.get(nid) or {}).get("plan") or {})
+            p["url_checks"] = [
+                {
+                    "url": u,
+                    "ok": False,
+                    "status": f"HTTP {(rb.get('statuses') or ['429'])[0]}",
+                }
+                for u in urls
+            ]
+            self._update(nid, only_if=("draft",), plan=p)
+        try:
+            if urls:
+                # the refusals came from the job's own requests too: the fetch is staged,
+                # and the fixer is also told to stop the job hammering the site (run
+                # #42's query loop kept calling loc.gov after its fixed URL was staged)
+                out = self.laptop_fetch(
+                    nid, extra_problems=[labfetch.runtime_problem(rb)]
+                )
+            else:
+                out = self.fix_plan(nid, extra_problems=[labfetch.runtime_problem(rb)])
+        except Exception as e:
+            # the new draft stays (a copy of the plan); say what did not happen
+            self._update(
+                nid,
+                only_if=("draft",),
+                stage="Copied for a fix after site refusals; the automatic fix did not "
+                f"finish ({str(e)[:160]}). Use Fix with AI or Fetch on this laptop.",
+            )
+            return {**(self.get(nid) or new), "blocked": rb, "fix_error": str(e)[:300]}
+        # Say plainly when the new draft still talks to a refusing host (run #42's
+        # 600+ queries cannot be pre-fetched; the fixer said so in its notes): that
+        # needs a redesign (as run #48 did with decade facets), not another submit.
+        cur = self.get(nid) or out
+        script = str((cur.get("plan") or {}).get("script") or "")
+        still = [h for h in rb.get("hosts") or [] if h in script]
+        if still and cur.get("status") == "draft":
+            stage = (
+                f"New draft after site refusals: it still calls {', '.join(still)}, "
+                "which refused the cluster; read the AI's notes. A redesign (fewer, "
+                "larger requests, or data staged in advance) is likely needed."
+            )
+            self._update(nid, only_if=("draft",), stage=stage)
+            out = {**out, "stage": stage, "still_calls": still}
+        return {**out, "blocked": rb}
 
     def _auto_review(self, run_id: int) -> None:
         """The referee after planning: two tries (a busy model or a bad reply is common),
@@ -3947,7 +4175,8 @@ class Lab(LabVerdictMixin):
                 k: v
                 for k, v in plan.items()
                 if k not in ("warnings", "plan_before_fix", "review", "refine",
-                             "plan_before_refine", "laptop_fetch")
+                             "plan_before_refine", "laptop_fetch", "refine_kept",
+                             "plan_refine_discarded", "runtime_blocked")
             }  # fmt: skip
             prompt = FIX_PROMPT.format(
                 target=_describe(tgt, full=True),
@@ -3981,7 +4210,13 @@ class Lab(LabVerdictMixin):
             notes.insert(0, "".join(f"REVIEW: {c}. " for c in concerns).strip())
         if original.get("review"):
             plan["review"] = original["review"]  # judged the old plan: shown as stale
-        for k in ("plan_before_refine", "refine", "laptop_fetch"):  # records survive
+        for k in (
+            "plan_before_refine",
+            "refine",
+            "laptop_fetch",
+            "refine_kept",
+            "plan_refine_discarded",
+        ):  # records survive
             if k in original:
                 plan[k] = original[k]
         if original.get("data_sources") and not plan.get("data_sources"):
@@ -4728,6 +4963,9 @@ class Lab(LabVerdictMixin):
         clean_timeout = rc == 124 and not self._SMOKE_ERR.search(log[-20000:])
         passed = (rc == 0 and not missing) or clean_timeout
         fclass, fadvice = ("", "") if passed else classify_failure(log)
+        blocked = self._note_runtime_blocked(run_id, log, plan)
+        if blocked and not passed:
+            fadvice = (fadvice + " " + labfetch_problem(blocked)).strip()
         sm["rounds"] = list(sm.get("rounds") or []) + [
             {
                 "round": n,
@@ -5281,6 +5519,12 @@ class Lab(LabVerdictMixin):
             run = self.get(run["id"]) or run
         if run.get("status") != "analyzing":
             return
+        log_file = dest / "job.log"
+        if log_file.exists():
+            self._note_runtime_blocked(
+                run["id"], log_file.read_text("utf-8", "replace"), run.get("plan") or {}
+            )
+            run = self.get(run["id"]) or run
         verdict = labguard.read_verdict(dest)
         if verdict is not None:
             self._update(run["id"], verdict=verdict)

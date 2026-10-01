@@ -1613,4 +1613,5 @@ window.addEventListener("beforeunload", (e) => { if (NB.dirty) { NB.saveNow(); e
     setTimeout(poll, S.sessions.some((s) => s.status === "running") ? 4000 : 20000);
   };
   setTimeout(poll, 4000);
+  NOTIFY.labPulse(); // Lab finishes notify from any page (stops polling when none run)
 })();

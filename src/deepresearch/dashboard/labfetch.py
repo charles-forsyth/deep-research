@@ -237,3 +237,86 @@ def problems_for_fixer(env_var: str, files: list[dict]) -> list[str]:
     ]
     lines += [f"  ${env_var}/{f['file']}  <-  {f['url']}" for f in files]
     return [" ".join(lines[:1]) + "\n" + "\n".join(lines[1:])]
+
+
+# A job's own log saying a site refused it: "HTTP 429 for 1890 riverside_orange" (run #42,
+# loc.gov), "HTTPError: 403 Client Error: Forbidden for url: https://...", "urllib.error.
+# HTTPError: HTTP Error 429: Too Many Requests". A bare 403/429 inside numbers or tables
+# is not enough: the status must sit next to HTTP / Client Error / Forbidden / Too Many.
+_LOG_BLOCK = re.compile(
+    r"(?:HTTP(?: Error)?[ :]+(?P<a>401|403|429|451|50[234])\b"
+    r"|\b(?P<b>403|429)\b[ :]*(?:Client Error|Forbidden|Too Many Requests))",
+    re.I,
+)
+_URL_RE = re.compile(r"https?://[^\s'\"<>)\]]+")
+
+
+def runtime_blocked(log: str, plan: dict) -> dict | None:
+    """Did the job (or its pilot) hit a site that refuses the cluster? (v0.51.0, L8)
+
+    Pre-flight only checks the fixed URLs in a plan; a job that builds its URLs while it
+    runs (query loops, as run #42 did against loc.gov) is only seen in its log. Returns
+    {"statuses", "count", "hosts", "urls", "lines"} when the log shows refusals, else None.
+    `urls` are the plan's fixed URLs on a refusing host (fetchable here); when it is empty
+    the job builds its URLs, and the fixer is told to pre-fetch or stage the data instead.
+    """
+    if not log:
+        return None
+    from deepresearch.dashboard.lab import script_urls
+
+    hits = [m for m in _LOG_BLOCK.finditer(log)]
+    if not hits:
+        return None
+    statuses = sorted({(m.group("a") or m.group("b")) for m in hits})
+    lines: list[str] = []
+    hosts: set[str] = set()
+    for m in hits:
+        a = log.rfind("\n", 0, m.start()) + 1
+        b = log.find("\n", m.end())
+        line = log[a : b if b >= 0 else len(log)].strip()
+        if line and line not in lines and len(lines) < 5:
+            lines.append(line[:240])
+        for u in _URL_RE.findall(line):
+            h = urllib.parse.urlsplit(u).hostname
+            if h:
+                hosts.add(h.lower())
+    plan_urls = script_urls(plan)
+    plan_hosts = {
+        (urllib.parse.urlsplit(u).hostname or "").lower() for u in plan_urls
+    } - {""}
+    text = json.dumps({k: plan.get(k) for k in ("script", "inputs")})
+    if not hosts:
+        # the log names no URL (run #42): blame the hosts the script talks to
+        for u in _URL_RE.findall(text):
+            h = (urllib.parse.urlsplit(u).hostname or "").lower()
+            if h:
+                hosts.add(h)
+    done = set((plan.get("laptop_fetch") or {}).get("urls") or [])
+    urls = [
+        u for u in plan_urls
+        if (urllib.parse.urlsplit(u).hostname or "").lower() in hosts and u not in done
+    ][:MAX_URLS]  # fmt: skip
+    if not hosts and not plan_hosts:
+        return None  # nothing in the plan talks to the web: not a site refusal
+    return {
+        "statuses": statuses,
+        "count": len(hits),
+        "hosts": sorted(hosts)[:6],
+        "urls": urls,
+        "lines": lines,
+    }
+
+
+def runtime_problem(info: dict) -> str:
+    """What the fixer is told when a failed job was refused by a site at run time."""
+    hosts = ", ".join(info.get("hosts") or []) or "a data site"
+    return (
+        f"The job was refused by {hosts} while it ran (HTTP "
+        f"{'/'.join(info.get('statuses') or [])}, {info.get('count')} times): the site "
+        "blocks or rate-limits the cluster's addresses, and backing off did not help. Do "
+        "not just retry harder. Fetch fewer, larger responses (facets, bulk files, "
+        "pagination with big page sizes) and cache them; or, if the plan can name the "
+        "exact URLs, list them as fixed URLs in the script so they can be fetched on the "
+        "laptop and staged as a data source. A result computed from refused requests is "
+        "not a result: treat missing data as a failed check, never as zero."
+    )

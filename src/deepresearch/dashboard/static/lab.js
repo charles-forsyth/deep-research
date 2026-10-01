@@ -126,6 +126,7 @@ const LAB = {
       ${r.scope === "selection" && r.selection ? `<details class="lab-sel"><summary class="dim">Selected passage</summary><blockquote>${esc(clip(r.selection, 1200))}</blockquote></details>` : ""}
       ${r.status === "plan_failed" && p.why_not ? `<div class="lab-q dim">${esc(p.why_not)}</div>` : ""}
       ${this.smokeHtml(r)}
+      ${this.blockedHtml(r, p)}
       ${this.verdictHtml(r.verdict, r.assessment)}
       ${r.result_md ? `<div class="lab-result md">${renderMd(this.plainMath(r.result_md))}</div>` : ""}
       ${images.length ? `<div class="lab-imgs">${images.map((f) => `<a href="${this.fileUrl(r.id, f.path)}" target="_blank" rel="noopener"><img src="${this.fileUrl(r.id, f.path)}" alt="${esc(f.path)}" loading="lazy"></a>`).join("")}</div>` : ""}
@@ -171,13 +172,24 @@ const LAB = {
   },
 
   // Write-ups are asked for plain Unicode; turn stray inline TeX ($\theta$, $\le$) into symbols.
+  blockedHtml(r, p) {
+    // v0.51.0: the job's own log shows a site refusing the cluster (run #42, loc.gov 429)
+    const b = p.runtime_blocked;
+    if (!b || !["completed", "failed"].includes(r.status)) return "";
+    const n = (b.urls || []).length;
+    const what = n ? `This laptop can fetch ${n > 1 ? `the ${n} fixed URLs` : "the fixed URL"} on ${esc((b.hosts || []).join(", "))}, stage ${n > 1 ? "them" : "it"} as a data source, and have the AI read ${n > 1 ? "them" : "it"} from there in a new draft.` : `The job builds its URLs while it runs, so the AI will redesign the fetch (fewer, larger requests, cached) in a new draft.`;
+    return `<div class="lab-warn"><span class="label">Refused by a site while it ran</span> <span class="dim" style="font-size:11.5px">${esc((b.hosts || []).join(", ") || "a data site")} answered HTTP ${esc((b.statuses || []).join("/"))} ${b.count} time${b.count > 1 ? "s" : ""}; results built on refused requests are not trustworthy. ${what}</span>${(b.lines || []).length ? `<pre class="mono dim" style="font-size:11px;white-space:pre-wrap;margin:4px 0">${b.lines.slice(0, 3).map(esc).join("\n")}</pre>` : ""}<div class="lab-fix-row"><button class="btn small primary" data-la="fixblocked">${n ? "Fetch on this laptop" : "Fix the fetch with AI"}</button><span class="dim" style="font-size:11px">new draft; nothing is submitted</span></div></div>`;
+  },
+
   refineHtml(p, editable) {
     // v0.50.0: the referee -> fixer rounds that ran before this draft was shown
     const h = p.refine || [];
     if (!h.length) return "";
     const v = (x) => ({ sound: "looks sound", concerns: "has concerns", flawed: "flawed" })[x] || x || "?";
     const rows = h.map((x) => `<li>Round ${x.round}: referee ${esc(v(x.before))}${x.after ? ` \u2192 ${esc(v(x.after))}` : ""}${(x.changes || []).length ? `; ${x.changes.length} change${x.changes.length > 1 ? "s" : ""}: ${x.changes.slice(0, 4).map(esc).join("; ")}${x.changes.length > 4 ? "\u2026" : ""}` : ""}${x.error ? ` <span class="dim">(${esc(x.error)})</span>` : ""}</li>`).join("");
-    return `<div class="lab-fixed lab-refine"><div class="lab-fix-row"><span class="label">Revised by AI after the referee</span> <span class="dim" style="font-size:11.5px">before you saw it; nothing was run</span><span class="grow"></span>${editable && p.plan_before_refine ? '<button class="btn small" data-x="undorefine">Back to first plan</button>' : ""}</div><ul>${rows}</ul></div>`;
+    const k = p.refine_kept;
+    const kept = k ? `<div class="dim" style="font-size:12px;margin-top:4px">Kept ${k.round ? `round ${k.round}` : "the first plan"} (referee: ${esc(v(k.verdict))}) instead of round ${k.instead_of} (${esc(v(k.instead_of_verdict))}): the referee's judgment varies, so the best version it saw is kept, not the last.</div>` : "";
+    return `<div class="lab-fixed lab-refine"><div class="lab-fix-row"><span class="label">Revised by AI after the referee</span> <span class="dim" style="font-size:11.5px">before you saw it; nothing was run</span><span class="grow"></span>${editable && p.plan_before_refine && !(k && k.round === 0) ? '<button class="btn small" data-x="undorefine">Back to first plan</button>' : ""}</div><ul>${rows}</ul>${kept}</div>`;
   },
 
   refereeHtml(r, p, editable) {
@@ -274,6 +286,15 @@ const LAB = {
       toast(`New draft #${n.id}: ${(f.changes || []).length} change(s)${(f.remaining || []).length ? `, ${f.remaining.length} warning(s)` : ""}`, (f.remaining || []).length ? "err" : "ok");
       await this.refresh(el, s); this.review(el, s, n);
     });
+    on("fixblocked", async () => {
+      const b = act("fixblocked"); b.innerHTML = '<span class="spinner"></span> Working';
+      const n = await api(`/api/lab/${r.id}/fix-blocked`, { method: "POST" });
+      const lf = n.laptop_fetch;
+      if (n.fix_error) toast(`New draft #${n.id} copied, but the automatic fix did not finish: ${n.fix_error}`, "err");
+      else if ((n.still_calls || []).length) toast(`New draft #${n.id}: still calls ${n.still_calls.join(", ")}; read the AI's notes before submitting`, "err");
+      else toast(lf ? `New draft #${n.id}: fetched ${(lf.files || []).length} file(s) on this laptop` : `New draft #${n.id}: fetch redesigned by AI`, "ok");
+      await this.refresh(el, s); this.review(el, s, n);
+    });
     on("replan", async () => { try { await api(`/api/lab/${r.id}/replan`, { method: "POST" }); } finally { this.refresh(el, s); } });
     on("nb", () => NB.append(`## Lab run #${r.id}: ${r.plan?.title || ""}\n\n**Question:** ${r.plan?.question || ""}\n\n${r.result_md}\n\n*Source: Session #${s.id}, lab run #${r.id} (job ${r.job_id || "-"})*\n`));
     on("cancel", async () => {
@@ -307,7 +328,8 @@ const LAB = {
         this.wire(el, s, n);
         const nc = el.querySelector(`.lab-run[data-run="${r.id}"]`);
         if (logOpen && n.job_id) this.toggleLog(nc, n);
-        if (n.status === "completed" || n.status === "failed") {
+        if ((n.status === "completed" || n.status === "failed") && !NOTIFY.lab.seen.has(n.id)) {
+          NOTIFY.lab.seen.add(n.id); // the global notifier won't repeat it
           toast(`Lab run #${n.id} ${n.status}`, n.status === "completed" ? "ok" : "err");
           NOTIFY.send(`Lab run #${n.id} ${n.status}`, n.plan?.title || "");
         }
@@ -548,7 +570,7 @@ const LAB = {
         await save();
         const n = await api(`/api/lab/${r.id}/submit`, { method: "POST" });
         snapshot = formState(); close(); toast(`Submitted: Slurm job ${n.job_id}`, "ok");
-        NOTIFY.ask();
+        NOTIFY.ask(); NOTIFY.labWake();
         this.refresh(document.querySelector("#lab-panel"), s);
       } catch (e) {
         delete subBtn.dataset.keepLabel;

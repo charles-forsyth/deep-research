@@ -343,6 +343,8 @@ class Api(ProjectApi):
         r("POST", r"/api/lab/(\d+)/undo-fix", self.lab_undo_fix)
         r("POST", r"/api/lab/(\d+)/undo-refine", self.lab_undo_refine)
         r("POST", r"/api/lab/(\d+)/laptop-fetch", self.lab_laptop_fetch)
+        r("POST", r"/api/lab/(\d+)/fix-blocked", self.lab_fix_blocked)
+        r("GET", r"/api/lab/pulse", self.lab_pulse)
         r("POST", r"/api/lab/(\d+)/fix-failed", self.lab_fix_failed)
         r("GET", r"/api/lab/(\d+)/log", self.lab_log)
         r("GET", r"/api/lab/(\d+)/file", self.lab_file)
@@ -1996,6 +1998,22 @@ class Api(ProjectApi):
             raise ApiError(409, str(e)) from e
         view = self._lab_view(run)
         view["fix"] = run.get("fix")
+        return view
+
+    def lab_pulse(self, query, body):
+        return self.lab.pulse()
+
+    def lab_fix_blocked(self, rid, query, body):
+        self._lab_run(rid)
+        try:
+            run = self.lab.fix_blocked(int(rid))
+        except ValueError as e:
+            raise ApiError(409, str(e)) from e
+        view = self._lab_view(run)
+        view["fix"] = run.get("fix")
+        view["laptop_fetch"] = run.get("laptop_fetch")
+        view["fix_error"] = run.get("fix_error")
+        view["still_calls"] = run.get("still_calls")
         return view
 
     def lab_fix_failed(self, rid, query, body):

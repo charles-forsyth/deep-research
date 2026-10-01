@@ -7,6 +7,30 @@ releases.
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-10-01
+
+### Added
+
+- Lab: when a site refuses a job while it runs (seen in the pilot's or the job's own log,
+  e.g. run #42's 636 loc.gov 429s), the run says "Refused by a site while it ran" and
+  offers one button: a new draft with the blocked URLs fetched on this laptop and staged,
+  or, when the job builds its URLs, a fixer pass that redesigns the fetch (fewer, larger,
+  cached requests; missing data is a failed check, never zero). A failing pilot passes
+  the same advice to its own fix. `POST /api/lab/{id}/fix-blocked`. Of 185 real job logs
+  only #42 is flagged.
+- Lab finish notifications from any page: a toast, and a browser notification when the
+  tab is hidden ("Lab run #N: CONFIRMED"). `GET /api/lab/pulse` answers from one small
+  query; the page asks every 30 s only while runs are in flight.
+
+### Changed
+
+- Lab model calls retry a busy Gemini (429/5xx) after 5, 20 and 45 s instead of failing
+  the step at once; a fix that still fails leaves its new draft as a copy, with a stage
+  that says so.
+- Referee -> fixer rounds keep the best version the referee saw, not the last: a round
+  that makes the plan worse (seen 2026-09-30: flawed -> concerns -> flawed) is set aside,
+  shown, and the better version restored with its own review.
+
 ## [0.50.3] - 2026-10-01
 
 ### Fixed

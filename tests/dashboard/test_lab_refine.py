@@ -109,8 +109,9 @@ def test_two_rounds_at_most(lab, monkeypatch):
     )  # fmt: skip
     lab._auto_refine(rid)
     p = lab.get(rid)["plan"]
-    assert seen["fixes"] == 2 and p["script"] == "echo v3"
+    assert seen["fixes"] == 2 and p["script"] == "echo v3"  # all equal: newest kept
     assert [r["after"] for r in p["refine"]] == ["flawed", "flawed"]
+    assert "refine_kept" not in p
 
 
 def test_sound_or_medium_concerns_are_left_alone(lab, monkeypatch):
@@ -191,3 +192,45 @@ def test_an_edit_without_a_change_list_still_counts(lab, monkeypatch):
     assert p["refine"][0]["changes"] == [
         "(the fixer edited the plan without listing changes)"
     ]
+
+
+def test_a_worse_last_round_is_not_kept(lab, monkeypatch):
+    """L7, seen 2026-09-30: flawed -> concerns -> flawed. Keep the 'concerns' version."""
+    rid = _draft(lab, _review("flawed"))
+    _wire(
+        lab, monkeypatch, [_review("concerns", sev="high"), _review("flawed")],
+        ["echo v2", "echo v3"],
+    )  # fmt: skip
+    lab._auto_refine(rid)
+    run = lab.get(rid)
+    p = run["plan"]
+    assert run["status"] == "draft"
+    assert p["script"] == "echo v2" and p["review"]["verdict"] == "concerns"
+    assert not lab.review_stale(p)  # the kept review judged exactly this plan
+    assert p["refine_kept"] == {
+        "round": 1, "verdict": "concerns", "instead_of": 2, "instead_of_verdict": "flawed"
+    }  # fmt: skip
+    assert p["plan_refine_discarded"]["script"] == "echo v3"  # shown, not lost
+    assert p["plan_before_refine"]["script"] == PLAN["script"]  # Undo still works
+    assert "kept round 1, the best the referee saw" in run["stage"]
+    assert [r["after"] for r in p["refine"]] == ["concerns", "flawed"]
+
+
+def test_when_no_revision_beats_the_first_plan_the_first_is_kept(lab, monkeypatch):
+    rid = _draft(lab, _review("concerns", sev="high"))
+    _wire(
+        lab, monkeypatch, [_review("flawed"), _review("flawed")], ["echo v2", "echo v3"]
+    )
+    lab._auto_refine(rid)
+    run = lab.get(rid)
+    assert run["plan"]["script"] == PLAN["script"]
+    assert run["plan"]["refine_kept"]["round"] == 0
+    assert "the AI revisions were not better" in run["stage"]
+
+
+def test_review_rank_orders_verdicts_then_findings():
+    r = Lab._review_rank
+    assert r(_review("sound")) < r(_review("concerns", sev="medium"))
+    assert r(_review("concerns", sev="medium")) < r(_review("concerns", sev="high"))
+    assert r(_review("concerns", sev="high")) < r(_review("flawed"))
+    assert r(None) > r(_review("flawed"))

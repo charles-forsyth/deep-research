@@ -65,15 +65,18 @@ real computations on an HPC cluster. Everything lives in a local SQLite history 
   modules and containers, and you always review and edit it (with a worst-case cost) before
   anything is submitted. A second AI pass, the referee, reads each plan first and flags
   tests that could never fail or never pass; a plan it calls flawed is revised by the AI
-  and checked again (up to two rounds) before you see it, and "Back to first plan" undoes
-  that. If a website blocks the cluster (403/429), "Fetch on this laptop" downloads the
-  files here, stages them as a data source and rewires the plan to read them. A short
+  and checked again (up to two rounds) before you see it; the best version the referee saw
+  is kept, not simply the last, and "Back to first plan" undoes it all. If a website
+  blocks the cluster (403/429), before the run or while it runs, "Fetch on this laptop"
+  downloads the files here, stages them as a data source and rewires the plan to read
+  them (a job that builds its URLs gets its fetch redesigned instead). A short
   pilot runs first on an always-on warm node, so jobs start in seconds; a failed pilot is
   repaired by the AI and retried. The dashboard watches the job, fetches the
   outputs and figures, and judges the result as confirmed, refuted, inconclusive or broken
   (a test that could not tell is re-planned once, for your review). The outcome is attached
   to the report as a note (the report itself is never edited) and included in its summaries
-  and audio. A Lab runs page lists every run with its outcome.
+  and audio. A Lab runs page lists every run with its outcome, and any open dashboard tab
+  tells you when a run finishes (a browser notification when the tab is in the background).
 - **Report repair**: `deep-research repair` restores reports that were saved with only
   their last part (before v0.38.2), while Google still keeps the run.
 - **Workspaces**: keep separate libraries (for example a clean one for demos). Switch,
