@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.50.0 (package `deepresearch`) |
-| Status | Living document. Describes the system as built, verified against the source on 2026-09-28 |
+| Applies to | deep-research v0.50.1 (package `deepresearch`) |
+| Status | Living document. Describes the system as built. Reference tables (modules, routes, settings, CLI) re-checked against the source on 2026-10-01 for v0.50.1; `tests/test_spec_sync.py` keeps routes, settings and modules in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
 This document is normative for behaviour: if the code and this document
@@ -231,29 +231,43 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | Module | Lines | Responsibility |
 |---|---|---|
 | `deepresearch/__init__.py` | 30 | Entry point `main`, version lookup, source-checkout venv re-exec (see K18), silences SDK warnings. |
-| `deepresearch/__main__.py` | 445 | argparse parser, bare-prompt shortcut, command dispatch, top-level error catch. |
+| `deepresearch/__main__.py` | 684 | argparse parser, bare-prompt shortcut, `known_commands`, `--workspace`, command dispatch, top-level error catch. |
 | `cli/base.py` | 43 | `ResearchRequest` and `FollowUpRequest` (Pydantic): final prompt assembly and File Search tool config. |
-| `cli/commands.py` | 662 | One handler per CLI command; `detach_process` for `start`; the CLI cost estimator; `--source` handling. |
-| `cli/sources.py` | 366 | `deep-research sources ...` (section 21); `guess_kind`, `local_uri` validation. |
+| `cli/commands.py` | 927 | One handler per research CLI command; `detach_process` for `start`; the CLI cost estimator; `--source` handling; `repair`. |
+| `cli/jsonout.py` | 89 | `--json` output and exit codes for every command (9.6). |
+| `cli/sources.py` | 396 | `deep-research sources ...` (section 21); `guess_kind`, `local_uri` validation. |
+| `cli/projects.py` | 305 | `deep-research projects ...` (22.10): list, show, create, add, remove, export; reuses the dashboard API in-process. |
+| `cli/workspaces.py` | 179 | `deep-research workspace ...` (section 23): list, create, duplicate, rename, archive, delete, copy, export, import. |
 | `core/config.py` | 78 | Paths, `.env` loading, `DeepResearchConfig`, `service_env()` for background processes. |
-| `core/agent.py` | 674 | `DeepResearchAgent`: stream and poll runs, follow-up, gap analysis, synthesis, recursion. |
-| `core/session.py` | 233 | `SessionManager`: all reads and writes of the `sessions` table, liveness rules. |
+| `core/agent.py` | 725 | `DeepResearchAgent`: stream and poll runs, follow-up, gap analysis, synthesis, recursion; `_final_text` joins every output part. |
+| `core/session.py` | 244 | `SessionManager`: all reads and writes of the `sessions` table, liveness rules. |
+| `core/repair.py` | 156 | Restore reports saved with only their last part (v0.38.2): re-fetch from Google, optional re-synthesis. |
+| `core/workspace.py` | 331 | Workspaces (section 23): Main stays in the config dir, others under `workspaces/<id>/`; current workspace, create, archive, trash. |
+| `core/wscopy.py` | 488 | Copy projects and reports into another workspace (v0.42.0): read-only source, one transaction, id remapping, Lab folders. |
+| `core/wszip.py` | 369 | Workspace export and import as `.drws.zip` (v0.43.0): manifest, checksums, path and size validation, never overwrites. |
 | `storage/database.py` | 35 | Creates `sessions`, enables WAL, additive column migrations. |
 | `storage/files.py` | 151 | `FileManager`: temporary File Search Stores, upload, cleanup rules (`is_disposable_store`). |
 | `utils/exporters.py` | 49 | Code-block extraction and `.json` / `.csv` / text export. |
 | `utils/retry.py` | 36 | `with_retry` (network) and `db_retry` (SQLite locks) tenacity decorators. |
 | `utils/logger.py` | 59 | Rich console logging with `[INFO]`/`[THOUGHT]`/`[WARN]`/`[ERROR]`/`[DB]` tags and optional timestamps. |
 | `dashboard/daemon.py` | 225 | `--start/--stop/--restart/--status`, pid file, loopback check, health probe, URL listing. |
-| `dashboard/server.py` | 1,659 | `Api` route table and handlers, `ThreadingHTTPServer` plumbing, loopback-only guard, static files, Range support. |
-| `dashboard/store.py` | 287 | `DashboardStore`: notebooks, annotations, session meta (stars, tags), dashboard session queries. |
-| `dashboard/features.py` | 590 | Actual cost, research map, compare, briefs, text-to-speech audio. |
-| `dashboard/projects.py` | 1000 | Projects: store, filing rules, citations, dossier and research package exports, summary/Ask prompts, Inbox grouping (22). |
-| `dashboard/project_api.py` | 790 | Project HTTP handlers mixed into `Api` (22.6). |
-| `dashboard/lab.py` | 2,584 | Lab runs (section 20): Slurm target, cluster catalog, planner, pre-flight, job harness, watcher. |
-| `sources/` | 1,941 | Data sources (section 21): `model`, `registry`, `adapters`, `public` (anonymous buckets), `staging`, `usage`, `index`, `discover`, `cloud_catalogs`, `provenance`, `service`. |
-| `dashboard/static/` | 3,736 | `index.html`, `app.css`, `app.js` (core), `features.js`, `lab.js`, `sources.js`, vendored `marked` and `DOMPurify`. |
+| `dashboard/server.py` | 2,288 | `Api` route table and handlers, workspace context per request (`X-DR-Workspace`), `ThreadingHTTPServer` plumbing, loopback-only guard, static files, Range support, streamed zip upload. |
+| `dashboard/store.py` | 289 | `DashboardStore`: notebooks, annotations, session meta (stars, tags), dashboard session queries. |
+| `dashboard/features.py` | 599 | Actual cost, research map, compare, briefs, text-to-speech audio. |
+| `dashboard/projects.py` | 1,028 | Projects: store, filing rules, citations, dossier and research package exports, summary/Ask prompts, Inbox grouping (22). |
+| `dashboard/project_api.py` | 752 | Project HTTP handlers mixed into `Api` (22.6), including the claims board in dossiers. |
+| `dashboard/claims.py` | 170 | Claims board (22.9): one claim per tested question, outcome ordering, deterministic. |
+| `dashboard/lab.py` | 5,411 | Lab runs (section 20): Slurm target, warm worker and always-on keeper, cluster catalog, planner, cluster fact checks, pre-flight, fixer, referee hook, refine rounds, laptop fetch, job harness and install ladder, pilot, watcher. |
+| `dashboard/labguard.py` | 1,004 | Lab lessons (curated and learned pitfalls), planning rules (`GENERAL_RULES`), science guards on plans. |
+| `dashboard/labverdict.py` | 230 | Outcomes CONFIRMED / REFUTED / INCONCLUSIVE / BROKEN from `verdict.json` checks (20.13). |
+| `dashboard/labloop.py` | 355 | Verdict loop (20.13): report notes, pilot gate, one automatic re-plan of an inconclusive run. |
+| `dashboard/labreview.py` | 162 | Referee (20.15): prompt, normalized findings, fixer input. |
+| `dashboard/labfetch.py` | 239 | Fetch on this laptop for cluster-blocked URLs (20.18): blocked-URL detection, safe fetch, provenance. |
+| `dashboard/warm_worker.sh` | 125 | Warm worker on the cluster: spool queue, parallel tasks, heartbeats, idle and time-limit handling (20.16). |
+| `sources/` | 3,458 | Data sources (section 21): `model`, `registry`, `adapters`, `public`, `staging`, `usage`, `index`, `discover`, `cloud_catalogs`, `provenance`, `service`, `browse`, `gdrive`. |
+| `dashboard/static/` | 5,261 | `index.html`, `app.css`, `app.js`, `features.js`, `lab.js`, `sources.js`, `filebrowser.js`, `projects.js`, `workspaces.js`, vendored `marked` and `DOMPurify`. |
 
-Total Python: about 10,500 lines. Total client: about 3,700 lines plus vendored libraries.
+Total Python: about 21,600 lines. Total client: about 5,300 lines plus vendored libraries. Line counts as of v0.50.1.
 
 ### 5.2 Process model
 
@@ -638,6 +652,20 @@ keeps the previous host and port unless given, except that a dashboard started o
 `0.0.0.0` by an older version without `--allow-remote` comes back on `127.0.0.1`. Exit
 codes: see REQ-DASH-1.
 
+### 9.4a Projects, workspaces and sources
+
+| Command | Section |
+|---|---|
+| `projects list|show|create|add|remove|export` | 22.10 |
+| `workspace list|create|duplicate|rename|archive|unarchive|delete|copy|export|import` | 23 |
+| `sources add|list|show|test|browse|preview|rm|index|discover` | 21 (options in 21.4) |
+
+The global `--workspace ID` / `-W ID` option (or `DR_WORKSPACE`) picks the workspace for
+any command; Main is the default (23).
+
+A new subcommand must be added to `known_commands` in `__main__.py`, or
+`deep-research <word>` treats the word as a research prompt and starts a paid run.
+
 ### 9.5 Exit codes and errors
 
 Without `--json`, only `dashboard` returns non-zero exit codes. Every other command
@@ -864,6 +892,10 @@ older keystroke is dropped.
 | `DR_LOCAL_ROOTS` | your home folder | Folders local data sources may use (path-separator list, 21.2). |
 | `DATA_GOV_API_KEY` | `DEMO_KEY` | Data.gov catalog searches in discovery (21.8). |
 | `XDG_CACHE_HOME` | `~/.cache` | Discovery catalog caches under `deepresearch/` (21.8a). |
+| `DR_WORKSPACE` | unset (Main) | Workspace for CLI commands and workers; `--workspace` / `-W` sets it (section 23). |
+| `DR_LAB_REVIEW` | `1` | `0` turns off the automatic Lab referee on new drafts (tests do; 20.15). |
+| `DR_LAB_REFINE` | `1` | `0` turns off the referee -> fixer rounds on new drafts (tests do; 20.17). |
+| `XDG_RUNTIME_DIR` | system default | Location of the Lab's SSH ControlMaster socket (20.3). |
 
 `debug` is a field on `DeepResearchConfig` with no environment variable or flag.
 
@@ -910,6 +942,14 @@ environment, so it follows the CLI order.
 | Embeddings | `models.embed_content` | `gemini-embedding-001` | search backfill and query |
 | Compare summary, briefs, audio summary script | `models.generate_content` | `gemini-3.8-flash` | dashboard |
 | Lab suggestions, plan, results note | `models.generate_content` (suggestions and plan with Google Search) | `gemini-3.8-flash` | dashboard Lab runs (section 20) |
+| Lab cluster fact selection | `models.generate_content` | `gemini-3.8-flash` | planning: picks which software, version and URL facts to check on the warm node (20.10) |
+| Lab fixer | `models.generate_content`, one retry on a bad reply | `gemini-3.8-flash` | Fix with AI, pilot repairs, Fix failed run, laptop fetch rewiring (20.11, 20.12, 20.18) |
+| Lab referee | `models.generate_content` | `gemini-3.8-flash` | every new draft (auto), Re-run (20.15) |
+| Lab refine rounds | referee + fixer calls above | `gemini-3.8-flash` | a new draft the referee calls flawed, up to 2 rounds (20.17) |
+| Lab re-plan of an inconclusive run | `models.generate_content` with Google Search | `gemini-3.8-flash` | once per inconclusive run (20.13) |
+| Project summary, Ask this project, briefs, voice overview script | `models.generate_content` | `gemini-3.8-flash` | project page (22.3) |
+| Project Ask ranking | `models.embed_content` | `gemini-embedding-001` | Ask this project (22.3) |
+| Report repair | `interactions.get`; synthesis via `models.generate_content` | `gemini-3.8-flash` (synthesis) | `deep-research repair` (v0.38.2) |
 | Text to speech | `models.generate_content` (AUDIO) | `gemini-3.8-flash-tts` | dashboard audio export |
 | Usage | `interactions.get` | none | dashboard, opening a finished session |
 | Cancel | `interactions.cancel` | none | dashboard cancel |
@@ -1208,12 +1248,16 @@ on an HPC cluster and attaches the results to that report.
 
 ```mermaid
 flowchart LR
-  A[Report or highlighted passage] --> B[Plan: Gemini + Google Search]
-  B --> C{User reviews plan and script}
-  C -- edit --> C
-  C -- Submit --> D[sbatch on cluster]
-  D --> E[Install software] --> F[Run] --> G[Fetch outputs] --> H[AI results note]
-  H -- Rerun with new parameters --> C
+  A[Report or highlighted passage] --> B[Plan: cluster facts + Gemini + Google Search]
+  B --> P[Pre-flight + referee] --> R{Flawed?}
+  R -- yes, up to 2 rounds --> F[Fixer] --> P
+  R -- no --> C{User reviews plan and script}
+  C -- edit / Fix with AI / Fetch on this laptop --> C
+  C -- Submit --> S[Pilot on the warm node] -- fails --> X[AI repair] --> S
+  S -- passes --> D[Full run: warm node or sbatch]
+  D --> E[Install software] --> G[Run] --> H[Fetch outputs] --> V[Verdict + AI results note]
+  V -- inconclusive, once --> B
+  V -- Rerun with new parameters --> C
 ```
 
 1. **Suggest.** Each report shows a Lab runs section. "Suggest computations" asks Gemini
@@ -1221,31 +1265,40 @@ flowchart LR
    names the question, method, software and rough run time. Suggestions are cached per
    report and only generated on a click.
 2. **Plan.** From a suggestion, a text selection (selection bar: "Lab run") or the whole
-   report, `gemini-3.8-flash` with Google Search writes a JSON plan: question,
-   method, software, install spec, inputs, parameters, resources, expected outputs,
-   success criteria and the job script body. The planner is given the cluster's own
-   catalog (section 20.9): partitions, every installed module, tested recipes, install
-   tools, prebuilt containers and site rules. Without a catalog it falls back to the
-   target's hand-written description (partitions, modules, software notes).
-3. **Review (always).** The plan is a `draft` until the user presses Submit. The dialog
-   shows the plan, any pre-flight warnings from checking it against the catalog
-   (20.9), the full generated sbatch script, the resources and the estimated
+   report. First the model picks a few facts to check on the warm node (software help,
+   versions, URLs; 20.11), then `gemini-3.8-flash` with Google Search writes a JSON plan
+   (fields in 20.2a). The planner is given the cluster's own catalog (section 20.9):
+   partitions, every installed module, tested recipes, install tools, prebuilt containers
+   and site rules, plus the lessons and planning rules (20.10, 20.17). Without a catalog it
+   falls back to the target's hand-written description. Download URLs are then tried on
+   the warm node.
+3. **Check.** Pre-flight checks the plan against the catalog and past runs (warnings,
+   20.9, 20.10, 20.16); the referee reads it (20.15); a flawed draft goes through up to two
+   referee -> fixer rounds before anyone sees it (20.17).
+4. **Review (always).** The plan is a `draft` until the user presses Submit. The dialog
+   shows the plan, the referee, pre-flight warnings, blocked downloads with "Fetch on this
+   laptop" (20.18), the full generated sbatch script, the resources and the estimated
    cluster cost. Parameters and resources are editable; edits rebuild the script and the
    estimate. Nothing is ever submitted automatically.
-4. **Submit.** The harness writes `plan.json`, `run.sbatch` and a status file into
-   `~/deep-research-lab/run_<id>/` on the cluster and calls `sbatch`.
-5. **Watch.** The dashboard's watcher thread polls every 15 s while any run is active
+5. **Pilot.** Submit first runs a cut-down pilot (`LAB_SMOKE=1`) on the warm node; a
+   failed pilot is repaired by the AI and retried (20.11, 20.12, 20.14), and a pilot whose
+   informative checks say the test cannot discriminate stops before the full run (20.13).
+6. **Run.** The harness writes `plan.json`, `run.sbatch` and a status file into
+   `<remote_root>/run_<id>/` (per workspace: `ws-<id>/run_<id>/`) and runs the job on the
+   warm node when it fits, otherwise through `sbatch`.
+7. **Watch.** The dashboard's watcher thread polls every 15 s while any run is active
    (`squeue`/`sacct`, the stage file and the log tail). It stops when nothing is active.
-6. **Fetch.** On a terminal Slurm state the `outputs/` folder, log, script and plan are
-   copied to `<state dir>/lab/run_<id>/` (limits: 200 MB total, 50 MB per file).
-7. **Write-up.** Gemini reads the plan, the log tail and the text outputs and writes a
-   short note: Result, Key numbers, What it means for the report, Limits, Next run. It
-   must quote numbers from the outputs; a failed job is described as failed.
-8. **Rerun.** Copies the plan into a new draft with `rerun_of` set, back to step 3.
+8. **Fetch.** On a terminal Slurm state the `outputs/` folder, log, script and plan are
+   copied to the workspace's `lab/run_<id>/` (limits: 200 MB total, 50 MB per file).
+9. **Verdict and write-up.** `outputs/verdict.json` gives the outcome (CONFIRMED,
+   REFUTED, INCONCLUSIVE, BROKEN; 20.13). Gemini reads the plan, checks, log tail and text
+   outputs and writes a short note; the note is attached to the report as an annotation.
+   An inconclusive run is re-planned once, as a draft.
+10. **Rerun.** Copies the plan into a new draft with `rerun_of` set, back to step 4.
 
-Status values: `planning`, `draft`, `submitting`, `queued`, `running`, `fetching`,
-`analyzing`, `completed`, `failed`, `cancelled`. The UI shows them as stages
-Plan, Review, Queued, Running, Fetch, Write-up, Done.
+Status values: `planning`, `plan_failed`, `draft`, `submitting`, `smoke` (pilot),
+`queued`, `running`, `fetching`, `analyzing`, `completed`, `failed`, `cancelled`. The UI
+shows them as stages Plan, Review, Pilot, Queued, Running, Fetch, Write-up, Done.
 
 ### 20.2 Job harness
 
@@ -1277,6 +1330,32 @@ Plan, Review, Queued, Running, Fetch, Write-up, Done.
 - Package names, channels, modules, image references and pip index URLs are checked
   against strict patterns before they reach the script; anything else is dropped.
 
+### 20.2a Plan fields
+
+The planner returns one JSON object. Fields written by the model:
+
+| Field | Meaning |
+|---|---|
+| `computable` | `false` ends planning as `plan_failed` "Not computable" with `why_not` as the error |
+| `why_not` | Only when not computable: why, and a nearby question that could be computed |
+| `title`, `question` | Short name; the precise question the job answers |
+| `approach` | 2-4 sentences: method, model or dataset, what is measured (used in the write-up) |
+| `software` | `[{name, source, version?, why}]`, source one of module, conda-forge, bioconda, pip, apptainer, spack |
+| `inputs` | Data used, with URLs where downloaded (URLs are checked on the warm node, 20.18) |
+| `parameters`, `parameter_sources` | Values exported as `PARAM_<NAME>`; a citation or "assumed: why" per value (20.13) |
+| `resources` | `partition`, `nodes`, `ntasks_per_node`, `time_limit`, `gpus` |
+| `install` | `modules`, `conda`, `channels`, `pip`, `apptainer`, `spack`, `verify` (20.2) |
+| `script` | Bash run after install (no `#SBATCH`, no installs) |
+| `expected_outputs` | Files the job must produce; missing ones fail the pilot |
+| `success_criteria` | How to tell the run worked and what would count against the claim (shown to the referee and the write-up) |
+| `caveats` | Limits of what the computation can show |
+
+Fields added by the dashboard (never by the model): `data_sources`, `url_checks`,
+`warnings`, `catalog_generated`, `review` / `review_error` (20.15), `plan_before_fix`,
+`fix_changes`, `fix_concerns`, `fix_notes`, `fix_diff` (Fix with AI, 20.4 and 20.6), `refine`,
+`plan_before_refine` (20.17), `laptop_fetch` (20.18), `partition_switched` (20.16). These
+are kept out of model prompts and plan diffs.
+
 ### 20.3 Targets
 
 Targets are defined in `<config dir>/lab_targets.json`, outside the repository (host
@@ -1288,6 +1367,24 @@ the estimate. A second target type only needs those six methods and a `type` val
 Optional `catalog_path` (Ursa Major: `/apps/docs/catalog.json`) points at the cluster's
 catalog (20.9); when it loads, its partitions (cores, memory, GPUs, max nodes, spot,
 price) replace the hand-written table.
+
+Target keys (one object per entry in `targets`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `name`, `label` | `cluster`, the name | Id used in runs and the display name |
+| `type` | `slurm-ssh` | The only target type |
+| `gcloud` | none | `{instance, zone, project}`: connect through `gcloud compute ssh --tunnel-through-iap` (the login node) |
+| `ssh_host` | none | Plain `ssh` host (alias from `~/.ssh/config`) when `gcloud` is absent |
+| `remote_root` | `~/deep-research-lab` | Cluster folder for runs, data, envs and the warm spool |
+| `partitions` | `{}` | Hand-written partitions (CPUs, memory, GPUs, `usd_per_hour`, `use_for`); replaced by the catalog when it loads |
+| `default_partition` | first partition | Wins over the catalog's default (v0.48.0); Ursa Major uses `computehigh` |
+| `modules` | `[]` | Extra module names for the planner prompt |
+| `software_notes` | `""` | Free-text site notes added to the planner prompt ("Site notes: ...") |
+| `catalog_path` | `""` | Cluster catalog file (20.9) |
+| `warm` | none | Warm worker settings: `partition`, `hours` (Slurm time limit), `idle_min` (0 = never exit for idleness), `max_par` (tasks at once), `max_workers` (backlog cap), `always_on` (keeper, 20.16), `burst_idle_min` (extra workers, default 20) |
+
+The SSH ControlMaster socket lives in `$XDG_RUNTIME_DIR` (or `/tmp`) as `dr-lab-%C`.
 
 ### 20.4 API
 
@@ -1749,8 +1846,10 @@ pilot) so the referee does not flag them.
   and is replaced near its Slurm time limit, `hours`). A keeper thread in the dashboard
   (`Lab.start_warm_keeper`, started with the watchers; one per process, shared by all
   workspaces) calls `ensure_warm` every 5 minutes, also when no Lab runs exist, and
-  survives an unreachable cluster. The warm Stop button pauses the keeper until Start;
-  `GET /api/lab/warm` reports `always_on` and `keeper_paused`.
+  survives an unreachable cluster. The warm Stop button (`POST /api/lab/warm/stop`,
+  `{target?}`) asks the workers to exit and pauses the keeper until Start
+  (`POST /api/lab/warm/start`, `{target?}`, starts a worker and resumes the keeper);
+  `GET /api/lab/warm` reports workers, queue counts, `always_on` and `keeper_paused`.
 - v0.48.1: the planner prompt names the default partition and says single-node CPU work
   on it runs on the always-on warm node; the catalog's "Default." wording for another
   partition is dropped. Pre-flight suggests the default partition for single-node CPU
@@ -1828,7 +1927,18 @@ first.
 
 ### 21.4 Interfaces
 
-- CLI: `deep-research sources add|list|show|test|browse|preview|rm|index|discover`.
+- CLI: `deep-research sources add|list|show|test|browse|preview|rm|index|discover`
+  (every subcommand takes `--json`):
+
+  | Subcommand | Arguments and options |
+  |---|---|
+  | `add NAME URI` | `--kind` (guessed from the URI when omitted), `--title`, `--description`, `--tag` (repeatable), `--auth` (credential reference, e.g. `rclone:ceph`), `--level P1-P4` (label only), `--staging auto|relay|direct`, `--include` / `--exclude` (globs, repeatable), `--no-test` (save without reaching it) |
+  | `list` | none |
+  | `show NAME`, `test NAME`, `rm NAME` | `rm` never touches the data itself |
+  | `browse NAME [PATH]` | list files |
+  | `preview NAME [PATH]` | `--bytes N` (default 4000) |
+  | `index NAME` | `--drop` deletes the saved index instead (21.7) |
+  | `discover QUERY` | `--catalog datagov|zenodo|huggingface|aws|gcp|earthengine` (repeatable; default all), `--limit N` per catalog (default 6) |
 - API: `GET/POST /api/sources`, `GET/PATCH/DELETE /api/sources/{id}`,
   `POST /api/sources/{id}/test`, `GET /api/sources/{id}/browse?path=`,
   `GET /api/sources/{id}/preview?path=`; `POST /api/sessions/{sid}/lab` accepts
@@ -1871,7 +1981,8 @@ indexes, or stores the user made) and stores a data source points at are kept an
 named `deep-research-source-<name>` and records `options.store` and `options.store_hash`
 (the manifest hash it was built from). Research runs that include an indexed source search
 that store instead of re-uploading. When the manifest hash changes the index is stale and
-is rebuilt on next use; the old store is deleted. `--drop` / `DELETE .../index` and
+is rebuilt on next use; the old store is deleted. `--drop` /
+`DELETE /api/sources/{id}/index` and
 deleting the source remove the store. `cleanup` never deletes these stores (21.6).
 
 ### 21.8 Open dataset discovery
@@ -2441,6 +2552,7 @@ building on the zip format.
 | 2026-09-30 | v0.48.1 | Planner steered to the default/warm partition; one Python package list for both pre-flight checks (20.16). |
 | 2026-09-30 | v0.48.2 | Only the first warm worker is always-on; backlog workers keep the burst idle limit (20.16). |
 | 2026-09-30 | v0.50.0 | Referee -> fixer rounds on new drafts; three planner rules on checks; laptop fetch for cluster-blocked URLs (20.17, 20.18). |
+| 2026-10-01 | v0.50.1 | Docs sync: module map regenerated (5.1), model calls (13.1), settings (12.1), plan fields (20.2a), target keys (20.3), Lab flow (20.1), CLI groups (9.4a), sources CLI options, warm and index routes; `tests/test_spec_sync.py`. |
 | 2026-09-29 | v0.36.0 | `--json` on every command (9.6); JSON-mode exit codes; `follow_up` returns its answer. K11 fixed for `--json`. |
 | 2026-09-29 | v0.35.9 | SU2 MAX_TIME pre-flight; LAMMPS atom-count known problem. |
 | 2026-09-29 | v0.35.8 | Verdict re-check (mismatch, loose, identical arms); LBM/SU2 known problems. |

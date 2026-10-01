@@ -1,115 +1,73 @@
-# Architecture: Deep Research CLI
+# Architecture: deep-research
 
-This document outlines the high-level architecture of the `deep-research` tool. It follows a **Controller-Service-Repository** pattern adapted for a Python CLI environment.
+A short map of the system. [docs/SPEC.md](docs/SPEC.md) is the complete, normative
+specification (module map in section 5.1, every API route, setting and command); this page
+is the overview. Earlier versions of this page described the CLI only.
 
-## 1. High-Level Diagram
+## 1. Pieces
 
 ```mermaid
 graph TD
-    User[User] --> CLI[CLI Parser (argparse)]
-    CLI --> Config[Configuration (Pydantic)]
+    User[User] --> CLI["CLI (argparse, --json)"]
+    User --> Browser[Browser / phone]
+    Browser --> Dash["Dashboard server (ThreadingHTTPServer)"]
     CLI --> Agent[DeepResearchAgent]
-    
-    subgraph Core Logic
-        Agent -->|Uploads| FM[FileManager]
-        Agent -->|Streams| API[Gemini API]
-        Agent -->|Persists| DB[SessionManager (SQLite)]
+    Dash -->|spawns workers| Agent
+    Agent -->|Deep Research agent, Flash calls| Gemini[Gemini API]
+    Dash -->|Flash: briefs, Ask, Lab planner, referee, fixer| Gemini
+
+    subgraph State["Per workspace (Main = ~/.config/deepresearch)"]
+        DB[(history.db: sessions, projects, notes, Lab runs, sources)]
+        LabDir[lab/run_N results]
     end
-    
-    subgraph Recursive Loop
-        Agent -->|Analyze Gaps| API
-        Agent -->|Spawn Children| ThreadPool[ThreadPoolExecutor]
-        ThreadPool -->|New Instance| Agent
-        Agent -->|Synthesize| API
-    end
-    
-    subgraph Infrastructure
-        FM -->|Files| GCS[Google Cloud File Store]
-        DB -->|History| SQLite[~/.config/deepresearch/history.db]
-    end
+    Agent --> DB
+    Dash --> DB
+
+    Dash -->|SSH over IAP| Cluster["Slurm cluster (Ursa Major)"]
+    Cluster --> Warm["Always-on warm worker"]
+    Dash -->|data sources| Stores["Web, GCS, S3/CephRDS, Drive, local"]
 ```
 
-## 2. Key Components
+## 2. Layers
 
-### 2.1. The Controller (`main`)
-Handles command parsing (`research`, `start`, `tree`, `cleanup`). It instantiates the `DeepResearchConfig` to validate environment variables before execution.
+- **Research engine** (`core/agent.py`): one Deep Research run per task, streamed or
+  polled; recursion fans out child tasks in threads (`ThreadPoolExecutor`), finds gaps and
+  synthesizes; follow-ups continue an interaction. `core/session.py` owns the `sessions`
+  table (SQLite, WAL mode).
+- **CLI** (`__main__.py`, `cli/`): research, start, history, search, repair, `sources`,
+  `projects`, `workspace`; every command takes `--json`. `start` detaches a worker
+  (`start_new_session`) so the run outlives the terminal.
+- **Dashboard** (`dashboard/server.py` + a vanilla-JS client, no build step; Markdown via
+  `marked` + `DOMPurify`): library, reports, notes, notebooks, projects, sources, Lab runs,
+  audio, research map, compare. Launching a run spawns
+  `deep-research research ... --adopt-session N`, exactly like `start`. Listens on this
+  machine only unless started with `--allow-remote`; checks Host and Origin. Each request
+  carries its workspace (`X-DR-Workspace`).
+- **Projects** (`dashboard/projects.py`, `project_api.py`, `claims.py`): containers for a
+  grant, paper or thesis; summaries, Ask, briefs, exports, claims board.
+- **Data sources** (`sources/`): one registry, adapters per kind, staging to the cluster,
+  saved search indexes, open-data discovery, provenance. Only credential references are
+  stored (`rclone:<remote>`, `gcloud`).
+- **Lab** (`dashboard/lab.py` and the `lab*` modules): turns a question in a report into a
+  real job on the cluster. Plan (Flash + Google Search + facts checked on the warm node),
+  pre-flight, referee and up to two referee -> fixer rounds, human review, a pilot on the
+  warm node, the full run, a verdict from `verdict.json`, a results note attached to the
+  report. Blocked downloads can be fetched on the laptop and staged. The cluster's job
+  folder is the source of truth; the `lab_runs` table is a cache.
+- **Workspaces** (`core/workspace.py`, `wscopy.py`, `wszip.py`): separate libraries;
+  Main never moves; copy between workspaces and zip export/import.
 
-### 2.2. The Orchestrator (`DeepResearchAgent`)
-The central brain.
-*   **Stream Handling:** Consumes Server-Sent Events (SSE) for real-time feedback.
-*   **Recursive Logic:** Implements the `_execute_recursion_level` method. It analyzes reports for information gaps and uses `ThreadPoolExecutor` to spawn parallel child research tasks (Depth > 1).
-*   **Resilience:** Contains retry logic for API connection drops.
+## 3. Principles
 
-### 2.3. State Manager (`SessionManager`)
-A SQLite wrapper handling persistence.
-*   **WAL Mode:** Enabled for high concurrency (background writers + foreground readers).
-*   **Schema:** Tracks `interaction_id`, `pid` (for headless), `parent_id` (for recursion), and `depth`.
-
-### 2.4. Infrastructure (`FileManager` & `detach_process`)
-*   **RAG:** Uploads local files to Gemini File Search Stores. Implements `cleanup` logic to force-delete documents and stores to prevent cloud clutter.
-*   **Headless:** Uses platform-specific subprocess creation (`DETACHED_PROCESS` on Windows, `start_new_session` on POSIX) to allow the CLI to exit while the agent keeps running.
-
-## 3. Data Flow (Recursive Mode)
-
-1.  **Phase 1:** Parent Agent performs initial research on the user prompt.
-2.  **Gap Analysis:** The report is fed back to Gemini to identify $N$ missing key details (`breadth`).
-3.  **Fan-Out:** The Agent spawns $N$ threads. Each thread creates a Child Session in SQLite (linked via `parent_id`).
-4.  **Parallel Execution:** Child Agents execute `start_research_poll` independently.
-5.  **Fan-In:** The Parent waits for all threads to complete.
-6.  **Synthesis:** All child reports are merged into a final comprehensive answer.
-
-## 4. Design Decisions
-
-*   **Pydantic V2:** Used for strict configuration and input validation.
-*   **Rich:** Used for all terminal output to provide a modern, readable DX (Developer Experience).
-*   **No AsyncIO:** The project uses `threading` instead of `asyncio` because the `google-genai` synchronous client is robust and easier to debug in a CLI context, and `ThreadPoolExecutor` sufficiently handles I/O-bound API calls.
-
-## 5. Package Layout
-
-```
-src/deepresearch/
-  __main__.py        argparse CLI and help text
-  cli/               command handlers and request models
-  core/              DeepResearchAgent, SessionManager, configuration
-  storage/           SQLite schema, File Search Store uploads
-  utils/             logging, retry decorators, exporters
-  dashboard/
-    daemon.py        --start/--stop/--restart/--status (detached process, PID file, loopback check)
-    server.py        stdlib ThreadingHTTPServer, JSON API, static files, loopback-only guard
-    store.py         notebooks, annotations, stars/tags (extra SQLite tables)
-    features.py      actual cost, research map, compare, briefs, audio (Gemini TTS)
-    lab.py           Lab runs: cluster catalog, planner, pre-flight, Slurm job harness, watcher
-    static/          index.html, app.js, features.js, lab.js, sources.js, app.css,
-                     vendored marked + DOMPurify
-  sources/           data sources: registry, adapters (web, GCS, S3, public buckets, local),
-                     staging for Lab jobs, discovery, provenance, saved indexes
-```
-
-## 6. The Dashboard
-
-The dashboard is a thin layer over the same history database and the same CLI:
-
-*   **Launching** a run creates a session row and spawns `deep-research research ... --adopt-session N`
-    as a detached process, exactly like `deep-research start`. Runs survive dashboard restarts and
-    show up in `deep-research list`.
-*   **Liveness** comes from the PID recorded for each top-level run; `list_sessions` marks rows whose
-    process is gone as crashed.
-*   **Live timeline** reads the per-session log (`~/.config/deepresearch/logs/session_N.log`), whose
-    lines carry timestamps when started from the dashboard (`DR_LOG_TIMESTAMPS`).
-*   **Actual cost** is fetched from the Interactions API usage record and cached once a run finishes.
-*   **Research map** projects the stored `gemini-embedding-001` vectors to 2-D (power-iteration PCA
-    on the server, a small force layout in the browser) and links nearest neighbours.
-*   **Audio** is synthesized in chunks with Gemini TTS on a background thread, joined into one WAV,
-    converted to MP3 with `ffmpeg` when available, cached on disk and served with HTTP Range support.
-*   **Frontend** is vanilla JavaScript with no build step; Markdown is rendered with `marked` and
-    sanitized with `DOMPurify` before insertion.
-*   **Network**: the server listens on `127.0.0.1` by default and refuses requests from other
-    addresses unless started with `--allow-remote`; it also checks the Host and Origin headers.
-*   **Lab runs** reach the cluster with the user's own `ssh`/`scp`; the cluster's job folder is the
-    source of truth and the `lab_runs` table is a cache. Submit claims the draft atomically, so one
-    click means at most one Slurm job.
-*   **Data sources** store credential references only (`rclone:<remote>`, `gcloud`); fetches use
-    the existing `rclone`, `gcloud` and `curl` tools, and every downloaded file name is checked to
-    stay inside its folder.
-
-The full specification is [docs/SPEC.md](docs/SPEC.md).
+- **Nothing runs without review.** Lab plans are drafts until a person submits them; AI
+  fixes and referee rounds only ever produce another draft.
+- **Additive storage.** Migrations only add tables and columns. Main's data is never moved
+  or rewritten by new features.
+- **Cheap models by default.** Everything except the Deep Research agent uses
+  `gemini-3.8-flash`; a 2026-09-30 comparison found Pro no better for Lab plans.
+- **Evidence over claims.** Lab outcomes come from checks the job writes, not from the
+  write-up; refuted and broken results are shown as such.
+- **Threads, not asyncio.** The synchronous `google-genai` client and thread pools cover
+  the I/O-bound work and are easier to debug.
+- **Tests and spec move together.** `tests/test_spec_sync.py` fails CI when a route,
+  setting, module or command is missing from the spec.
