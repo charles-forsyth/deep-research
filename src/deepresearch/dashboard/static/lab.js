@@ -420,6 +420,20 @@ const LAB = {
       ${d.script ? `<pre class="lab-script diff">${body}</pre>` : ""}${d.truncated ? '<div class="dim" style="font-size:11px">diff shortened</div>' : ""}</details>`;
   },
 
+  coresNote(parts, res) {
+    // what the job will hold per node; mirrors labcores.request on the server
+    const name = res.partition || "";
+    const v = parts[name] || {};
+    const whole = typeof v.exclusive === "boolean" ? v.exclusive : ["highmem", "gpul4"].includes(name);
+    if (whole) return `${name} gives whole nodes: every job gets all ${v.cpus || "its"} cores and pays for the node.`;
+    if (res.whole_node === true) return `Whole node requested: all ${v.cpus || "the"} cores, billed as a whole node.`;
+    const ranks = +res.ntasks_per_node > 1 ? Math.floor(+res.ntasks_per_node) : 0; // 1 = one task, sized by cores
+    const per = ranks && +res.cores >= 1 && ranks * Math.floor(+res.cores) <= (v.cpus || 0) ? Math.floor(+res.cores) : 1;
+    const cores = Math.min(ranks ? ranks * per : (+res.cores >= 1 ? Math.floor(+res.cores) : 2), v.cpus || Infinity);
+    const live = v.exclusive === false ? "" : " (until the cluster switches to shared nodes, jobs still get and pay for whole nodes)";
+    return `${name} is shared: the job holds ${cores} of ${v.cpus || "?"} cores per node${ranks ? ` (${ranks} MPI ranks x ${per})` : (+res.cores >= 1 ? "" : " (default)")}${res.mem_gb ? ` and ${res.mem_gb} GB` : ""}${live}.`;
+  },
+
   review(el, s, r, readOnly = false) {
     const p = JSON.parse(JSON.stringify(r.plan || {}));
     const editable = r.status === "draft" && !readOnly;
@@ -459,7 +473,10 @@ const LAB = {
           <label><span class="mono">nodes</span><input id="lr-nodes" type="number" min="1" value="${esc(res.nodes || 1)}" ${editable ? "" : "disabled"}></label>
           <label><span class="mono">time limit</span><input id="lr-time" value="${esc(res.time_limit || "01:00:00")}" ${editable ? "" : "disabled"}></label>
           <label><span class="mono">gpus</span><input id="lr-gpus" type="number" min="0" value="${esc(res.gpus || 0)}" ${editable ? "" : "disabled"}></label>
-        </div></div>
+          <label title="CPU cores per node. On shared partitions the job gets only these (blank: 2). MPI ranks (ntasks_per_node) count instead when set."><span class="mono">cores</span><input id="lr-cores" type="number" min="1" placeholder="2" value="${esc(res.cores ?? "")}" ${editable ? "" : "disabled"}></label>
+          <label title="Memory per node in GB. Blank: the share that comes with the cores."><span class="mono">mem GB</span><input id="lr-mem" type="number" min="1" placeholder="auto" value="${esc(res.mem_gb ?? "")}" ${editable ? "" : "disabled"}></label>
+          <label title="Ask for the whole node (--exclusive). highmem and gpul4 always give whole nodes."><span class="mono">whole node</span><select id="lr-whole" ${editable ? "" : "disabled"}><option value="0" ${res.whole_node === true ? "" : "selected"}>no</option><option value="1" ${res.whole_node === true ? "selected" : ""}>yes</option></select></label>
+        </div><div class="dim" style="font-size:11px;margin-top:4px">${esc(this.coresNote(parts, res))}</div></div>
       <h4 class="lab-h" id="lr-sec-4">4. Result check</h4>
       <div class="lab-sec"><span class="label">Expected outputs</span> <span class="mono dim" style="font-size:11.5px">${esc((p.expected_outputs || []).join(", "))}</span></div>
       <div class="lab-sec"><span class="label">Success criteria</span><div class="dim" style="font-size:12px">${esc(p.success_criteria || "")}</div></div>
@@ -468,7 +485,7 @@ const LAB = {
       <details class="lab-sec" open><summary class="label">Run script ${editable ? "(edit to change what runs)" : ""} <span class="dim">\u2014 click to fold</span></summary>
         <textarea id="lr-script" class="lab-script" spellcheck="false" ${editable ? "" : "readonly"}>${esc(p.script || "")}</textarea></details>
       <details class="lab-sec"><summary class="label">Generated Slurm batch file <span class="dim">\u2014 click to show</span></summary><pre class="lab-script">${esc(r.script || "")}</pre></details>
-      <div class="estimate"><span>COMPUTE, WORST CASE <b id="lr-est">${r.estimate_usd != null ? "$" + (+r.estimate_usd).toFixed(2) : "?"}</b></span><span class="dim">nodes x time limit x list price; real jobs usually stop earlier</span>${r.ai_cost_usd ? `<span>AI so far <b>$${(+r.ai_cost_usd).toFixed(2)}</b></span>` : ""}</div>
+      <div class="estimate"><span>COMPUTE, WORST CASE <b id="lr-est">${r.estimate_usd != null ? "$" + (+r.estimate_usd).toFixed(2) : "?"}</b></span><span class="dim">nodes x share of node x time limit x list price; real jobs usually stop earlier</span>${r.ai_cost_usd ? `<span>AI so far <b>$${(+r.ai_cost_usd).toFixed(2)}</b></span>` : ""}</div>
       <div class="acts">
         <button class="btn" data-x="0">Close</button>
         ${editable ? `<button class="btn" data-x="save">Save draft</button><span class="grow"></span><button class="btn primary" data-x="submit">Submit to ${esc(r.target_label || "cluster")}\u2026</button>` : ""}
@@ -493,6 +510,10 @@ const LAB = {
         np.parameters[i.dataset.param] = v;
       });
       np.resources = { ...(np.resources || {}), partition: $("#lr-part").value, nodes: Math.max(1, +$("#lr-nodes").value || 1), time_limit: $("#lr-time").value.trim(), gpus: Math.max(0, +$("#lr-gpus").value || 0) };
+      const cores = Math.floor(+$("#lr-cores").value), mem = +$("#lr-mem").value;
+      if (cores >= 1) np.resources.cores = cores; else delete np.resources.cores;
+      if (mem > 0) np.resources.mem_gb = mem; else delete np.resources.mem_gb;
+      if ($("#lr-whole").value === "1") np.resources.whole_node = true; else delete np.resources.whole_node;
       np.script = $("#lr-script").value;
       delete np.warnings; // recomputed by the server on save
       return np;

@@ -7,6 +7,41 @@ releases.
 
 ## [Unreleased]
 
+## [0.52.1] - 2026-10-02
+
+### Changed
+
+- Lab jobs ask for their cores on shared partitions. Ursa Major is moving to shared
+  nodes (every partition except `highmem` and `gpul4`), where a job that asks for
+  nothing gets one core and the cluster holds it there. Every Lab job on a shared
+  partition now carries `--ntasks-per-node`/`--cpus-per-task` (default 2 cores when the
+  plan names none), and `--mem` when the plan asks for memory; whole-node partitions get
+  `--exclusive`. SPEC 20.2b.
+- Plans have `resources.cores`, `resources.mem_gb` and `resources.whole_node`; the
+  planner prompt, the cluster description and the plan view explain them. MPI ranks
+  (`ntasks_per_node` above 1) are one core each, or hybrid with `cores` threads per rank
+  when that fits the node. `ntasks_per_node: 1` (older serial plans) is one task sized by
+  `cores`.
+- The cost estimate bills the share of the node held (`max(cores share, memory share)`)
+  on partitions the cluster catalog marks shared, and the whole node everywhere else, so
+  estimates on today's exclusive cluster are unchanged (checked against all 102 stored
+  Lab runs: 0 estimates changed).
+
+### Added
+
+- Pre-flight warnings: no core count on a shared partition, MPI- or sweep-shaped work on
+  the default cores, more cores than the node has, and scripts that size threads from
+  `os.cpu_count()`, `nproc --all` or `/proc/cpuinfo`.
+- `dashboard/labcores.py` and `tests/dashboard/test_labcores.py` (25 tests).
+- Target key `whole_node_partitions` (default `highmem`, `gpul4`), used when the catalog
+  does not publish a per-partition `exclusive` flag.
+
+### Verified
+
+- On the exclusive cluster (job 324, 2026-10-02) a job with `--cpus-per-task=2` still
+  received all 22 cores and was billed for the node, so this release changes nothing on
+  the cluster until its partitions are shared.
+
 ## [0.52.0] - 2026-10-01
 
 ### Changed

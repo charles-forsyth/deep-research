@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.52.0 (package `deepresearch`) |
+| Applies to | deep-research v0.52.1 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -276,8 +276,9 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | `dashboard/projects.py` | 1,028 | Projects: store, filing rules, citations, dossier and research package exports, summary/Ask prompts, Inbox grouping (22). |
 | `dashboard/project_api.py` | 752 | Project HTTP handlers mixed into `Api` (22.6), including the claims board in dossiers. |
 | `dashboard/claims.py` | 170 | Claims board (22.9): one claim per tested question, outcome ordering, deterministic. |
-| `dashboard/cluster.py` | 908 | Cluster access (v0.52.0): `SlurmSSHTarget` (SSH via gcloud IAP or a plain host, one ControlMaster connection, sbatch/squeue/sacct, run folders, warm worker and spool, file transfer, catalog cache), `ScopedTarget` (a workspace's view), `load_targets`. No model or database code. |
-| `dashboard/lab.py` | 4,788 | Lab runs (section 20): always-on keeper, planner, cluster fact checks, pre-flight, fixer, referee hook, refine rounds, laptop fetch, job harness and install ladder, pilot, watcher. Drives `cluster.py`. |
+| `dashboard/cluster.py` | 918 | Cluster access (v0.52.0): `SlurmSSHTarget` (SSH via gcloud IAP or a plain host, one ControlMaster connection, sbatch/squeue/sacct, run folders, warm worker and spool, file transfer, catalog cache), `ScopedTarget` (a workspace's view), `load_targets`. No model or database code. |
+| `dashboard/lab.py` | 4,808 | Lab runs (section 20): always-on keeper, planner, cluster fact checks, pre-flight, fixer, referee hook, refine rounds, laptop fetch, job harness and install ladder, pilot, watcher. Drives `cluster.py`. |
+| `dashboard/labcores.py` | 249 | Cores and memory on shared partitions (20.2b): the request per node, `#SBATCH` lines, share of the node for the estimate, pre-flight warnings, planner text. |
 | `dashboard/labguard.py` | 1,004 | Lab lessons (curated and learned pitfalls), planning rules (`GENERAL_RULES`), science guards on plans. |
 | `dashboard/labverdict.py` | 230 | Outcomes CONFIRMED / REFUTED / INCONCLUSIVE / BROKEN from `verdict.json` checks (20.13). |
 | `dashboard/labloop.py` | 355 | Verdict loop (20.13): report notes, pilot gate, one automatic re-plan of an inconclusive run. |
@@ -1195,6 +1196,7 @@ turn off the automatic Lab referee and refine rounds (`DR_LAB_REVIEW=0`,
 | `tests/dashboard/test_lab_refine.py` | 10 | Referee -> fixer rounds, stop rules, undo, planning rules |
 | `tests/dashboard/test_lab_selfrepair.py` | 13 | Retry on unusable replies, backslash repair, failure classes, lessons, package lists |
 | `tests/dashboard/test_lab_v3.py` | 37 | Warm node, pilot and AI fix loop, install ladder, probes, partition matching, backlog workers |
+| `tests/dashboard/test_labcores.py` | 25 | Cores on shared partitions: default 2, cap, invalid values, MPI ranks and hybrid threads, single rank, memory, whole node, whole-node partitions, catalog flag, cost share only once shared, pre-flight, prompts |
 | `tests/dashboard/test_labguard.py` | 15 | Lessons and science guards on plans |
 | `tests/dashboard/test_labverdict.py` | 17 | Outcomes, notes on the report, pilot gate, one automatic re-plan |
 | `tests/dashboard/test_mobile_layout.py` | 3 | No horizontal overflow at phone width (CSS guards) |
@@ -1411,7 +1413,9 @@ shows them as stages Plan, Review, Pilot, Queued, Running, Fetch, Write-up, Done
 
 `build_sbatch()` wraps the planner's script body in a fixed harness:
 
-- `#SBATCH` lines from the resources (partition, nodes, `ntasks_per_node`, GPUs, time).
+- `#SBATCH` lines from the resources (partition, nodes, GPUs, time) plus the core and
+  memory request for the partition (20.2b): `--ntasks-per-node`/`--cpus-per-task`
+  (and `--mem` when asked) on shared partitions, `--exclusive` on whole-node ones.
   No defaults cap nodes, time or GPUs (user decision); the partition's own limits apply.
   A partition the catalog marks `spot` adds `--requeue` (spot nodes can be reclaimed).
 - When the catalog publishes a site job header (`job_header.path`, Ursa Major:
@@ -1450,7 +1454,7 @@ The planner returns one JSON object. Fields written by the model:
 | `software` | `[{name, source, version?, why}]`, source one of module, conda-forge, bioconda, pip, apptainer, spack |
 | `inputs` | Data used, with URLs where downloaded (URLs are checked on the warm node, 20.18) |
 | `parameters`, `parameter_sources` | Values exported as `PARAM_<NAME>`; a citation or "assumed: why" per value (20.13) |
-| `resources` | `partition`, `nodes`, `ntasks_per_node`, `time_limit`, `gpus` |
+| `resources` | `partition`, `nodes`, `cores`, `mem_gb`, `whole_node`, `ntasks_per_node`, `time_limit`, `gpus` (20.2b) |
 | `install` | `modules`, `conda`, `channels`, `pip`, `apptainer`, `spack`, `verify` (20.2) |
 | `script` | Bash run after install (no `#SBATCH`, no installs) |
 | `expected_outputs` | Files the job must produce; missing ones fail the pilot |
@@ -1463,6 +1467,41 @@ Fields added by the dashboard (never by the model): `data_sources`, `url_checks`
 `plan_before_refine`, `refine_kept`, `plan_refine_discarded` (20.17), `laptop_fetch`,
 `runtime_blocked` (20.18), `partition_switched` (20.16). These are kept out of model
 prompts and plan diffs.
+
+### 20.2b Cores on shared partitions (v0.52.1)
+
+Ursa Major is moving to shared nodes: every partition except `highmem` and `gpul4` will
+let several jobs share a node, and a job on a shared partition gets only the cores and
+memory it asks for (the cgroup holds it there). A job that asks for nothing gets one
+core. So every Lab job on a shared partition asks for its cores (`dashboard/labcores.py`):
+
+| Plan resources | `#SBATCH` lines on a shared partition |
+|---|---|
+| no `cores` (or an invalid value) | `--ntasks-per-node=1 --cpus-per-task=2` (default 2) and a pre-flight warning |
+| `cores: N` | `--ntasks-per-node=1 --cpus-per-task=N` (capped at the node's cores) |
+| `ntasks_per_node: R` (R > 1, MPI) | `--ntasks-per-node=R --cpus-per-task=1`; with `cores: T` and R x T within the node, `--cpus-per-task=T` (hybrid) |
+| `ntasks_per_node: 1` | treated as one task sized by `cores` (older plans used it for serial work) |
+| `mem_gb: M` | adds `--mem=<M rounded up>G` (capped at the node); without it Slurm gives `DefMemPerCPU` per core, which is the node's memory divided by its cores |
+| `whole_node: true` | `--exclusive` instead of the lines above |
+
+Whole-node partitions always get `--exclusive` (plus `--ntasks-per-node` for MPI). Which
+partitions are whole-node: the catalog's per-partition `exclusive` flag when published,
+else the target's `whole_node_partitions`, else `highmem` and `gpul4`.
+
+The lines are written ahead of the cluster change. Measured on the exclusive cluster
+(job 324, 2026-10-02): a job with `--cpus-per-task=2` still received all 22 cores
+(`nproc`, `os.cpu_count()` and `$SLURM_CPUS_ON_NODE` all 22) and was billed for the node,
+so nothing changes until the partitions are shared. The estimate (20.5) therefore stays
+whole-node until the catalog says a partition is shared.
+
+Pre-flight (advice, never blocking): no core count on a shared partition; MPI- or
+sweep-shaped work on the default cores; more cores than the node has; a script that sizes
+threads from `os.cpu_count()`, `nproc --all` or `/proc/cpuinfo`, which count the whole
+node (`$SLURM_CPUS_ON_NODE` and plain `nproc` report the cores the job holds). The planner
+prompt and the target description say which partitions are shared, how to size a job, and
+that the cluster is still switching when the catalog does not mark them shared yet. The
+plan view has `cores`, `mem GB` and `whole node` inputs and a line saying what the job
+will hold.
 
 ### 20.3 Targets
 
@@ -1485,7 +1524,8 @@ Target keys (one object per entry in `targets`):
 | `gcloud` | none | `{instance, zone, project}`: connect through `gcloud compute ssh --tunnel-through-iap` (the login node) |
 | `ssh_host` | none | Plain `ssh` host (alias from `~/.ssh/config`) when `gcloud` is absent |
 | `remote_root` | `~/deep-research-lab` | Cluster folder for runs, data, envs and the warm spool |
-| `partitions` | `{}` | Hand-written partitions (CPUs, memory, GPUs, `usd_per_hour`, `use_for`); replaced by the catalog when it loads |
+| `partitions` | `{}` | Hand-written partitions (CPUs, memory, GPUs, `usd_per_hour`, `use_for`, optional `exclusive`); replaced by the catalog when it loads |
+| `whole_node_partitions` | `["highmem", "gpul4"]` | Partitions that always give whole nodes, used when the catalog does not publish `exclusive` per partition (20.2b) |
 | `default_partition` | first partition | Wins over the catalog's default (v0.48.0); Ursa Major uses `computehigh` |
 | `modules` | `[]` | Extra module names for the planner prompt |
 | `software_notes` | `""` | Free-text site notes added to the planner prompt ("Site notes: ...") |
@@ -1521,10 +1561,13 @@ Deleting a report deletes its lab runs, suggestions and local result files.
 
 ### 20.5 Cost
 
-The estimate before submit is `partition hourly price x nodes x time limit`, from the
+The estimate before submit is `partition hourly price x nodes x share of the node x time
+limit`, from the
 cluster catalog's partition prices when loaded (the same table as the cluster's
 `ursa-cost`, Google list prices; `spot` $0.74 against `standard` $1.45 per node-hour),
-else from the target config. It is an upper bound: jobs usually end
+else from the target config. The share of the node is 1 (the whole node) except on a
+partition the catalog marks shared (`exclusive: false`), where it is
+`max(cores / node cores, mem_gb / node memory)` (20.2b). It is an upper bound: jobs usually end
 early, and the node's ~90 s boot is not billed to the job. AI cost (suggestions, cluster fact selection, plan, referee, fixes, write-up) is computed
 from `usage_metadata` (cached input at the cached rate, thinking
 as output) plus $14 per 1,000 Google Search queries the reply reports, and shown on the
@@ -2810,3 +2853,4 @@ before v0.39.0).
 | 2026-10-01 | v0.51.0 | Best refine round kept, not the last (20.17, L7); refusals in a job's own log offered as a new draft, `POST /api/lab/{id}/fix-blocked` (20.18, L8); Lab finish notifications from any page, `GET /api/lab/pulse` (20.19, K21). |
 | 2026-10-01 | v0.52.0 | Cluster layer moved out of `lab.py` into `dashboard/cluster.py` with its own tests (5.1, 19, K20). No behaviour change. |
 | 2026-10-01 | v0.52.0 (docs) | Section 24: open decisions, demo items, blockers, gaps to fix next and future prospects in one list. |
+| 2026-10-02 | v0.52.1 | Cores on shared partitions (20.2b, R0 of the bifrost migration plan): explicit core request on every shared partition (default 2), `cores`/`mem_gb`/`whole_node` plan fields, whole-node partitions keep `--exclusive`, cost by share once the cluster shares, pre-flight warnings (5.1, 20.2, 20.2a, 20.3, 20.5, 16.1). |

@@ -23,6 +23,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from deepresearch.dashboard import labcores
+
 MAX_FETCH_BYTES = 200 * 1024 * 1024  # whole outputs folder
 MAX_FILE_BYTES = 50 * 1024 * 1024  # any single file
 
@@ -658,6 +660,9 @@ class SlurmSSHTarget:
                 "spot": bool(p.get("spot")),
                 "use_for": p.get("use_for", ""),
             }
+            # shared vs whole-node, when the cluster publishes it (labcores)
+            if isinstance(p.get("exclusive"), bool):
+                parts[p["name"]]["exclusive"] = p["exclusive"]
             # the catalog's default applies only when lab_targets.json names none:
             # the person's choice wins (2026-09-30: computehigh, not the catalog's standard)
             if p.get("default") and not self.cfg.get("default_partition"):
@@ -811,7 +816,13 @@ class SlurmSSHTarget:
             )
             + "."
         )
-        return "Partitions (whole nodes, created on demand):\n" + "\n".join(rows) + tail
+        cores = labcores.describe(self)
+        return (
+            "Partitions (nodes created on demand; prices per node-hour):\n"
+            + "\n".join(rows)
+            + tail
+            + (f"\n{cores}" if cores else "")
+        )
 
     def describe(self) -> str:
         parts = "\n".join(
@@ -823,8 +834,8 @@ class SlurmSSHTarget:
         )
         return (
             f"Target: {self.label} (Slurm). Partitions:\n{parts}\n"
-            f"Default partition: {self.default_partition}. Whole nodes are allocated "
-            f"(exclusive). Nodes boot on demand (1-5 minutes before the job starts).\n"
+            f"Default partition: {self.default_partition}. Nodes boot on demand "
+            f"(1-5 minutes before the job starts).\n{labcores.describe(self)}\n"
             f"Existing environment modules: {', '.join(self.modules) or 'none'}.\n"
             f"{self.software_notes}"
         )

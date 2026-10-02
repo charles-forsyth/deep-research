@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from deepresearch.dashboard import labguard, labverdict
+from deepresearch.dashboard import labcores, labguard, labverdict
 from deepresearch.dashboard.labloop import LabVerdictMixin
 from deepresearch.dashboard.cluster import (  # noqa: F401  (re-exported)
     GCLOUD_LOGIN_HINT,
@@ -822,7 +822,12 @@ def estimate_cost(target: SlurmSSHTarget | None, plan: dict) -> float | None:
     tl = str(r.get("time_limit") or "01:00:00")
     if not TIME_RE.fullmatch(tl):
         tl = "01:00:00"  # build_sbatch falls back the same way
-    return round(nodes * _hours(tl) * float(rate), 2)
+    # shared partitions bill the share of the node the job holds (labcores)
+    name = r.get("partition") or target.default_partition
+    if name not in target.partitions:
+        name = target.default_partition
+    share = labcores.node_share(target, name, r)
+    return round(nodes * share * _hours(tl) * float(rate), 2)
 
 
 def _hours(limit: str) -> float:
@@ -1006,9 +1011,13 @@ Requirements for the job:
   website is reachable. Keep it to seconds and to things that make the result
   meaningless if wrong; do not check the science. Set thresholds loosely (for example at
   least half the requested records) so a check does not stop a run that would have worked.
-- Use $SLURM_CPUS_ON_NODE for thread counts. For MPI codes launch with `srun` (Slurm
-  starts one rank per task across all nodes; set resources.nodes and optionally
-  resources.ntasks_per_node). Temporary files go to $TMPDIR (private, node-local).
+- Cores: on shared partitions the job gets only the cores it asks for, so set
+  resources.cores to what the work can really use (serial code: 1-2; threaded or
+  multiprocessing code: its worker count), or resources.whole_node = true when it needs
+  every core. Use $SLURM_CPUS_ON_NODE for thread counts, never os.cpu_count(). For MPI
+  codes launch with `srun` (Slurm starts one rank per task across all nodes; set
+  resources.nodes and resources.ntasks_per_node, one core per rank). Temporary files go
+  to $TMPDIR (private, node-local).
   Exit non-zero on failure (the harness uses `set -euo pipefail`).
 - Parameter sweeps or many independent cases: the `spot` partition costs about half;
   write the script so a rerun skips cases whose output already exists (spot nodes can be
@@ -1028,7 +1037,7 @@ strings write every backslash as \\\\ (regexes, LaTeX, Windows paths) and line b
 "inputs": ["data or structures used, with URLs where downloaded"],
 "parameters": {{"name": value}},
 "parameter_sources": {{"name": "citation (author year, or URL), or 'assumed: why'"}},
-"resources": {{"partition": "...", "nodes": 1, "ntasks_per_node": null, "time_limit": "HH:MM:SS", "gpus": 0}},
+"resources": {{"partition": "...", "nodes": 1, "cores": 2, "mem_gb": null, "whole_node": false, "ntasks_per_node": null, "time_limit": "HH:MM:SS", "gpus": 0}},
 "install": {{"modules": [], "conda": ["package", ...], "channels": ["conda-forge"], "pip": ["package", "--extra-index-url https://...", ...], "apptainer": ["docker://image:tag"], "spack": ["only for compiled codes that are neither modules nor on conda-forge"], "verify": ["one-line shell checks that prove the software works, e.g. \"SU2_CFD --help | head -1\" or \"python -c 'import rdkit'\""]}},
 "script": "bash commands to run after install (no #SBATCH lines, no install commands). Parameters from 'parameters' are exported as env vars named PARAM_<NAME> in upper case; use them.",
 "expected_outputs": ["outputs/..."],
@@ -1128,9 +1137,9 @@ def build_sbatch(
     ]
     if gpus:
         lines.append(f"#SBATCH --gres=gpu:{gpus}")
-    tpn = str(r.get("ntasks_per_node") or "")
-    if tpn.isdigit() and int(tpn) > 0:
-        lines.append(f"#SBATCH --ntasks-per-node={int(tpn)}")
+    # cores (and memory) per node: explicit on shared partitions, where a job that
+    # asks for nothing gets one core; --exclusive on whole-node partitions (labcores)
+    lines += labcores.sbatch_lines(target, part, r)
     if (getattr(target, "partitions", {}) or {}).get(part, {}).get("spot"):
         lines.append("#SBATCH --requeue")  # spot nodes can be reclaimed
     hdr = ((getattr(target, "catalog", None) or {}).get("job_header") or {}).get("path")
@@ -2608,6 +2617,7 @@ class Lab(LabVerdictMixin):
     def _check(self, tgt, plan: dict) -> list[str]:
         return (
             validate_plan(tgt, plan)
+            + labcores.warnings(tgt, plan)
             + self.source_warnings(plan)
             + self.url_warnings(plan)
             + self.env_warnings(plan)
@@ -2622,6 +2632,17 @@ class Lab(LabVerdictMixin):
         part, why = suggest_partition(tgt, plan, self._stocked_out.get(tgt.name))
         if why:
             warns.append(f"Partition: {why}; consider resources.partition = '{part}'")
+        r = plan.get("resources") or {}
+        part_now = str(r.get("partition") or tgt.default_partition)
+        if part_now in tgt.partitions:
+            q = labcores.request(tgt, part_now, r)
+            shape = workload_shape(plan)
+            if q["defaulted"] and shape in ("mpi", "sweep"):
+                warns.append(
+                    f"Cores: this looks like {shape} work but gets the default "
+                    f"{labcores.DEFAULT_CORES} cores on shared '{part_now}'; set "
+                    "resources.cores (or resources.ntasks_per_node for MPI ranks)"
+                )
         hist = time_from_history(self.db_path, plan)
         tl = str((plan.get("resources") or {}).get("time_limit") or "01:00:00")
         if hist and TIME_RE.fullmatch(tl) and _hours(tl) > 2.5 * _hours(hist):
