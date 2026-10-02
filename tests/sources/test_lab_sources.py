@@ -16,7 +16,7 @@ from deepresearch.sources.service import check
 PLAN = {
     "title": "t",
     "question": "q",
-    "resources": {"partition": "standard", "time_limit": "00:10:00"},
+    "resources": {"partition": "standard", "cores": 2, "time_limit": "00:10:00"},
     "install": {"modules": [], "pip": []},
     "script": 'python3 -c "print(1)" > outputs/r.txt',
 }

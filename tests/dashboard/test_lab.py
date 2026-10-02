@@ -27,6 +27,7 @@ PLAN = {
     "resources": {
         "partition": "standard",
         "nodes": 1,
+        "cores": 2,
         "time_limit": "00:30:00",
         "gpus": 0,
     },
@@ -990,7 +991,9 @@ def test_sbatch_spot_requeue_and_ntasks_per_node(tmp_path, monkeypatch):
         {**PLAN, "resources": {"partition": "standard", "ntasks_per_node": "x; rm"}},
         tgt,
     )
-    assert "--requeue" not in std and "ntasks-per-node" not in std
+    assert "--requeue" not in std and "x; rm" not in std
+    # an invalid rank count is ignored: the shared-partition default request is used
+    assert "#SBATCH --ntasks-per-node=1\n#SBATCH --cpus-per-task=2" in std
 
 
 def test_plans_carry_warnings_and_prompts_use_catalog(tmp_path, monkeypatch):
@@ -1185,7 +1188,12 @@ def _draft(lab, plan):
 BAD = {
     "title": "t",
     "script": "uv venv v\nuv pip install skyfield\npython3 x.py",
-    "resources": {"partition": "standard", "nodes": 1, "time_limit": "00:10:00"},
+    "resources": {
+        "partition": "standard",
+        "nodes": 1,
+        "cores": 4,
+        "time_limit": "00:10:00",
+    },
     "install": {
         "modules": ["python/3.12.14", "ffmpeg/8.1"],
         "pip": ["skyfield", "numpy"],

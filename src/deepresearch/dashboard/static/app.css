@@ -589,7 +589,7 @@ input::placeholder, textarea::placeholder { color: #7d8aa0; }
 .lab-review .lab-sec > .label, .lab-review summary.label { display: block; margin-bottom: 4px; cursor: pointer; }
 .lab-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
 .lab-params { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
-.lab-params.res { grid-template-columns: 2fr 1fr 1fr 1fr; }
+.lab-params.res { grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr 1fr; }
 .lab-params label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--dim); min-width: 0; }
 .lab-params input.wide { grid-column: span 2; }
 .lab-review .lab-sec { border-top: 1px solid var(--line); padding-top: 10px; }
