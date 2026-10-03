@@ -165,7 +165,7 @@ class BifrostClient:
         payload = json.dumps(
             {"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}}
         ).encode()
-        status, headers, body = 0, {}, b""
+        status, headers, body = 0, dict[str, str](), b""
         for attempt in (0, 1):
             status, headers, body = self._http(
                 "POST",

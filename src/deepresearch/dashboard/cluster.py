@@ -22,6 +22,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from deepresearch.dashboard import labcores
 
@@ -117,7 +118,8 @@ class SlurmSSHTarget:
         self.catalog_path: str = cfg.get("catalog_path", "")
         self.catalog: dict | None = None
         self.catalog_fetched: str = ""
-        self.catalog_source = None  # optional callable returning the catalog dict
+        # optional callable returning the catalog dict (bifrost's hpc://catalog)
+        self.catalog_source: Callable[[], dict] | None = None
         self._argv: list[str] | None = None
         self._dest = ""
         self._lock = threading.Lock()
