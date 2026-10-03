@@ -197,7 +197,7 @@ class LabVerdictMixin:
         """The pilot's own verdict, assessed. Returns the assessment when the pilot says
         the test cannot discriminate (the full run should not start), else None."""
         try:
-            raw = tgt.read_file(run["id"], "smoke/outputs/verdict.json", 200000)
+            raw = self._pilot_read(run, tgt, "outputs/verdict.json", 200000)  # type: ignore[attr-defined]
         except Exception:
             return None
         if not raw.strip():

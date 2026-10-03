@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 import difflib
+import fnmatch
 import ast
 import hashlib
 import json
@@ -2730,6 +2731,12 @@ class Lab(LabVerdictMixin):
             warns.append(f"Partition: {why}; consider resources.partition = '{part}'")
         r = plan.get("resources") or {}
         part_now = str(r.get("partition") or tgt.default_partition)
+        if part_now == self._check_partition(tgt):
+            warns.append(
+                f"Partition: '{part_now}' is the cluster's test partition (15-minute "
+                "limit, for pilots and checks); the pilot runs there by itself. Put the "
+                f"real run on '{tgt.default_partition}' or another partition"
+            )
         if part_now in tgt.partitions:
             q = labcores.request(tgt, part_now, r)
             shape = workload_shape(plan)
@@ -3667,12 +3674,7 @@ class Lab(LabVerdictMixin):
             sources = self._plan_sources(plan)
             from deepresearch.sources.staging import relay_upload, sources_json
 
-            bf_jobs = (
-                self._jobs_for(tgt)
-                if not self._smoke_applies(tgt, plan)
-                and not self._warm_full_ok(tgt, plan)
-                else None
-            )
+            bf_jobs = self._jobs_for(tgt)
             for src in sources:
                 if src.effective_staging == "relay" and bf_jobs is None:
                     self._update(
@@ -3696,9 +3698,10 @@ class Lab(LabVerdictMixin):
                     sources, getattr(tgt, "remote_root", "~/deep-research-lab")
                 )
             if self._smoke_applies(tgt, plan):
-                # Smoke test first, on the warm node: the real run only starts if the
-                # cut-down run of this exact plan passes (decisions, Lab plan v3).
-                tgt.upload(run_id, files, fresh=True)
+                # Pilot first (a bifrost job on the check partition, or the warm node):
+                # the real run only starts if the cut-down run of this exact plan passes.
+                if bf_jobs is None:
+                    tgt.upload(run_id, files, fresh=True)
                 for src in sources:
                     self.sources.record_use(src, "lab_run", run_id)
                 # Stay in flight until the pilot is queued and the run says "smoke":
@@ -3777,7 +3780,13 @@ class Lab(LabVerdictMixin):
         elif run["status"] == "smoke":
             tgt = self.target(run["target"])
             task = (run.get("smoke") or {}).get("task")
-            if tgt and task:
+            pjob = (run.get("smoke") or {}).get("job_id")
+            if pjob and self.bifrost_jobs is not None:
+                try:
+                    self.bifrost_jobs.cancel(str(pjob))
+                except Exception:
+                    pass  # it ends by itself at the 15-minute limit
+            elif tgt and task:
                 try:
                     tgt.warm_cancel(task)
                 except Exception:
@@ -3901,7 +3910,13 @@ class Lab(LabVerdictMixin):
     def _warm_exec(
         self, tgt, task: str, script: str, wait_s: int
     ) -> tuple[int | None, str]:
-        """Run a short read-only script on the warm node; (rc, output). Never raises."""
+        """Run a short read-only script on the cluster; (rc, output). Never raises.
+
+        Through bifrost (signed in): a one-core job on the check partition. Else the
+        warm node over SSH."""
+        jobs = self._jobs_for(tgt)
+        if jobs is not None:
+            return self._check_exec(jobs, tgt, task, script, wait_s)
         try:
             tgt.warm_enqueue(task, {"run.sh": script}, need_sec=min(wait_s, 600))
             self._keep_warm(tgt, force=True)
@@ -3922,9 +3937,74 @@ class Lab(LabVerdictMixin):
             pass
         return None, "(timed out waiting for the warm node)"
 
+    CHECK_PARTITION = "check"  # the cluster's always-on test partition (2026-10-03)
+    CHECK_POLL_S = 3.0
+
+    def _check_partition(self, tgt) -> str | None:
+        """The always-on test partition for pilots and fact checks, when the cluster has
+        it (lab_targets.json bifrost.check_partition, default `check`)."""
+        name = str(
+            _bifrost_cfg(self.targets).get("check_partition") or self.CHECK_PARTITION
+        )
+        return name if name in (getattr(tgt, "partitions", None) or {}) else None
+
+    def _checks_where(self, tgt) -> str:
+        if self._jobs_for(tgt) is not None:
+            part = self._check_partition(tgt)
+            return f"on the {part} partition" if part else "on the cluster"
+        return "on the warm Lab node"
+
+    def _check_exec(
+        self, jobs, tgt, name: str, script: str, wait_s: int
+    ) -> tuple[int | None, str]:
+        """A read-only check script as a one-core bifrost job on the check partition;
+        (rc, log). Never raises."""
+        from deepresearch.dashboard import bifrost as bf
+
+        part = self._check_partition(tgt) or tgt.default_partition
+        body = script.split("\n", 1)[1] if script.startswith("#!") else script
+        minutes = max(1, min(15, int(wait_s) // 60))
+        job_name = _slug(name, 40)
+        sb = (
+            "#!/bin/bash\n"
+            f"#SBATCH --job-name={job_name}\n"
+            f"#SBATCH --partition={part}\n"
+            "#SBATCH --nodes=1\n#SBATCH --ntasks=1\n#SBATCH --cpus-per-task=1\n"
+            f"#SBATCH --time=00:{minutes:02d}:00\n"
+            "#SBATCH --output=job.log\n" + body
+        )
+        try:
+            got = bf.BifrostJobs(
+                jobs.c, max_usd_per_run=1.0, http_get=jobs._get, http_put=jobs._put
+            ).submit(sb, job_name)
+        except bf.BifrostError as e:
+            return None, f"(could not start the check job: {str(e)[:200]})"
+        job = got["job_id"]
+        t0 = time.time()
+        while time.time() - t0 < wait_s:
+            try:
+                r = jobs.states([job]).get(job) or {}
+            except bf.BifrostError:
+                r = {}
+            st = str(r.get("state") or "").split()[0] if r.get("state") else ""
+            if st in SLURM_DONE or st.startswith("CANCELLED"):
+                try:
+                    out = jobs.log_text(job)
+                except bf.BifrostError as e:
+                    out = f"(could not read the check job's log: {str(e)[:200]})"
+                ec = str(r.get("exit_code") or "0").split(":")[0]
+                return (int(ec) if ec.isdigit() else None), out
+            time.sleep(self.CHECK_POLL_S)
+        try:
+            jobs.cancel(job)
+        except Exception:
+            pass
+        return None, "(timed out waiting for the check job)"
+
     def _run_probes(self, run_id: int, run: dict, tgt, title: str) -> str:
-        """Ask the model which facts to check, check them on the warm node, return text."""
-        if not tgt or not getattr(tgt, "warm", None):
+        """Ask the model which facts to check, check them on the cluster (a short job on
+        the check partition through bifrost, else the warm node), return text."""
+        if not tgt or not (getattr(tgt, "warm", None) or self._jobs_for(tgt)):
             return ""
         try:
             self._update(
@@ -3955,7 +4035,7 @@ class Lab(LabVerdictMixin):
             self._update(
                 run_id,
                 only_if=("planning",),
-                stage=f"Checking {len(ok)} facts on the warm Lab node (software help, versions, URLs)",
+                stage=f"Checking {len(ok)} facts {self._checks_where(tgt)} (software help, versions, URLs)",
             )
             rc, out = self._warm_exec(
                 tgt, f"probe-{run_id}-{int(time.time())}", script, self.PROBE_WAIT_S
@@ -3968,9 +4048,13 @@ class Lab(LabVerdictMixin):
         )
 
     def _check_urls(self, run_id: int, tgt, plan: dict) -> list[dict]:
-        """curl every download URL of a new plan from the warm node."""
+        """curl every download URL of a new plan from a compute node."""
         urls = script_urls(plan)
-        if not urls or not tgt or not getattr(tgt, "warm", None):
+        if (
+            not urls
+            or not tgt
+            or not (getattr(tgt, "warm", None) or self._jobs_for(tgt))
+        ):
             return []
         self._update(
             run_id,
@@ -4044,7 +4128,7 @@ class Lab(LabVerdictMixin):
 
     def env_notes(self, tgt) -> str:
         """Which install rung worked for recent package lists (ladder.jsonl), for prompts."""
-        if not tgt or not getattr(tgt, "warm", None):
+        if not tgt or not (getattr(tgt, "warm", None) or self.bifrost is not None):
             return ""
         raw = self._ladder_tail(tgt)
         if not raw:
@@ -4083,19 +4167,21 @@ class Lab(LabVerdictMixin):
             and k not in ("fix_changes", "fix_notes", "smoke_fix")
         }
 
-    @staticmethod
-    def _smoke_applies(tgt, plan: dict) -> bool:
-        if not getattr(tgt, "warm", None) or plan.get("smoke") is False:
+    def _smoke_applies(self, tgt, plan: dict) -> bool:
+        if plan.get("smoke") is False:
+            return False
+        # pilots run as short bifrost jobs (check partition) or on the warm node
+        if self._jobs_for(tgt) is None and not getattr(tgt, "warm", None):
             return False
         r = plan.get("resources") or {}
         # CPU warm node: a GPU plan's smoke test would fail for want of a GPU
         return _int(r.get("gpus"), 0) == 0
 
-    @staticmethod
-    def _warm_full_ok(tgt, plan: dict) -> bool:
-        """Short single-node CPU runs on the warm node's partition skip the node boot."""
+    def _warm_full_ok(self, tgt, plan: dict) -> bool:
+        """Short single-node CPU runs on the warm node's partition skip the node boot.
+        Never through bifrost: there every real run is its own Slurm job."""
         cfg = getattr(tgt, "warm", None)
-        if not cfg:
+        if not cfg or self._jobs_for(tgt) is not None:
             return False
         r = plan.get("resources") or {}
         part = r.get("partition") or tgt.default_partition
@@ -4170,7 +4256,9 @@ class Lab(LabVerdictMixin):
             str(j.get("job_id")) == job for j in run.get("cluster_jobs") or []
         )
 
-    def _bifrost_submit(self, run_id: int, tgt, plan: dict, jobs, why: str) -> str:
+    def _bifrost_submit(
+        self, run_id: int, tgt, plan: dict, jobs, why: str, pilot: bool = False
+    ) -> str:
         """Build the run's script and submit it through bifrost (prepare, guards,
         confirm). The Submit click on the reviewed draft is the approval (SPEC 20.21).
         Returns the job id; raises NotSubmitted when nothing reached the scheduler."""
@@ -4193,6 +4281,10 @@ class Lab(LabVerdictMixin):
                     if uid:
                         inputs.append(uid)
             script = build_sbatch(run_id, plan, tgt, sources, bifrost_inputs=True)
+            if pilot:  # the cut-down run: the script honours LAB_SMOKE=1
+                script = script.replace(
+                    'export LAB_SMOKE="${LAB_SMOKE:-0}"', "export LAB_SMOKE=1", 1
+                )
             m = re.search(r"^#SBATCH --job-name=(\S+)", script, re.M)
             est = run.get("estimate_usd") or estimate_cost(tgt, plan)
             # the reviewed estimate bounds what may be confirmed without a new click
@@ -4219,7 +4311,10 @@ class Lab(LabVerdictMixin):
             raise
         prev.append({**got, "why": why, "at": _now(), "inputs": inputs})
         # recorded before anything else, so a cancel goes to bifrost from now on
-        self._update(run_id, cluster_jobs=prev, script=script)
+        if pilot:  # the run's batch file stays the full run's
+            self._update(run_id, cluster_jobs=prev)
+        else:
+            self._update(run_id, cluster_jobs=prev, script=script)
         return got["job_id"]
 
     def _cancel_job(self, run: dict, tgt, job: str) -> None:
@@ -4274,10 +4369,125 @@ class Lab(LabVerdictMixin):
 
     BF_STAGE_EVERY_S = 60.0  # stage.txt read at most once a minute per running run
 
+    # ---- pilots through bifrost (R3, v0.56.0) ---------------------------------------
+    PILOT_TIME = "00:15:00"
+
+    def _pilot_plan(self, tgt, plan: dict) -> tuple[dict, str]:
+        """The plan as its pilot runs: CPU work on the check partition (always on, its
+        node's cores at most, 15 minutes); other work on its own partition, 15 minutes."""
+        r = dict(plan.get("resources") or {})
+        r["time_limit"] = self.PILOT_TIME
+        part = self._check_partition(tgt)
+        if part and _int(r.get("gpus"), 0) == 0:
+            cpus = _int((tgt.partitions.get(part) or {}).get("cpus"), 2) or 2
+            r.update(partition=part, nodes=1, whole_node=False)
+            r["cores"] = min(max(_int(r.get("cores"), 2), 1), cpus)
+            if r.get("ntasks_per_node"):
+                r["ntasks_per_node"] = min(
+                    max(_int(r.get("ntasks_per_node"), 1), 1), cpus
+                )
+            return {**plan, "resources": r}, f"the {part} partition"
+        return {**plan, "resources": r}, str(
+            r.get("partition") or tgt.default_partition
+        )
+
+    @staticmethod
+    def _iso_ts(s: str) -> float | None:
+        try:
+            return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+
+    def _bf_pilot_task(self, sm: dict) -> dict:
+        """bifrost's view of a pilot job, in the shape warm_task returns."""
+        if self.bifrost_jobs is None:
+            raise TargetError(
+                "this pilot runs through bifrost: run `deep-research cluster login`, "
+                "then restart the dashboard"
+            )
+        job = str(sm["job_id"])
+        rows = getattr(self, "_bf_round", None) or {}
+        r = rows.get(job)
+        if r is None:
+            r = self.bifrost_jobs.states([job]).get(job)
+        if not r:
+            return {"where": "missing"}
+        state = str(r.get("state") or "").split()[0] if r.get("state") else ""
+        node = str(r.get("nodes") or "")
+        if state in ("RUNNING", "COMPLETING"):
+            return {"where": "running", "node": node}
+        if not (state in SLURM_DONE or state.startswith("CANCELLED")):
+            return {"where": "queue", "reason": str(r.get("reason") or "")}
+        ec = str(r.get("exit_code") or "").split(":")[0]
+        rc = int(ec) if ec.isdigit() else None
+        if state == "TIMEOUT":
+            rc = 124  # what the warm node's `timeout` reported: a clean cut-off
+        elif state != "COMPLETED" and not rc:
+            rc = 1
+        return {
+            "where": "done",
+            "rc": 0 if rc is None and state == "COMPLETED" else rc,
+            "node": node,
+            "started": self._iso_ts(r.get("started") or ""),
+            "finished": self._iso_ts(r.get("ended") or ""),
+        }
+
+    def _pilot_read(self, run: dict, tgt, rel: str, limit: int) -> str:
+        """The end of a file of the run's pilot (job.log, stage.txt, outputs/...)."""
+        sm = run.get("smoke") or {}
+        if sm.get("job_id"):
+            if self.bifrost_jobs is None:
+                return ""
+            job = str(sm["job_id"])
+            if rel == "job.log":
+                return self.bifrost_jobs.log_text(job)[-limit:]
+            return self.bifrost_jobs.read_text(job, rel, limit)
+        return tgt.read_file(run["id"], "smoke/" + rel, limit)
+
+    def _pilot_missing(self, run: dict, tgt, patterns: list[str]) -> list[str]:
+        """Expected outputs the pilot did not write (or wrote empty)."""
+        sm = run.get("smoke") or {}
+        if sm.get("job_id") and self.bifrost_jobs is not None:
+            pats = [
+                p for p in patterns if re.fullmatch(r"[\w./*?-]+", p) and ".." not in p
+            ]
+            files = {
+                str(f["path"]): int(f.get("bytes") or 0)
+                for f in self.bifrost_jobs.list_files(str(sm["job_id"]))
+            }
+            return [
+                p for p in pats
+                if not any(sz > 0 and fnmatch.fnmatch(path, p) for path, sz in files.items())
+            ]  # fmt: skip
+        return tgt.missing_outputs(run["id"], "smoke", patterns)
+
     def _start_smoke(
         self, run_id: int, tgt, plan: dict, round_no: int, original: dict,
         rounds: list | None = None,
     ) -> None:  # fmt: skip
+        jobs = self._jobs_for(tgt)
+        if jobs is not None:
+            pplan, where = self._pilot_plan(tgt, plan)
+            job = self._bifrost_submit(
+                run_id, tgt, pplan, jobs, why=f"pilot round {round_no}", pilot=True
+            )
+            self._update(
+                run_id,
+                only_if=("submitting", "smoke"),
+                status="smoke",
+                stage=f"Pilot (round {round_no}): queued on {where}",
+                error=None,
+                smoke={
+                    "task": "",
+                    "job_id": job,
+                    "partition": (pplan.get("resources") or {}).get("partition"),
+                    "round": round_no,
+                    "rounds": rounds or [],
+                    "original": self._plan_core(original),
+                    "fixing": False,
+                },
+            )
+            return
         cfg = tgt.warm or {}
         d = self._home(tgt.job_dir(run_id))
         task = f"{task_prefix(tgt)}smoke-{run_id}-{round_no}"
@@ -4333,10 +4543,11 @@ class Lab(LabVerdictMixin):
                 daemon=True,
             ).start()  # fmt: skip
             return
-        if sm.get("fixing") or not sm.get("task"):
+        if sm.get("fixing") or not (sm.get("task") or sm.get("job_id")):
             return
         run_id = run["id"]
-        t = tgt.warm_task(sm["task"])
+        bf_pilot = bool(sm.get("job_id"))
+        t = self._bf_pilot_task(sm) if bf_pilot else tgt.warm_task(sm["task"])
         n = sm.get("round", 1)
         if t["where"] in ("queue", "missing"):
             if t["where"] == "missing":
@@ -4349,12 +4560,12 @@ class Lab(LabVerdictMixin):
                     only_if=("smoke",),
                     status="failed",
                     stage="Pilot lost",
-                    error="The smoke-test task disappeared from the warm node's queue "
+                    error="The pilot job disappeared from the cluster's queue "
                     "(the node may have been reclaimed). Submit again to retry.",
                     finished_at=_now(),
                 )
                 return
-            state = self._keep_warm(tgt) or ""
+            state = "" if bf_pilot else (self._keep_warm(tgt) or "")
             if state:
                 self._update(
                     run_id,
@@ -4368,7 +4579,7 @@ class Lab(LabVerdictMixin):
                 )
             return
         if t["where"] == "running":
-            st = tgt.read_file(run_id, "smoke/stage.txt", 2000).strip().splitlines()
+            st = self._pilot_read(run, tgt, "stage.txt", 2000).strip().splitlines()
             self._update(
                 run_id,
                 only_if=("smoke",),
@@ -4379,10 +4590,10 @@ class Lab(LabVerdictMixin):
             return
         # done
         rc = t["rc"]
-        log = tgt.read_file(run_id, "smoke/job.log", 60000)
+        log = self._pilot_read(run, tgt, "job.log", 60000)
         plan = run.get("plan") or {}
-        missing = tgt.missing_outputs(
-            run_id, "smoke", [str(x) for x in plan.get("expected_outputs") or []]
+        missing = self._pilot_missing(
+            run, tgt, [str(x) for x in plan.get("expected_outputs") or []]
         )
         clean_timeout = rc == 124 and not self._SMOKE_ERR.search(log[-20000:])
         passed = (rc == 0 and not missing) or clean_timeout
@@ -4560,8 +4771,8 @@ class Lab(LabVerdictMixin):
                 lessons=labguard.prompt_block(
                     json.dumps(plan) + " " + log[-3000:], self.state_dir
                 ),
-                state="SMOKE TEST FAILED: the plan ran with LAB_SMOKE=1 (a cut-down run) on the "
-                "warm Lab node. "
+                state="SMOKE TEST FAILED: the plan ran with LAB_SMOKE=1 (a cut-down run) as "
+                "a short pilot job. "
                 + extra
                 + (f"DIAGNOSIS: {advice} " if advice else "")
                 + "Fix the cause. If the script ignores LAB_SMOKE, "
@@ -4654,7 +4865,8 @@ class Lab(LabVerdictMixin):
             sources = self._plan_sources(new)
             script = build_sbatch(run_id, new, tgt, sources)
             files = {"run.sbatch": script, "plan.json": json.dumps(new, indent=2)}
-            tgt.upload(run_id, files, fresh=False)
+            if not sm.get("job_id"):  # bifrost pilots carry their script in the job
+                tgt.upload(run_id, files, fresh=False)
             if not self._update(
                 run_id, only_if=("smoke",), plan=new, script=script,
                 estimate_usd=estimate_cost(tgt, new),
@@ -4679,6 +4891,10 @@ class Lab(LabVerdictMixin):
         tgt = self.target(name)
         if not tgt or not getattr(tgt, "warm", None):
             return {"enabled": False}
+        if self._jobs_for(tgt) is not None:
+            # signed in to bifrost: pilots and checks run on the check partition and the
+            # warm worker is never started (no SSH status call either)
+            return {"enabled": False, "replaced_by": self._check_partition(tgt) or ""}
         cfg = tgt.warm or {}
         return {
             **tgt.warm_status(),
@@ -4770,7 +4986,7 @@ class Lab(LabVerdictMixin):
             }
         tgt = self.target(run["target"])
         if run["status"] == "smoke" and tgt:
-            text = tgt.read_file(run_id, "smoke/job.log", 200000)
+            text = self._pilot_read(run, tgt, "job.log", 200000)
             data = text.encode()
             off = offset if 0 <= offset <= len(data) else 0
             return {
@@ -4848,6 +5064,10 @@ class Lab(LabVerdictMixin):
         ids = [
             str(r["job_id"]) for r in runs
             if r["status"] in ("queued", "running") and self._bf_run(r)
+        ]  # fmt: skip
+        ids += [
+            str((r.get("smoke") or {})["job_id"]) for r in runs
+            if r["status"] == "smoke" and (r.get("smoke") or {}).get("job_id")
         ]  # fmt: skip
         if not ids or self.bifrost_jobs is None:
             return None

@@ -7,6 +7,19 @@ releases.
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-10-03
+
+### Changed
+- Lab pilots and planning checks run through ursa-bifrost on Ursa Major's new always-on
+  `check` partition instead of the Lab's own warm worker over SSH (R3). A pilot is the
+  plan's batch file with `LAB_SMOKE=1` as a 15-minute job on `check` (CPU plans; at most
+  the node's 2 cores); planning checks (module, help, versions, URLs) are a one-core job
+  there. Status, logs, stage, outputs and the pilot verdict come through bifrost; the
+  watcher's one `jobs_list` per round covers pilots too. With bifrost signed in, Lab
+  work makes no SSH calls and the warm worker is never started.
+- Short full runs no longer go to the warm node: every full run is its own Slurm job.
+- A plan whose real run names the `check` partition gets a pre-flight warning.
+
 ## [0.55.0] - 2026-10-03
 
 ### Changed
