@@ -18,7 +18,7 @@ CFG = {
     "ssh_host": "ursa",
     "remote_root": "~/deep-research-lab",
     "partitions": {"computehigh": {"cpus": 88}, "standard": {"cpus": 60}},
-    "default_partition": "computehigh",
+    "default_partition": "standard",  # Ursa Major's default since 2026-10-03
 }
 
 
@@ -50,7 +50,7 @@ def test_config_and_defaults():
     t = C.SlurmSSHTarget(dict(CFG))
     assert t.name == "ursa-major" and t.label == "Ursa Major"
     assert (
-        t.default_partition == "computehigh"
+        t.default_partition == "standard"
         and t.job_dir(7) == "~/deep-research-lab/run_7"
     )
     bare = C.SlurmSSHTarget({"name": "x", "partitions": {"a": {}}})
