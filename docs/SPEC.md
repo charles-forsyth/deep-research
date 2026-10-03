@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.56.0 (package `deepresearch`) |
+| Applies to | deep-research v0.56.1 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -3009,3 +3009,4 @@ before v0.39.0).
 | 2026-10-03 | v0.54.0 | Calmer dashboard shell (11.1, U1): search-first top bar, sidebar, Home, report toolbar with Share and "..." menus, Info sheet on demand, Settings page, phone tab bar, action registry `actions.js` (REQ-DASH-13), `GET /api/cluster/status`, session `title`. |
 | 2026-10-03 | v0.55.0 | Lab jobs through ursa-bifrost (20.21, R2): submit with self-confirmation inside guards, batched watcher, line-paged logs, fetch through read and signed links, cancel, relay data sources through bifrost staging; `lab_runs.cluster_jobs` (8.2); target keys `bifrost.jobs` and `bifrost.max_usd_per_run` (20.3). |
 | 2026-10-03 | v0.56.0 | Pilots and planning checks through ursa-bifrost on the always-on `check` partition (20.22, R3); no SSH for Lab work while signed in; short full runs no longer use the warm node; target key `bifrost.check_partition` (20.3). |
+| 2026-10-03 | v0.56.1 | Audio jobs started in a workspace write to that workspace (the worker thread captured Main's context). |

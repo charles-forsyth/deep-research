@@ -350,3 +350,70 @@ def test_restart_resumes_watchers_in_every_workspace(home, monkeypatch, tmp_path
     started.clear()
     api3.start_watchers()
     assert [s for s, _ in started] == ["main"]
+
+
+def test_audio_made_in_a_workspace_stays_and_plays_there(home, monkeypatch, tmp_path):
+    """The audio worker thread has no request context: it must use the workspace the
+    request came from (2026-10-03: workspace audio landed in Main's table, so the
+    workspace's player listed nothing and its file URL was 404)."""
+    import io
+    import time
+    import wave
+
+    from deepresearch.dashboard import features as fxm
+    from deepresearch.core.session import SessionManager
+
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    api = srv.Api(home["main_db"], spawn=lambda *a: 1,
+                  lab=Lab(home["main_db"], lambda: None, tmp_path, targets={}),
+                  workspaces=True)  # fmt: skip
+    httpd, call = _server(api)
+    try:
+        call("POST", "/api/workspaces", {"name": "Demo"})
+        demo_db = home["base"] / "workspaces" / "demo" / "history.db"
+        sm = SessionManager(str(demo_db))
+        sid = sm.create_session("i-demo", "demo question")
+        sm.update_session(
+            "i-demo", "completed", "# Demo report\n\nSome words here to read aloud."
+        )
+
+        def fake_wav(self, script, voice):
+            b = io.BytesIO()
+            with wave.open(b, "wb") as w:
+                w.setnchannels(1), w.setsampwidth(2), w.setframerate(24000)
+                w.writeframes(b"\0\0" * 24000)
+            return b.getvalue()
+
+        monkeypatch.setattr(fxm.Features, "synthesize", fake_wav)
+        monkeypatch.setattr(
+            fxm.Features, "summary_script", lambda self, t, md: "Hello."
+        )
+        monkeypatch.setattr(
+            fxm.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError())
+        )
+        st, job = call("POST", "/api/audio", {"kind": "session", "id": sid, "mode": "summary",
+                                               "voice": "Kore"}, ws="demo")  # fmt: skip
+        assert st == 200, job
+        for _ in range(100):
+            _, j = call("GET", f"/api/audio/jobs/{job['job']}", ws="demo")
+            if j["status"] != "running":
+                break
+            time.sleep(0.05)
+        assert j["status"] == "done", j
+        _, lst = call("GET", f"/api/audio?kind=session&id={sid}", ws="demo")
+        assert [a["id"] for a in lst["audio"]] == [j["result"]["id"]]
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        req = urllib.request.Request(base + f"/api/audio/{j['result']['id']}/file")
+        req.add_header("X-DR-Workspace", "demo")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert r.status == 200 and r.read()[:4] == b"RIFF"
+        with sqlite3.connect(home["main_db"]) as c:
+            n = c.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='audio_exports'"
+            ).fetchone()[0]
+            if n:
+                assert (
+                    c.execute("SELECT COUNT(*) FROM audio_exports").fetchone()[0] == 0
+                )
+    finally:
+        httpd.shutdown()

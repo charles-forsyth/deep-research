@@ -1682,9 +1682,14 @@ class Api(ProjectApi):
                 "error": None,
             }
 
+        # the request's workspace, captured now: the worker thread has no request
+        # context, so self.fx there would be Main's (audio of a workspace report was
+        # saved in Main's table and the workspace's player found nothing to play)
+        fx = self.fx
+
         def work():
             try:
-                res = self.fx.make_audio(kind, ref, title, content, mode, voice)
+                res = fx.make_audio(kind, ref, title, content, mode, voice)
                 res.pop("path", None)
                 self._jobs[jid].update(status="done", result=res)
             except Exception as e:
