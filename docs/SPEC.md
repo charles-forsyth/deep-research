@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.55.0 (package `deepresearch`) |
+| Applies to | deep-research v0.56.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1556,7 +1556,7 @@ Target keys (one object per entry in `targets`):
 | `modules` | `[]` | Extra module names for the planner prompt |
 | `software_notes` | `""` | Free-text site notes added to the planner prompt ("Site notes: ...") |
 | `catalog_path` | `""` | Cluster catalog file (20.9) |
-| `bifrost` | none | `{}` or `{url, jobs, max_usd_per_run}`: use the hosted ursa-bifrost MCP server for this target once `deep-research cluster login` has run: reads (20.20, v0.53.0) and, unless `jobs` is `false`, the Lab's Slurm jobs (20.21, v0.55.0) with at most `max_usd_per_run` (default $10) worst case per confirmed job. Default URL is the Ursa Major server |
+| `bifrost` | none | `{}` or `{url, jobs, max_usd_per_run, check_partition}`: use the hosted ursa-bifrost MCP server for this target once `deep-research cluster login` has run: reads (20.20, v0.53.0) and, unless `jobs` is `false`, the Lab's Slurm jobs (20.21, v0.55.0) with at most `max_usd_per_run` (default $10) worst case per confirmed job, and pilots and planning checks on `check_partition` (default `check`, 20.22, v0.56.0). Default URL is the Ursa Major server |
 | `warm` | none | Warm worker settings: `partition`, `hours` (Slurm time limit), `idle_min` (0 = never exit for idleness), `max_par` (tasks at once), `max_workers` (backlog cap), `always_on` (keeper, 20.16), `burst_idle_min` (extra workers, default 20) |
 
 The SSH ControlMaster socket lives in `$XDG_RUNTIME_DIR` (or `/tmp`) as `dr-lab-%C`.
@@ -2183,8 +2183,8 @@ each Lab read with SSH made to fail).
 Step R2 of the bifrost migration. For a target with a `bifrost` block (20.3) and a
 signed-in dashboard, every run that goes to Slurm as its own job (the full run, and the
 stockout partition switch) is submitted, watched, logged, fetched and cancelled through
-the hosted bifrost server instead of SSH. Pilots and short runs still use the warm worker
-over SSH until R3 (Slurm-native `lab` partition).
+the hosted bifrost server instead of SSH. Since v0.56.0 (20.22) pilots and planning checks
+go through bifrost too.
 
 **Approval.** Pressing Submit on a reviewed draft is the person's approval. The Lab then
 calls `job_submit` and confirms the returned token itself (`BifrostJobs.submit`), only
@@ -2239,6 +2239,34 @@ bifrost server: submit and each guard, signed-out drafts, the batched watcher ro
 stage-read throttling, restarts, line-paged logs continuing into the local log, fetch
 through read and links without `job.sbatch`, cancel, SSH-submitted runs staying on SSH,
 relay staged once and reused).
+
+### 20.22 Pilots and planning checks on the check partition (v0.56.0, R3)
+
+Step R3. Ursa Major has an always-on test partition, `check` (one e2-standard-4 node that
+never powers down, 2 cores, 15 GB, up to three more under load, 15-minute limit). With
+bifrost signed in, the Lab uses it instead of its own warm worker, and makes no SSH call
+for Lab work:
+
+| Work | Before (warm worker over SSH) | Now (bifrost) |
+|---|---|---|
+| Planning checks (`_run_probes`: module show, `--help`, pip versions, `help()`; `_check_urls`) | task in the warm spool | `_check_exec`: a one-core, at most 15-minute job on `check` running the same probe script; result from `job_log_tail` |
+| Pilot (`LAB_SMOKE=1`) | task in the warm spool, files uploaded over SSH | `_start_smoke` -> `_bifrost_submit(pilot=True)`: the plan's batch file with `LAB_SMOKE=1`, on `check` (1 node, at most the node's cores, 15 minutes) for CPU plans |
+| Pilot status, log, stage, outputs, verdict | `warm_task`, `read_file`, `missing_outputs` | `_bf_pilot_task` (the watcher round's batched `jobs_list`, pilots included), `_pilot_read` (`job_log_tail` / `job_results read`), `_pilot_missing` (`job_results` list, non-empty files) |
+| Short full runs on the warm node (`_warm_full_ok`) | warm task | never: every full run is its own Slurm job |
+| Cancel during a pilot | `warm_cancel` | `job_cancel` + confirm |
+
+- A pilot that hits its time limit (Slurm `TIMEOUT`) is recorded as exit 124, as the warm
+  worker's `timeout` reported it, so a clean cut-off still passes.
+- GPU plans skip the pilot as before (the check node has no GPU).
+- Pilot jobs are recorded in `cluster_jobs` with `why: "pilot round N"`; the run's
+  `script` stays the full run's batch file. The 6-submit cap per run (20.21) counts them.
+- Check jobs confirm only inside a $1 worst case.
+- The check partition name is `bifrost.check_partition` in lab_targets.json (default
+  `check`); without it in the catalog, pilots keep the plan's partition at 15 minutes.
+- A plan whose real run names `check` gets a pre-flight warning (it is a test partition).
+- `GET /api/lab/warm` reports `{"enabled": false, "replaced_by": "check"}` and the keeper
+  never starts a worker. The warm worker code stays for targets without bifrost and as
+  the fallback when signed out.
 
 ## 21. Data sources
 
@@ -2980,3 +3008,4 @@ before v0.39.0).
 | 2026-10-02 | v0.53.0 | Cluster reads through ursa-bifrost (20.20, R1): `dashboard/bifrost.py`, `cli/cluster.py`, `cluster login/logout/status` (9.3), target key `bifrost` (20.3), `lab_runs.cluster` (8.2), `bifrost-token.json` (12.3); catalog, stockouts, ladder notes and pre-flight `script_check` from bifrost; efficiency and diagnosis stored on finished jobs. |
 | 2026-10-03 | v0.54.0 | Calmer dashboard shell (11.1, U1): search-first top bar, sidebar, Home, report toolbar with Share and "..." menus, Info sheet on demand, Settings page, phone tab bar, action registry `actions.js` (REQ-DASH-13), `GET /api/cluster/status`, session `title`. |
 | 2026-10-03 | v0.55.0 | Lab jobs through ursa-bifrost (20.21, R2): submit with self-confirmation inside guards, batched watcher, line-paged logs, fetch through read and signed links, cancel, relay data sources through bifrost staging; `lab_runs.cluster_jobs` (8.2); target keys `bifrost.jobs` and `bifrost.max_usd_per_run` (20.3). |
+| 2026-10-03 | v0.56.0 | Pilots and planning checks through ursa-bifrost on the always-on `check` partition (20.22, R3); no SSH for Lab work while signed in; short full runs no longer use the warm node; target key `bifrost.check_partition` (20.3). |
