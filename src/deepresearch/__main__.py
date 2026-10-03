@@ -322,6 +322,21 @@ def build_parser() -> argparse.ArgumentParser:
         "action", choices=["login", "logout"], help="Action to perform"
     )
 
+    parser_cluster = subparsers.add_parser(
+        "cluster",
+        help="Sign the Lab in to the Ursa Major cluster service (bifrost)",
+        description=(
+            "login: open the browser to sign in to the hosted bifrost MCP server as "
+            "deep-research's own program client; the token is kept in "
+            "~/.config/deepresearch/bifrost-token.json (mode 600). logout: revoke and "
+            "delete it. status: who is signed in, with which tiers and caps."
+        ),
+    )
+    parser_cluster.add_argument(
+        "action", choices=["login", "logout", "status"], help="Action to perform"
+    )
+    parser_cluster.add_argument("--json", action="store_true", help="JSON output")
+
     parser_estimate = subparsers.add_parser(
         "estimate",
         help="Estimate the cost of a research task (no API calls)",
@@ -562,6 +577,7 @@ def main():
         "cleanup",
         "tree",
         "auth",
+        "cluster",
         "estimate",
         "dashboard",
         "sources",
@@ -650,6 +666,10 @@ def _dispatch(parser: argparse.ArgumentParser, args, as_json: bool) -> None:
             handle_tree(args)
         elif args.command == "auth":
             handle_auth(args)
+        elif args.command == "cluster":
+            from deepresearch.cli.cluster import handle as handle_cluster
+
+            sys.exit(handle_cluster(args))
         elif args.command == "estimate":
             handle_estimate(args)
         elif args.command == "workspace":

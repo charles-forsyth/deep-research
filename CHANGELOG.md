@@ -7,6 +7,22 @@ releases.
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-10-02
+
+### Added
+
+- The Lab reads the cluster through the hosted ursa-bifrost MCP server (step R1 of the
+  bifrost migration). Opt in with a `bifrost` block on the target in `lab_targets.json`
+  and `deep-research cluster login` (new command; also `logout` and `status`). It signs in
+  as its own program client, `bifrost-deep-research`, with its own call budget and day cap.
+- Through bifrost: the cluster catalog, stocked-out partitions, the install-ladder notes,
+  and a `script_check` of the generated batch file in pre-flight (its errors show as
+  "Cluster check (bifrost)" warnings). SSH stays the fallback, and submitting, watching
+  and fetching still use SSH.
+- Finished Slurm jobs keep bifrost's efficiency figures (cores, CPU %, peak vs allocated
+  memory, restarts) and, for failed jobs, its diagnosis (rule and mapped class), in the
+  new `lab_runs.cluster` column, next to the Lab's own failure class for comparison.
+
 ## [0.52.2] - 2026-10-02
 
 ### Fixed
