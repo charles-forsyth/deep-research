@@ -7,6 +7,14 @@ releases.
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-10-03
+
+### Removed
+- The warm Lab node: the long-lived `lab-warm` job, its spool worker script, the
+  always-on keeper, the `/api/lab/warm` routes and the warm box on the Lab runs page.
+  Pilots and planning checks run as short bifrost jobs on the cluster's `check`
+  partition, which is always on for everyone.
+
 ## [0.57.3] - 2026-10-03
 
 ### Fixed

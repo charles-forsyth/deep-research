@@ -30,11 +30,10 @@ def plab(server, tmp_path):  # noqa: F811
         "check": {"cpus": 2, "mem_gb": 15, "usd_per_hour": 0.13},
         "gpul4": {"cpus": 8, "mem_gb": 60, "gpus": 1, "usd_per_hour": 1.2},
     }
-    t.warm = {"partition": "computehigh", "max_full_min": 120, "smoke_min": 15}
-    # the warm worker must never be touched while bifrost is signed in
-    for name in ("warm_enqueue", "warm_task", "ensure_warm", "upload", "read_file",
-                 "missing_outputs", "warm_status"):  # fmt: skip
-        setattr(t, name, lambda *a, _n=name, **k: pytest.fail(f"SSH/warm used: {_n}"))
+    t.warm = None  # retired in R4
+    # the Lab must never touch SSH while bifrost is signed in
+    for name in ("upload", "read_file", "missing_outputs", "submit", "sbatch_uploaded"):
+        setattr(t, name, lambda *a, _n=name, **k: pytest.fail(f"SSH used: {_n}"))
     lb = Lab(
         str(tmp_path / "h.db"), lambda: None, tmp_path, targets={"ursa": t}, bifrost=c
     )
@@ -181,7 +180,7 @@ def test_planning_checks_run_as_a_check_job(plab):
         return out
 
     fake.answers["job_submit_confirm"] = confirm_and_finish
-    rc, out = lb._warm_exec(t, "probe-7-1", "#!/bin/bash\nmodule show gromacs\n", 120)
+    rc, out = lb._check_run(t, "probe-7-1", "#!/bin/bash\nmodule show gromacs\n", 120)
     assert rc == 0 and "gromacs/2026.3" in out
     sent = calls(fake, "job_submit")[0]["script"]
     assert "#SBATCH --partition=check" in sent and "#SBATCH --cpus-per-task=1" in sent
@@ -189,11 +188,12 @@ def test_planning_checks_run_as_a_check_job(plab):
     assert lb._checks_where(t) == "on the check partition"
 
 
-def test_warm_worker_is_reported_off_when_bifrost_runs_the_lab(plab):
+def test_warm_worker_is_gone(plab):
+    """R4: no warm-node API is left on the Lab."""
     lb, cl, fake, t = plab
-    assert lb.warm_status() == {"enabled": False, "replaced_by": "check"}
-    assert lb._warm_full_ok(t, {**PLAN, "resources": {"partition": "computehigh",
-                                                      "time_limit": "00:10:00"}}) is False  # fmt: skip
+    for name in ("warm_status", "warm_start", "warm_stop", "_warm_full_ok", "_keep_warm",
+                 "start_warm_keeper", "keep_warm_once"):  # fmt: skip
+        assert not hasattr(lb, name), name
 
 
 def test_real_run_on_check_gets_a_warning(plab):
@@ -218,3 +218,160 @@ def test_pilot_plan_fits_the_check_node(plab):
         t, {**PLAN, "resources": {"partition": "gpul4", "gpus": 1}}
     )
     assert g["resources"]["partition"] == "gpul4" and gwhere == "gpul4"
+
+
+# ---- the AI fix loop on bifrost pilots (moved from the warm-node tests in R4) ---------
+
+
+def _fail(cl, jid, rc, files=None, log=None):
+    """A pilot job that ended FAILED with exit code rc."""
+    cl.finish(jid, state="FAILED", files=files, log=log)
+    cl.jobs[jid]["exit_code"] = f"{rc}:0"
+
+
+class _Inline:
+    def __init__(self, target, args=(), daemon=None, **kw):
+        self.t, self.a = target, args
+
+    def start(self):
+        self.t(*self.a)
+
+
+def _fixed_reply(changes=("write pi.txt",)):
+    fixed = {
+        **PLAN,
+        "script": "echo 3.14 > outputs/pi.txt\n",
+        "install": {"modules": ["python-sci"]},
+    }
+    return (
+        "```json\n"
+        + json.dumps({"plan": fixed, "changes": list(changes), "notes": ""})
+        + "\n```"
+    )
+
+
+def test_failed_pilot_is_fixed_by_ai_and_comes_back_for_review(plab, monkeypatch):
+    from deepresearch.dashboard import lab as labm
+
+    lb, cl, fake, _ = plab
+    rid = draft(lb)
+    lb.submit(rid)
+    _fail(cl, "500", "1", files={},
+              log=["Traceback", "FileNotFoundError: inputs/x.json"])  # fmt: skip
+    lb._ask = lambda prompt, search: (_fixed_reply(), 0.0)
+    monkeypatch.setattr(labm.threading, "Thread", _Inline)
+    lb.poll(lb.get(rid))
+    cur = lb.get(rid)
+    assert cur["status"] == "smoke" and cur["smoke"]["round"] == 2, cur["stage"]
+    assert "smoke round 1" in cur["plan"]["fix_changes"][0]
+    assert cur["smoke"]["job_id"] == "501"  # round 2 is a new pilot job on check
+    cl.finish("501", files={"outputs/pi.txt": b"3.14\n"}, log=["done"])
+    lb.poll(lb.get(rid))
+    done = lb.get(rid)
+    # the AI changed the plan: it passes, but a person approves the change first
+    assert done["status"] == "draft" and "review the changes" in done["stage"]
+    assert [j["why"] for j in done["cluster_jobs"]] == [
+        "pilot round 1",
+        "pilot round 2",
+    ]
+
+
+def test_pilot_gives_up_after_max_rounds(plab):
+    lb, cl, fake, _ = plab
+    rid = draft(lb)
+    lb.submit(rid)
+    sm = dict(lb.get(rid)["smoke"], round=lb.SMOKE_MAX_ROUNDS)
+    lb._update(rid, smoke=sm)
+    _fail(cl, "500", "2", files={}, log=["error: boom"])
+    lb.poll(lb.get(rid))
+    f = lb.get(rid)
+    assert f["status"] == "failed" and "full run was not started" in f["error"]
+    assert "error: boom" in (lb.results_dir / f"run_{rid}" / "job.log").read_text()
+
+
+def test_pilot_install_failure_is_not_retried_forever(plab, monkeypatch):
+    from deepresearch.dashboard import lab as labm
+
+    lb, cl, fake, _ = plab
+    seen = {}
+
+    def ask(prompt, search):
+        seen["prompt"] = prompt
+        return _fixed_reply(("x",)), 0.0
+
+    lb._ask = ask
+    monkeypatch.setattr(labm.threading, "Thread", _Inline)
+    rid = draft(lb)
+    lb.submit(rid)
+    log = ["[ERROR] no install method produced a working environment (tried: pixi)"]
+    _fail(cl, "500", "4", files={}, log=log)
+    lb.poll(lb.get(rid))
+    assert "DIAGNOSIS: No install method" in seen["prompt"]
+    _fail(cl, "501", "4", files={}, log=log)
+    lb.poll(lb.get(rid))
+    f = lb.get(rid)
+    assert (
+        f["status"] == "failed"
+        and "(install); not handed to the AI again" in f["stage"]
+    )
+    assert (
+        "software setup" in f["error"]
+        and f["smoke"]["rounds"][-1]["class"] == "install"
+    )
+
+
+def test_pilot_fix_interrupted_by_restart_is_resumed(plab, monkeypatch):
+    """Run #88: a dashboard restart mid-fix used to fail the run; now the fix resumes."""
+    from deepresearch.dashboard import lab as labm
+
+    lb, cl, fake, _ = plab
+    rid = draft(lb)
+    lb.submit(rid)
+    sm = dict(lb.get(rid)["smoke"], fixing=True)
+    sm["rounds"] = [{"round": 1, "rc": 1, "log_tail": "boom", "missing": []}]
+    lb._update(rid, smoke=sm)  # as left by a dashboard that died mid-fix
+    labm._SMOKE_FIXING.discard(("main", rid))
+    called = []
+    monkeypatch.setattr(lb, "_smoke_fix", lambda *a: called.append(a))
+    lb.poll(lb.get(rid))
+    import time as _t
+
+    for _ in range(50):
+        if called:
+            break
+        _t.sleep(0.02)
+    assert called and called[0][0] == rid and called[0][1] == "boom"
+    assert lb.get(rid)["status"] == "smoke"
+    labm._SMOKE_FIXING.discard(("main", rid))
+
+
+def test_a_pilot_left_on_the_retired_warm_node_is_closed_out(plab):
+    """R4: a run still in "smoke" with a warm-node task (no job id) is failed with a
+    clear message instead of being polled over SSH forever."""
+    lb, cl, fake, _ = plab
+    rid = draft(lb)
+    lb._update(
+        rid, status="smoke", smoke={"task": "smoke-9-1", "round": 1, "rounds": []}
+    )
+    lb.poll(lb.get(rid))
+    r = lb.get(rid)
+    assert r["status"] == "failed" and "retired warm Lab node" in r["error"]
+
+
+def test_without_bifrost_there_is_no_pilot(plab):
+    """Pilots only run through bifrost now: signed out, the plan is not piloted on any
+    warm node (the SSH submit path is all that is left until it goes too)."""
+    lb, cl, fake, t = plab
+    lb.bifrost_jobs = None
+    assert lb._smoke_applies(t, PLAN) is False
+
+
+def test_cluster_checks_need_bifrost(plab):
+    """Signed out, a planning check never runs anywhere (no warm node to fall back on):
+    it answers with the sign-in hint and touches nothing."""
+    lb, cl, fake, t = plab
+    lb.bifrost_jobs = None
+    before = len(fake.calls)
+    rc, out = lb._check_run(t, "probe-1-1", "#!/bin/bash\necho hi\n", 5)
+    assert rc is None and "deep-research cluster login" in out
+    assert len(fake.calls) == before

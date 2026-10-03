@@ -326,9 +326,6 @@ class Api(ProjectApi):
         r("GET", r"/api/lab/targets", self.lab_targets)
         r("GET", r"/api/lab/catalog", self.lab_catalog)
         r("POST", r"/api/lab/catalog/refresh", self.lab_catalog_refresh)
-        r("GET", r"/api/lab/warm", self.lab_warm)
-        r("POST", r"/api/lab/warm/start", self.lab_warm_start)
-        r("POST", r"/api/lab/warm/stop", self.lab_warm_stop)
         r("GET", r"/api/lab/pitfalls", self.lab_pitfalls)
         r("POST", r"/api/lab/pitfalls", self.lab_pitfall_add)
         r("DELETE", r"/api/lab/pitfalls/([\w.-]+)", self.lab_pitfall_rm)
@@ -401,19 +398,14 @@ class Api(ProjectApi):
                 log_dir=ws.logs_dir, upload_dir=ws.uploads_dir,
                 audio_dir=ws.audio_dir, results_dir=ws.lab_dir,
             )  # fmt: skip
-            # share the cluster targets (one SSH connection, one warm node)
+            # share the cluster targets (one catalog, one bifrost sign-in)
             ctx.lab.targets = self._main.lab.targets
             self._contexts[s] = ctx
             return ctx
 
     def start_watchers(self) -> None:
-        """Resume Lab watching in every workspace with runs still in flight, and keep
-        the always-on warm node alive when the target asks for it."""
+        """Resume Lab watching in every workspace with runs still in flight."""
         self._main.lab.ensure_watcher()
-        try:
-            self._main.lab.start_warm_keeper()
-        except Exception:
-            traceback.print_exc()
         if not self._workspaces:
             return
         from deepresearch.core import workspace as W
@@ -1768,28 +1760,6 @@ class Api(ProjectApi):
         if st.get("error") and not st.get("available"):
             raise ApiError(502, st["error"])
         return st
-
-    def lab_warm(self, query, body):
-        try:
-            return self.lab.warm_status((query.get("target") or [None])[0])
-        except TargetError as e:
-            raise ApiError(502, str(e)) from e
-
-    def lab_warm_start(self, query, body):
-        try:
-            return self.lab.warm_start((body or {}).get("target"))
-        except ValueError as e:
-            raise ApiError(400, str(e)) from e
-        except TargetError as e:
-            raise ApiError(502, str(e)) from e
-
-    def lab_warm_stop(self, query, body):
-        try:
-            return self.lab.warm_stop((body or {}).get("target"))
-        except ValueError as e:
-            raise ApiError(400, str(e)) from e
-        except TargetError as e:
-            raise ApiError(502, str(e)) from e
 
     def lab_pitfalls(self, query, body):
         from deepresearch.dashboard import labguard

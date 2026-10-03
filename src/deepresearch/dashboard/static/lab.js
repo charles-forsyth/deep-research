@@ -224,7 +224,7 @@ const LAB = {
     return `<div class="lab-warn" role="alert" style="margin:6px 0"><b>Check before running:</b><ul>${cs.map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>`;
   },
   smokeHtml(r) {
-    // smoke test rounds on the warm node, and the plan changes the AI made to pass them
+    // pilot rounds on the check partition, and the plan changes the AI made to pass them
     const sm = r.smoke;
     const p = r.plan || {};
     const bits = [];
@@ -234,7 +234,7 @@ const LAB = {
     if (sm && sm.pilot) bits.push(`<span class="label">Pilot result</span> <b>${esc(String(sm.pilot.outcome || "").toUpperCase())}</b>: ${esc(sm.pilot.why || "")} The full run was not started.`);
     if ((p.fix_concerns || []).length && r.status === "draft") bits.push(`<span class="label">Check before running</span> ${p.fix_concerns.map(esc).join("; ")}`);
     if (p.partition_switched) bits.push(`<span class="label">Partition</span> ${esc(p.partition_switched)}`);
-    if (String(r.job_id || "").startsWith("warm:")) bits.push(`<span class="label">Ran on</span> the warm Lab node (no node boot)`);
+    if (String(r.job_id || "").startsWith("warm:")) bits.push(`<span class="label">Ran on</span> the warm Lab node (retired)`);
     if ((r.cluster_jobs || []).some((j) => String(j.job_id) === String(r.job_id))) bits.push(`<span class="label">Ran through</span> bifrost (cluster service), job ${esc(r.job_id)}`);
     if (!bits.length) return "";
     return `<div class="lab-q dim" style="font-size:11.5px">${bits.join("<br>")}</div>`;
@@ -612,32 +612,12 @@ const LAB = {
     } catch { /* optional */ }
   },
 
-  async warmBox() {
-    // the stop rule comes from lab_targets.json (warm.idle_min; 0 = always on)
-    const idleText = (w) => w.always_on || w.idle_min === 0 ? "It stays on until you stop it."
-      : `It stops after ${Number.isFinite(w.idle_min) ? w.idle_min : 20} idle minutes.`;
-    // the warm Lab node: one long-lived job that runs smoke tests, checks and short runs
-    const box = $("#warm-box");
-    if (!box) return;
-    try {
-      const w = await api("/api/lab/warm");
-      if (!w.enabled) { box.textContent = ""; return; }
-      const ws = (w.workers || []).map((x) => `job ${esc(x.job)} ${esc(x.state.toLowerCase())}${x.node ? " on " + esc(x.node) : ""}${x.left ? `, ${esc(x.left)} left` : ""}${x.busy.length ? `, busy: ${esc(x.busy.join(", "))}` : ", idle"}${x.draining ? " (draining)" : ""}`).join("; ");
-      box.innerHTML = `<b>Warm Lab node</b> (${esc(w.partition || "")}): ${ws || "not running (starts on the next submit)"}; ${w.queued} queued, ${w.running} running. ${idleText(w)} <button class="btn small" id="warm-start">Start now</button> ${ws ? '<button class="btn small danger" id="warm-stop">Stop</button>' : ""}`;
-      const st = $("#warm-start"), sp = $("#warm-stop");
-      if (st) st.onclick = () => busy(st, async () => { await api("/api/lab/warm/start", { method: "POST" }); toast("Warm Lab node requested", "ok"); this.warmBox(); });
-      if (sp) sp.onclick = () => busy(sp, async () => { await api("/api/lab/warm/stop", { method: "POST" }); toast("Warm Lab node stopping", "ok"); setTimeout(() => this.warmBox(), 4000); });
-    } catch (e) { box.textContent = "Warm Lab node: " + e.message; }
-  },
-
   // ------------------------------------------------------------------ all runs page
   async renderAll(v) {
     v.innerHTML = `<div class="runs-view"><div class="runs-head"><h2>Lab runs</h2>
       <select id="runs-filter" aria-label="Filter lab runs"><option value="">All</option><option value="live">Running or queued</option><option value="draft">Waiting for review</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select>
       <span class="grow"></span><span class="dim" id="runs-count"></span><button class="btn small" id="runs-cluster" title="What the cluster is doing for us: live state, jobs, spend, storage">Cluster view</button></div>
-      <div id="warm-box" class="dim" style="font-size:12px;margin:6px 0 10px"></div>
       <div id="runs-body"><span class="spinner"></span></div></div>`;
-    this.warmBox();
     $("#runs-cluster").onclick = () => openCluster();
     const live = ["planning", "submitting", "smoke", "queued", "running", "fetching", "analyzing"];
     const draw = (runs) => {

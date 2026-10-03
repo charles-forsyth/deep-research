@@ -44,7 +44,6 @@ from deepresearch.dashboard.cluster import (  # noqa: F401  (re-exported)
     TargetError,
     _gcloud_error,
     _tar_b64,
-    _worker_script,
     load_targets,
     task_prefix,
 )
@@ -64,7 +63,7 @@ STATES = (
     "plan_failed",
     "draft",  # plan ready for review
     "submitting",
-    "smoke",  # cut-down run on the warm node before the real one
+    "smoke",  # pilot: a cut-down run on the check partition before the real one
     "queued",  # accepted by Slurm, waiting for a node
     "running",  # the batch script is running (installing or computing)
     "fetching",  # copying results back
@@ -88,10 +87,6 @@ SLURM_DONE = {
 }
 # Lab runs whose submit is running in this process right now (see poll()).
 _IN_FLIGHT: set[tuple[str, int]] = set()
-# always-on warm node: one keeper thread per process; targets paused by a manual Stop
-_KEEPER: threading.Thread | None = None
-_KEEPER_LOCK = threading.Lock()
-_WARM_PAUSED: set[str] = set()
 _SMOKE_FIXING: set[tuple[str, int]] = (
     set()
 )  # runs whose AI smoke fix runs in this process
@@ -1280,22 +1275,6 @@ def suggest_partition(
         "cpu": ["standard", "computehigh"],
     }[shape]
     ok = [p for p in by_shape if p in parts and p not in out]
-    warm = getattr(target, "warm", None) or {}
-    if (
-        shape == "cpu"
-        and want != target.default_partition
-        and target.default_partition in ok
-        and warm.get("always_on")
-        and warm.get("partition") == target.default_partition
-        and max(_int((plan.get("resources") or {}).get("nodes"), 1), 1) == 1
-    ):
-        # a single-node CPU job planned elsewhere would boot a node; the default
-        # partition has an always-on warm node that starts it in seconds (v0.48.1)
-        return (
-            target.default_partition,
-            f"single-node CPU work starts in seconds on the always-on warm node "
-            f"('{target.default_partition}') instead of booting a '{want}' node",
-        )
     if want in parts and want not in out:
         if (shape == "gpu") == bool(parts[want].get("gpus")):
             return want, ""
@@ -2225,7 +2204,6 @@ class Lab(LabVerdictMixin):
         # referee -> fixer rounds on new drafts (v0.49.0); off with DR_LAB_REFINE=0
         self.auto_refine = os.environ.get("DR_LAB_REFINE", "1") != "0"
         self._fetch_tries: dict[int, int] = {}
-        self._warm_checked: dict[str, float] = {}  # target -> last ensure_warm()
         self._stocked_out: dict[
             str, set[str]
         ] = {}  # target -> partitions GCP can't fill
@@ -3727,7 +3705,7 @@ class Lab(LabVerdictMixin):
                     sources, getattr(tgt, "remote_root", "~/deep-research-lab")
                 )
             if self._smoke_applies(tgt, plan):
-                # Pilot first (a bifrost job on the check partition, or the warm node):
+                # Pilot first (a bifrost job on the check partition):
                 # the real run only starts if the cut-down run of this exact plan passes.
                 if bf_jobs is None:
                     tgt.upload(run_id, files, fresh=True)
@@ -3775,9 +3753,7 @@ class Lab(LabVerdictMixin):
             run_id,
             only_if=("submitting",),
             status="queued",
-            stage="Queued on the warm Lab node"
-            if job.startswith("warm:")
-            else "Queued, waiting for a node",
+            stage="Queued, waiting for a node",
             job_id=job,
             submitted_at=_now(),
         ):
@@ -3807,19 +3783,12 @@ class Lab(LabVerdictMixin):
                 finished_at=_now(),
             )
         elif run["status"] == "smoke":
-            tgt = self.target(run["target"])
-            task = (run.get("smoke") or {}).get("task")
             pjob = (run.get("smoke") or {}).get("job_id")
             if pjob and self.bifrost_jobs is not None:
                 try:
                     self.bifrost_jobs.cancel(str(pjob))
                 except Exception:
                     pass  # it ends by itself at the 15-minute limit
-            elif tgt and task:
-                try:
-                    tgt.warm_cancel(task)
-                except Exception:
-                    pass  # the task will still end with the worker
             self._update(
                 run_id,
                 only_if=("smoke",),
@@ -3933,39 +3902,19 @@ class Lab(LabVerdictMixin):
         )
         return True
 
-    # ---- planner probes (warm node) ---------------------------------------
+    # ---- planner probes (check partition) ---------------------------------
     PROBE_MAX = 6
     PROBE_WAIT_S = 420
 
-    def _warm_exec(
+    def _check_run(
         self, tgt, task: str, script: str, wait_s: int
     ) -> tuple[int | None, str]:
         """Run a short read-only script on the cluster; (rc, output). Never raises.
-
-        Through bifrost (signed in): a one-core job on the check partition. Else the
-        warm node over SSH."""
+        A one-core bifrost job on the check partition (the warm node is gone, R4)."""
         jobs = self._jobs_for(tgt)
-        if jobs is not None:
-            return self._check_exec(jobs, tgt, task, script, wait_s)
-        try:
-            tgt.warm_enqueue(task, {"run.sh": script}, need_sec=min(wait_s, 600))
-            self._keep_warm(tgt, force=True)
-        except Exception as e:
-            return None, f"(could not reach the warm node: {str(e)[:200]})"
-        t0 = time.time()
-        while time.time() - t0 < wait_s:
-            try:
-                t = tgt.warm_task(task)
-            except Exception:
-                t = {"where": "?"}
-            if t.get("where") == "done":
-                return t.get("rc"), tgt.warm_task_log(task, 40000)
-            time.sleep(5)
-        try:
-            tgt.warm_cancel(task)
-        except Exception:
-            pass
-        return None, "(timed out waiting for the warm node)"
+        if jobs is None:
+            return None, "(cluster checks need the bifrost sign-in: deep-research cluster login)"
+        return self._check_exec(jobs, tgt, task, script, wait_s)
 
     CHECK_PARTITION = "check"  # the cluster's always-on test partition (2026-10-03)
     CHECK_POLL_S = 3.0
@@ -3979,10 +3928,8 @@ class Lab(LabVerdictMixin):
         return name if name in (getattr(tgt, "partitions", None) or {}) else None
 
     def _checks_where(self, tgt) -> str:
-        if self._jobs_for(tgt) is not None:
-            part = self._check_partition(tgt)
-            return f"on the {part} partition" if part else "on the cluster"
-        return "on the warm Lab node"
+        part = self._check_partition(tgt)
+        return f"on the {part} partition" if part else "on the cluster"
 
     def _check_exec(
         self, jobs, tgt, name: str, script: str, wait_s: int
@@ -4033,8 +3980,8 @@ class Lab(LabVerdictMixin):
 
     def _run_probes(self, run_id: int, run: dict, tgt, title: str) -> str:
         """Ask the model which facts to check, check them on the cluster (a short job on
-        the check partition through bifrost, else the warm node), return text."""
-        if not tgt or not (getattr(tgt, "warm", None) or self._jobs_for(tgt)):
+        the check partition through bifrost), return text."""
+        if not tgt or not self._jobs_for(tgt):
             return ""
         try:
             self._update(
@@ -4067,7 +4014,7 @@ class Lab(LabVerdictMixin):
                 only_if=("planning",),
                 stage=f"Checking {len(ok)} facts {self._checks_where(tgt)} (software help, versions, URLs)",
             )
-            rc, out = self._warm_exec(
+            rc, out = self._check_run(
                 tgt, f"probe-{run_id}-{int(time.time())}", script, self.PROBE_WAIT_S
             )
         except Exception as e:  # probes help; they never block planning
@@ -4083,7 +4030,7 @@ class Lab(LabVerdictMixin):
         if (
             not urls
             or not tgt
-            or not (getattr(tgt, "warm", None) or self._jobs_for(tgt))
+            or not self._jobs_for(tgt)
         ):
             return []
         self._update(
@@ -4097,7 +4044,7 @@ class Lab(LabVerdictMixin):
             lines.append(
                 f"echo \"URL {u} $(curl -sSL -m 25 -o /dev/null -w '%{{http_code}} %{{size_download}}' -r 0-65535 {q} 2>&1 | tail -c 120)\""
             )
-        rc, out = self._warm_exec(
+        rc, out = self._check_run(
             tgt, f"urls-{run_id}-{int(time.time())}", "\n".join(lines) + "\n", 240
         )
         res: list[dict[str, Any]] = []
@@ -4158,7 +4105,7 @@ class Lab(LabVerdictMixin):
 
     def env_notes(self, tgt) -> str:
         """Which install rung worked for recent package lists (ladder.jsonl), for prompts."""
-        if not tgt or not (getattr(tgt, "warm", None) or self.bifrost is not None):
+        if not tgt or self.bifrost is None:
             return ""
         raw = self._ladder_tail(tgt)
         if not raw:
@@ -4183,9 +4130,8 @@ class Lab(LabVerdictMixin):
             )
         )
 
-    # ---- smoke test and warm node ------------------------------------------
+    # ---- pilot (smoke test) ---------------------------------------------------
     SMOKE_MAX_ROUNDS = 3  # AI fixes of a failing smoke test before giving up
-    WARM_RECHECK_S = 120.0
 
     @staticmethod
     def _plan_core(plan: dict) -> dict:
@@ -4200,70 +4146,23 @@ class Lab(LabVerdictMixin):
     def _smoke_applies(self, tgt, plan: dict) -> bool:
         if plan.get("smoke") is False:
             return False
-        # pilots run as short bifrost jobs (check partition) or on the warm node
-        if self._jobs_for(tgt) is None and not getattr(tgt, "warm", None):
+        # pilots run as short bifrost jobs on the check partition
+        if self._jobs_for(tgt) is None:
             return False
         r = plan.get("resources") or {}
-        # CPU warm node: a GPU plan's smoke test would fail for want of a GPU
+        # the check partition has no GPU: a GPU plan's pilot would fail for want of one
         return _int(r.get("gpus"), 0) == 0
-
-    def _warm_full_ok(self, tgt, plan: dict) -> bool:
-        """Short single-node CPU runs on the warm node's partition skip the node boot.
-        Never through bifrost: there every real run is its own Slurm job."""
-        cfg = getattr(tgt, "warm", None)
-        if not cfg or self._jobs_for(tgt) is not None:
-            return False
-        r = plan.get("resources") or {}
-        part = r.get("partition") or tgt.default_partition
-        tl = str(r.get("time_limit") or "01:00:00")
-        tl = tl if TIME_RE.fullmatch(tl) else "01:00:00"
-        return (
-            part == cfg["partition"]
-            and max(_int(r.get("nodes"), 1), 1) == 1
-            and _int(r.get("gpus"), 0) == 0
-            and _hours(tl) * 60 <= cfg["max_full_min"]
-        )
-
-    def _keep_warm(self, tgt, force: bool = False) -> str | None:
-        """Make sure a warm worker exists (at most every WARM_RECHECK_S seconds)."""
-        now = time.time()
-        if (
-            not force
-            and now - self._warm_checked.get(tgt.name, 0) < self.WARM_RECHECK_S
-        ):
-            return None
-        self._warm_checked[tgt.name] = now
-        return tgt.ensure_warm()
 
     @staticmethod
     def _home(path: str) -> str:
         return "$HOME" + path[1:] if path.startswith("~") else path
 
     def _dispatch(self, run_id: int, tgt, plan: dict, files: dict | None) -> str:
-        """Start the real run: on the warm node when it fits, else as its own Slurm job.
+        """Start the real run as its own Slurm job (through bifrost when signed in).
 
         `files` None means they are already in the run folder (after a smoke test).
-        Returns the job id ('warm:<task>' for the warm node).
+        Returns the job id.
         """
-        if self._warm_full_ok(tgt, plan):
-            if files:
-                tgt.upload(run_id, files, fresh=True)
-            r = plan.get("resources") or {}
-            tl = str(r.get("time_limit") or "01:00:00")
-            sec = int(_hours(tl if TIME_RE.fullmatch(tl) else "01:00:00") * 3600)
-            d = self._home(tgt.job_dir(run_id))
-            task = f"{task_prefix(tgt)}full-{run_id}"
-            run_sh = (
-                "#!/bin/bash\n"
-                f'RUN="{d}"\nexport SLURM_SUBMIT_DIR="$RUN"\ncd "$RUN"\n'
-                'echo "[INFO] running on the warm Lab node $(hostname -s)" >> job.log\n'
-                f"exec timeout --kill-after=30 {sec} bash run.sbatch >> job.log 2>&1\n"
-            )
-            tgt.warm_enqueue(
-                task, {"run.sh": run_sh}, need_sec=sec + 120, exclusive=True
-            )
-            self._keep_warm(tgt, force=True)
-            return "warm:" + task
         moved = self._dodge_stockout(run_id, tgt, plan)
         if moved is not None:
             plan = moved
@@ -4479,7 +4378,7 @@ class Lab(LabVerdictMixin):
             return None
 
     def _bf_pilot_task(self, sm: dict) -> dict:
-        """bifrost's view of a pilot job, in the shape warm_task returns."""
+        """bifrost's view of a pilot job: where (queue/running/done/missing), rc, node."""
         if self.bifrost_jobs is None:
             raise TargetError(
                 "this pilot runs through bifrost: run `deep-research cluster login`, "
@@ -4501,7 +4400,7 @@ class Lab(LabVerdictMixin):
         ec = str(r.get("exit_code") or "").split(":")[0]
         rc = int(ec) if ec.isdigit() else None
         if state == "TIMEOUT":
-            rc = 124  # what the warm node's `timeout` reported: a clean cut-off
+            rc = 124  # a clean cut-off at the pilot's time limit (as `timeout` reports)
         elif state != "COMPLETED" and not rc:
             rc = 1
         return {
@@ -4568,38 +4467,9 @@ class Lab(LabVerdictMixin):
                 },
             )
             return
-        cfg = tgt.warm or {}
-        d = self._home(tgt.job_dir(run_id))
-        task = f"{task_prefix(tgt)}smoke-{run_id}-{round_no}"
-        sec = int(cfg.get("smoke_min", 15)) * 60
-        run_sh = (
-            "#!/bin/bash\n"
-            f'RUN="{d}"\nS="$RUN/smoke"\nrm -rf "$S"; mkdir -p "$S"\n'
-            'cp "$RUN/run.sbatch" "$S/"; for f in plan.json sources.json; do '
-            '[ -f "$RUN/$f" ] && cp "$RUN/$f" "$S/"; done\n'
-            'cd "$S"\nexport SLURM_SUBMIT_DIR="$S" LAB_SMOKE=1\n'
-            f"exec timeout --kill-after=20 {sec} bash run.sbatch > job.log 2>&1\n"
-        )
-        tgt.warm_enqueue(task, {"run.sh": run_sh}, need_sec=sec + 60)
-        state = self._keep_warm(tgt, force=True) or ""
-        self._update(
-            run_id,
-            only_if=("submitting", "smoke"),
-            status="smoke",
-            stage=f"Pilot (round {round_no}): "
-            + (
-                "warm Lab node booting"
-                if state.startswith(("started", "pending"))
-                else "queued on the warm Lab node"
-            ),
-            error=None,
-            smoke={
-                "task": task,
-                "round": round_no,
-                "rounds": rounds or [],
-                "original": self._plan_core(original),
-                "fixing": False,
-            },
+        raise NotSubmitted(
+            "pilots run through bifrost on the check partition: run "
+            "`deep-research cluster login`, then restart the dashboard"
         )
 
     _SMOKE_ERR = re.compile(
@@ -4626,8 +4496,19 @@ class Lab(LabVerdictMixin):
         if sm.get("fixing") or not (sm.get("task") or sm.get("job_id")):
             return
         run_id = run["id"]
-        bf_pilot = bool(sm.get("job_id"))
-        t = self._bf_pilot_task(sm) if bf_pilot else tgt.warm_task(sm["task"])
+        if not sm.get("job_id"):
+            # a pilot from before R4 on the retired warm node: nothing watches it now
+            self._update(
+                run_id,
+                only_if=("smoke",),
+                status="failed",
+                stage="Pilot lost",
+                error="This pilot ran on the retired warm Lab node. Submit again: pilots "
+                "now run on the check partition.",
+                finished_at=_now(),
+            )
+            return
+        t = self._bf_pilot_task(sm)
         n = sm.get("round", 1)
         if t["where"] in ("queue", "missing"):
             if t["where"] == "missing":
@@ -4645,18 +4526,6 @@ class Lab(LabVerdictMixin):
                     finished_at=_now(),
                 )
                 return
-            state = "" if bf_pilot else (self._keep_warm(tgt) or "")
-            if state:
-                self._update(
-                    run_id,
-                    only_if=("smoke",),
-                    stage=f"Pilot (round {n}): "
-                    + (
-                        "warm Lab node booting"
-                        if state.startswith(("started", "pending"))
-                        else "queued on the warm Lab node"
-                    ),
-                )
             return
         if t["where"] == "running":
             st = self._pilot_read(run, tgt, "stage.txt", 2000).strip().splitlines()
@@ -4739,9 +4608,7 @@ class Lab(LabVerdictMixin):
                     status="queued",
                     stage=f"Pilot passed (round {n}); "
                     + (
-                        "queued on the warm Lab node"
-                        if job.startswith("warm:")
-                        else "queued, waiting for a node"
+                        "queued, waiting for a node"
                     ),
                     job_id=job,
                     smoke=sm,
@@ -4967,81 +4834,6 @@ class Lab(LabVerdictMixin):
                 run, sm, log, f"Pilot failed; AI fix failed ({str(e)[:160]})"
             )
 
-    def warm_status(self, name: str | None = None) -> dict:
-        tgt = self.target(name)
-        if not tgt or not getattr(tgt, "warm", None):
-            return {"enabled": False}
-        if self._jobs_for(tgt) is not None:
-            # signed in to bifrost: pilots and checks run on the check partition and the
-            # warm worker is never started (no SSH status call either)
-            return {"enabled": False, "replaced_by": self._check_partition(tgt) or ""}
-        cfg = tgt.warm or {}
-        return {
-            **tgt.warm_status(),
-            "always_on": bool(cfg.get("always_on")),
-            "keeper_paused": tgt.name in _WARM_PAUSED,
-        }
-
-    def warm_start(self, name: str | None = None) -> dict:
-        tgt = self.target(name)
-        if not tgt or not getattr(tgt, "warm", None):
-            raise ValueError("no warm worker configured for this target")
-        _WARM_PAUSED.discard(tgt.name)
-        state = self._keep_warm(tgt, force=True)
-        return {"state": state, **tgt.warm_status()}
-
-    def warm_stop(self, name: str | None = None) -> dict:
-        tgt = self.target(name)
-        if not tgt or not getattr(tgt, "warm", None):
-            raise ValueError("no warm worker configured for this target")
-        tgt.warm_stop()
-        # a manual stop pauses the always-on keeper until the next manual start
-        _WARM_PAUSED.add(tgt.name)
-        return {
-            "stopping": True,
-            "keeper_paused": bool((tgt.warm or {}).get("always_on")),
-        }
-
-    # ---- always-on warm node (v0.48.0) -------------------------------------------
-    KEEPER_INTERVAL_S = 300.0
-
-    def start_warm_keeper(self) -> None:
-        """For targets with `"warm": {"always_on": true}`: keep one warm worker running
-        at all times, even with no Lab runs (jobs then start in seconds). One keeper per
-        process (Main's Lab starts it; workspaces share the node). A manual Stop pauses
-        it until Start. The worker itself never exits for idleness (idle_min 0) and is
-        replaced near its time limit."""
-        if not any(
-            (getattr(t, "warm", None) or {}).get("always_on")
-            for t in self.targets.values()
-        ):
-            return
-        with _KEEPER_LOCK:
-            global _KEEPER
-            if _KEEPER and _KEEPER.is_alive():
-                return
-            _KEEPER = threading.Thread(
-                target=self._keeper_loop, daemon=True, name="lab-warm-keeper"
-            )
-            _KEEPER.start()
-
-    def _keeper_loop(self) -> None:
-        while not self._stop.is_set():
-            self.keep_warm_once()
-            self._stop.wait(self.KEEPER_INTERVAL_S)
-
-    def keep_warm_once(self) -> dict[str, str]:
-        out: dict[str, str] = {}
-        for name, t in self.targets.items():
-            cfg = getattr(t, "warm", None) or {}
-            if not cfg.get("always_on") or name in _WARM_PAUSED:
-                continue
-            try:
-                out[name] = self._keep_warm(t, force=True) or ""
-            except Exception as e:  # cluster unreachable, sign-in expired: try later
-                out[name] = f"error: {str(e)[:200]}"
-        return out
-
     def log(self, run_id: int, offset: int = 0) -> dict:
         run = self.get(run_id)
         if not run:
@@ -5196,8 +4988,6 @@ class Lab(LabVerdictMixin):
         tgt = self.target(run["target"])
         if tgt and run["status"] == "smoke":
             return self._poll_smoke(run, tgt)
-        if tgt and str(run.get("job_id") or "").startswith("warm:"):
-            self._keep_warm(tgt)
         if not tgt or not run.get("job_id"):
             return
         if self._bf_run(run) and self.bifrost_jobs is None:

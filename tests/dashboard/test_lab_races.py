@@ -152,13 +152,13 @@ def test_watcher_leaves_an_in_flight_submit_alone(lab):
 
 
 def test_watcher_leaves_a_submit_alone_while_its_pilot_is_being_queued(lab):
-    """Queueing the pilot on the warm node takes seconds (ssh). The run is still
+    """Queueing the pilot (a bifrost prepare + confirm) takes seconds. The run is still
     "submitting" then, and the watcher must not fail it as left over (v0.43.2)."""
     run = lab.create(1, "document", "x", plan=dict(PLAN))
     seen: list[str] = []
 
     def slow_smoke(run_id, tgt, plan, round_no, original, rounds=None):
-        time.sleep(0.3)  # warm_enqueue + _keep_warm over ssh
+        time.sleep(0.3)  # bifrost job_submit + confirm
         lab.poll(lab.get(run_id))  # the watcher wakes up meanwhile
         seen.append(lab.get(run_id)["status"])
         lab._update(run_id, only_if=("submitting",), status="smoke", stage="Pilot")

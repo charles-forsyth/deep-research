@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.57.3 (package `deepresearch`) |
+| Applies to | deep-research v0.58.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -1351,7 +1351,7 @@ only of the code.
 | Leftover cloud stores | `deep-research cleanup` removes temporary stores (not source indexes or named stores); `--all` removes every store on the key. |
 | Use the dashboard from another machine | SSH tunnel (`ssh -L 7420:127.0.0.1:7420 host`), or `dashboard --restart --host 0.0.0.0 --allow-remote` on a trusted network. |
 | A Lab run stuck in "submitting" | Stop run on its card, or let the watcher fail it; then check `squeue --me` on the cluster for a stray job. |
-| Warm node | `GET /api/lab/warm` lists workers and queue counts; Stop / Start in the Lab panel (or `POST /api/lab/warm/stop|start`). With `always_on`, Stop pauses the keeper until Start (20.16). Expect exactly one always-on worker. |
+| Warm node | Retired in v0.58.0 (R4, 20.25): pilots and planning checks run as bifrost jobs on the `check` partition; the `/api/lab/warm` routes are gone. |
 | Which workspace am I in? | `GET /api/health` (`workspace`), the switcher in the top bar, or `deep-research workspace list`. |
 | Back up history | `sqlite3 history.db ".backup backup.db"` (copying the file alone can miss the WAL). |
 | Change the key | `deep-research auth login`, then `dashboard --restart`. |
@@ -2020,7 +2020,7 @@ pilot) so the referee does not flag them.
   opinion.
 - Tests: `tests/dashboard/test_lab_referee.py`.
 
-### 20.16 Default partition and the always-on warm node (v0.48.0)
+### 20.16 Default partition and the always-on warm node (v0.48.0; warm node retired in v0.58.0, see 20.25)
 
 - `default_partition` in `lab_targets.json` now wins over the cluster catalog's default
   (before, the catalog's `standard` replaced it whenever the catalog loaded). Ursa Major
@@ -2315,6 +2315,30 @@ urllib (CERTIFICATE_VERIFY_FAILED on NCBI downloads cost run 4 a pilot round).
 **Probe files.** Each planner check is written to its own file and sourced in a
 subshell; a check holding a here-document (`pyhelp`) no longer breaks the one-line
 wrapper with a syntax error.
+
+### 20.25 R4a: the warm node is retired (v0.58.0)
+
+The warm Lab node (one long-lived `lab-warm` Slurm job running pilots, checks and short
+runs from a spool folder over SSH, with an always-on keeper thread) is deleted. Since
+v0.56.0 bifrost-signed-in Lab work never used it; the cluster's `check` partition (one
+always-on e2 node, 15-minute limit) does that job for everyone.
+
+Removed: `dashboard/warm_worker.sh`; `SlurmSSHTarget.warm`, `warm_dir`, `ensure_warm`,
+`warm_status`, `warm_enqueue`, `warm_task`, `warm_task_log`, `warm_cancel`, `warm_stop`,
+`_warm_run_status` and `ScopedTarget._warm_run_status`; `Lab._warm_full_ok`,
+`_keep_warm`, `warm_status`, `warm_start`, `warm_stop`, `start_warm_keeper`,
+`_keeper_loop`, `keep_warm_once` and the module keeper globals; the warm branches of
+`_dispatch`, `_start_smoke`, `_poll_smoke`, `cancel` and `poll`; the always-on-warm
+shortcut in `suggest_partition`; routes `GET /api/lab/warm`, `POST /api/lab/warm/start`,
+`POST /api/lab/warm/stop` and the Lab runs page's warm box.
+
+Behaviour now: pilots and planning checks need the bifrost sign-in. Signed out, there is
+no pilot (`_smoke_applies` is false) and a planning check answers with the sign-in hint
+without running anything (`Lab._check_run`, formerly `_warm_exec`). A run left in `smoke`
+with a warm-node task (no job id) is failed as "Pilot lost" with a note to submit again.
+The SSH submit/watch/fetch path stays until R4b. Tests: the warm-node fake tests are
+replaced by bifrost-pilot tests of the same behaviour (AI fix rounds, give-up, install
+failure not retried forever, resume after restart, verdict re-plan).
 
 ## 21. Data sources
 
@@ -3062,3 +3086,4 @@ before v0.39.0).
 | 2026-10-03 | v0.57.1 | Capacity check before queueing (live stockouts + partitions that lost one of our nodes in 3 h), move after the first node failure; CA bundle exported in every job; planner checks run from files (20.24). |
 | 2026-10-03 | v0.57.2 | Ursa Major moved to fewer, cheaper node types (standard/spot on e2-standard-32 in any us-central1 zone; `lab` partition removed). `suggest_partition` now puts CPU work on standard and sweeps on spot first; computehigh stays first only for MPI. Live config: default partition standard, warm worker off. |
 | 2026-10-03 | v0.57.3 | Live log of a bifrost job that has not written its log yet (queued, node booting) says "waiting for the job to start: <stage>" instead of the cluster's file error, and resumes from the top once the log exists. |
+| 2026-10-03 | v0.58.0 | R4a: the warm Lab node is retired (20.25): worker script, keeper, warm routes and UI deleted; pilots and planning checks only through bifrost on `check`. |

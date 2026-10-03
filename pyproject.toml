@@ -1,6 +1,6 @@
 [project]
 name = "deepresearch"
-version = "0.57.3"
+version = "0.58.0"
 description = "CLI and self-hosted web workstation for Google's Gemini Deep Research agent: launch, watch, read, annotate, search and listen to cited research reports."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -43,7 +43,7 @@ deep-research = "deepresearch:main"
 package = true
 
 [tool.setuptools.package-data]
-deepresearch = ["dashboard/static/*", "dashboard/static/vendor/*", "dashboard/warm_worker.sh"]
+deepresearch = ["dashboard/static/*", "dashboard/static/vendor/*"]
 
 [tool.ruff.lint]
 ignore = ["E402"]
