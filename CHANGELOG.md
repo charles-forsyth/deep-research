@@ -7,6 +7,18 @@ releases.
 
 ## [Unreleased]
 
+## [0.57.1] - 2026-10-03
+
+### Fixed
+- Real runs no longer wait on a partition GCP cannot fill: before queueing, the Lab
+  checks live stockouts and partitions where one of our jobs lost a node in the last
+  3 hours, and queues on a partition of the same shape that can start nodes. A queued
+  job moves after its first node failure (was three).
+- HTTPS downloads in Lab jobs: every job trusts a CA bundle up front, so urllib no
+  longer fails with CERTIFICATE_VERIFY_FAILED under the module Python.
+- Planner checks that look up a Python function's help no longer fail with a shell
+  syntax error.
+
 ## [0.57.0] - 2026-10-03
 
 ### Added

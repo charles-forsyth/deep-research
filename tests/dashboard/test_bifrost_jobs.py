@@ -434,3 +434,113 @@ def test_relay_source_is_staged_once_and_passed_as_input(blab, tmp_path, monkeyp
     # the next run reuses the staged copy: no second upload, same input id
     lb.submit(draft(lb, plan))
     assert len(puts) == 1 and calls(fake, "job_submit")[1]["inputs"] == [uid]
+
+
+# ---- stockout dodge (v0.57.1) ------------------------------------------------------
+
+
+def _two_partitions(lb):
+    t = lb.targets["ursa"]
+    t.partitions = {
+        "computehigh": {"cpus": 22, "mem_gb": 85, "usd_per_hour": 1.87},
+        "standard": {"cpus": 16, "mem_gb": 128, "usd_per_hour": 1.40},
+    }
+    return t
+
+
+def test_full_run_dodges_a_partition_that_just_lost_nodes(blab):
+    """Our job lost a node on 'standard' in the last 3 hours: the next real run planned
+    there is queued on 'computehigh' instead, before Slurm tries to boot a node."""
+    lb, cl, fake, _ = blab
+    _two_partitions(lb)
+    seen_lists = []
+
+    def jobs_list(a):
+        seen_lists.append(a)
+        if a.get("job_ids"):
+            return cl.jobs_list(a)
+        return [
+            {
+                "job_id": "515",
+                "partition": "standard",
+                "state": "RUNNING",
+                "restarts": 2,
+            }
+        ]
+
+    fake.answers["jobs_list"] = jobs_list
+    fake.answers["cluster_status"] = {
+        "partitions": [{"name": "standard", "problems": []}]
+    }
+    rid = draft(
+        lb, {**PLAN, "resources": {**PLAN["resources"], "partition": "standard"}}
+    )
+    run = lb.submit(rid)
+    sent = calls(fake, "job_submit")[0]["script"]
+    assert "#SBATCH --partition=computehigh" in sent
+    assert run["plan"]["resources"]["partition"] == "computehigh"
+    assert "checked before queueing" in run["plan"]["partition_switched"]
+    assert any("hours" in str(a.get("since", "")) for a in seen_lists)
+
+
+def test_live_stockout_is_dodged_and_healthy_partitions_are_left_alone(blab):
+    lb, cl, fake, _ = blab
+    _two_partitions(lb)
+    fake.answers["cluster_status"] = {
+        "partitions": [{"name": "standard", "problems": ["2 nodes (stockout)"]}]
+    }
+    rid = draft(
+        lb, {**PLAN, "resources": {**PLAN["resources"], "partition": "standard"}}
+    )
+    assert "--partition=computehigh" in lb.submit(rid)["script"]
+    rid2 = draft(lb)  # computehigh is fine: stays put, no switch note
+    run2 = lb.submit(rid2)
+    assert "--partition=computehigh" in run2["script"]
+    assert "partition_switched" not in run2["plan"]
+
+
+def test_a_failed_capacity_check_submits_as_planned(blab):
+    lb, cl, fake, _ = blab
+    _two_partitions(lb)
+    fake.errors["cluster_status"] = "server busy"
+    rid = draft(
+        lb, {**PLAN, "resources": {**PLAN["resources"], "partition": "standard"}}
+    )
+    assert "--partition=standard" in lb.submit(rid)["script"]
+
+
+def test_one_node_failure_moves_a_queued_job(blab):
+    """A queued job that has lost one node on a stocked-out partition moves at once,
+    rather than after three failed boots."""
+    lb, cl, fake, _ = blab
+    _two_partitions(lb)
+    rid = draft(
+        lb, {**PLAN, "resources": {**PLAN["resources"], "partition": "standard"}}
+    )
+    lb.submit(rid)
+    assert "--partition=standard" in lb.get(rid)["script"]
+    cl.jobs["500"]["state"] = "PENDING"
+    cl.jobs["500"]["restarts"] = 1
+    fake.answers["cluster_status"] = {
+        "partitions": [{"name": "standard", "problems": ["(stockout)"]}]
+    }
+    lb.poll(lb.get(rid))
+    run = lb.get(rid)
+    assert run["plan"]["resources"]["partition"] == "computehigh"
+    assert "Moved from standard to computehigh" in run["stage"]
+
+
+def test_a_crashing_capacity_check_never_blocks_the_submit(blab, monkeypatch):
+    from deepresearch.dashboard import lab as labm
+
+    lb, cl, fake, _ = blab
+    _two_partitions(lb)
+
+    def boom(*a, **k):
+        raise RuntimeError("sinfo exploded")
+
+    monkeypatch.setattr(labm, "stocked_out_partitions", boom)
+    rid = draft(
+        lb, {**PLAN, "resources": {**PLAN["resources"], "partition": "standard"}}
+    )
+    assert "--partition=standard" in lb.submit(rid)["script"]

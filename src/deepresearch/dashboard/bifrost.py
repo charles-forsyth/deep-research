@@ -395,6 +395,23 @@ def stockouts(client: BifrostClient) -> set[str]:
     return {p for p in out if p}
 
 
+def recent_node_failures(client: BifrostClient, hours: int = 3) -> set[str]:
+    """Partitions where one of our jobs lost its node in the last `hours` (requeued after
+    a failed boot, or NODE_FAIL). GCP stockouts come and go; a partition that just failed
+    to start a node is likely to fail the next one too."""
+    rows = (
+        client.call("jobs_list", {"since": f"now-{int(hours)}hours", "limit": 200})
+        or []
+    )
+    out = set()
+    for r in rows if isinstance(rows, list) else []:
+        if int(r.get("restarts") or 0) > 0 or str(r.get("state") or "").startswith(
+            "NODE_FAIL"
+        ):
+            out.add(str(r.get("partition") or ""))
+    return {p for p in out if p}
+
+
 def script_issues(client: BifrostClient, script: str) -> list[dict]:
     """bifrost script_check on the generated batch file: [{severity, message}]."""
     data = client.call("script_check", {"script": script}) or {}

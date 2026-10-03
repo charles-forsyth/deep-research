@@ -1211,6 +1211,16 @@ echo "[INFO] container {img} -> $HOME/deep-research-lab/images/{name}.sif"
             bifrost_inputs=bifrost_inputs,
         )  # fmt: skip
     body += f"""
+# HTTPS for downloads: the module Pythons ship no CA path for urllib (CERTIFICATE_VERIFY_FAILED
+# on NCBI, Zenodo, ...). Point every TLS client at certifi's bundle, else the system one.
+# A plan that sets its own SSL_CERT_FILE keeps it.
+if [ -z "${{SSL_CERT_FILE:-}}" ]; then
+  SSL_CERT_FILE="$(python3 -c 'import certifi; print(certifi.where())' 2>/dev/null || true)"
+  [ -s "$SSL_CERT_FILE" ] || SSL_CERT_FILE=/etc/pki/tls/certs/ca-bundle.crt
+  export SSL_CERT_FILE
+fi
+export REQUESTS_CA_BUNDLE="${{REQUESTS_CA_BUNDLE:-$SSL_CERT_FILE}}" CURL_CA_BUNDLE="${{CURL_CA_BUNDLE:-$SSL_CERT_FILE}}"
+
 stage "Running"
 cat > user_script.sh <<'DR_LAB_EOF'
 {plan.get("script", 'echo "no script"; exit 1')}
@@ -1371,9 +1381,15 @@ def stocked_out_partitions(target, client=None) -> set[str]:
         from deepresearch.dashboard import bifrost as bf
 
         try:
-            return bf.stockouts(client)
+            out = bf.stockouts(client)
         except bf.BifrostError:
-            pass  # fall back to the SSH scrape
+            out = None  # fall back to the SSH scrape
+        if out is not None:
+            try:
+                out |= bf.recent_node_failures(client)
+            except bf.BifrostError:
+                pass
+            return out
     try:
         out = target.sh(
             "sinfo -h -R -o '%E|%N' 2>/dev/null | grep -iE 'RESOURCE_POOL_EXHAUSTED|stockout|"
@@ -1568,7 +1584,15 @@ def probe_script(checks: list[dict]) -> tuple[str, list[dict]]:
         lines.append(
             f"echo '=== CHECK {len(ok)}: {json.dumps(c)[:200].replace(chr(39), '')}'"
         )
-        lines.append(f"( {cmd} ) 2>&1 | head -c 6000")
+        # each probe is its own file: a probe body can hold a here-document, which
+        # cannot sit on one line inside `( ... )` (job 505: syntax error, no answer)
+        n = len(ok)
+        lines.append(f"cat > \"${{TMPDIR:-/tmp}}/probe_{n}.sh\" <<'DR_PROBE_EOF_{n}'")
+        lines.append(cmd)
+        lines.append(f"DR_PROBE_EOF_{n}")
+        lines.append(
+            f'( . "${{TMPDIR:-/tmp}}/probe_{n}.sh" ) 2>&1 | head -c 6000; echo'
+        )  # sourced: keeps `module`
     return "\n".join(lines) + "\n", ok
 
 
@@ -2139,6 +2163,9 @@ def plan_diff(before: dict, after: dict, max_lines: int = 400) -> dict:
 
 
 NODE_FAIL_WARN = 3  # node failures before the queue label suggests another partition
+NODE_FAIL_SWITCH = (
+    1  # node failures before a queued job moves to a partition with capacity
+)
 
 
 class Lab(LabVerdictMixin):
@@ -3851,7 +3878,7 @@ class Lab(LabVerdictMixin):
         """A queued job whose nodes keep failing on a stocked-out partition moves to one
         that has capacity (same plan, new partition), once. True when it moved."""
         plan = dict(run.get("plan") or {})
-        if plan.get("partition_switched"):
+        if plan.get("partition_requeue_moved"):
             return False
         out = (
             stocked_out_partitions(tgt, self.bifrost)
@@ -3871,6 +3898,7 @@ class Lab(LabVerdictMixin):
             return False
         plan["resources"] = {**(plan.get("resources") or {}), "partition": new}
         plan["partition_switched"] = f"{cur} -> {new} (GCP had no capacity for {cur})"
+        plan["partition_requeue_moved"] = True
         script = build_sbatch(run["id"], plan, tgt, self._safe_sources(plan))
         try:
             if self._bf_run(run) and self.bifrost_jobs is not None:
@@ -4234,12 +4262,62 @@ class Lab(LabVerdictMixin):
             )
             self._keep_warm(tgt, force=True)
             return "warm:" + task
+        moved = self._dodge_stockout(run_id, tgt, plan)
+        if moved is not None:
+            plan = moved
+            script = build_sbatch(run_id, plan, tgt, self._safe_sources(plan))
+            if files is not None:
+                files = {
+                    **files,
+                    "run.sbatch": script,
+                    "plan.json": json.dumps(plan, indent=2),
+                }
+            elif self._jobs_for(tgt) is None:
+                tgt.upload(
+                    run_id,
+                    {"run.sbatch": script, "plan.json": json.dumps(plan, indent=2)},
+                    fresh=False,
+                )
         jobs = self._jobs_for(tgt)
         if jobs is not None:
             return self._bifrost_submit(run_id, tgt, plan, jobs, why="full")
         if files:
             return tgt.submit(run_id, files)
         return tgt.sbatch_uploaded(run_id)
+
+    def _dodge_stockout(self, run_id: int, tgt, plan: dict) -> dict | None:
+        """Before the real run is queued: if GCP cannot start nodes on its partition now
+        (live stockout, or one of our jobs lost a node there in the last 3 hours), move
+        it to a partition of the same shape that can. Returns the moved plan, or None.
+        Never raises: a failed check submits as planned."""
+        try:
+            out = (
+                stocked_out_partitions(tgt, self.bifrost)
+                if self.bifrost is not None
+                else stocked_out_partitions(tgt)
+            )
+        except Exception:
+            return None
+        self._stocked_out[tgt.name] = out
+        cur = (plan.get("resources") or {}).get("partition") or tgt.default_partition
+        if cur not in out:
+            return None
+        new, _why = suggest_partition(tgt, plan, out)
+        if new == cur or new in out:
+            return None
+        moved = {
+            **plan,
+            "resources": {**(plan.get("resources") or {}), "partition": new},
+            "partition_switched": f"{cur} -> {new} (GCP could not start {cur} nodes; "
+            "checked before queueing)",
+        }
+        self._update(
+            run_id,
+            plan=moved,
+            estimate_usd=estimate_cost(tgt, moved),
+            stage=f"Queueing on {new}: GCP cannot start {cur} nodes right now",
+        )
+        return moved
 
     # ---- bifrost jobs (R2, v0.55.0) ----------------------------------------------
     def _jobs_for(self, tgt):
@@ -5135,7 +5213,7 @@ class Lab(LabVerdictMixin):
             if reason and reason not in ("None", "Priority"):
                 label += f" ({reason})"
             fails = int(st.get("node_fails") or 0)
-            if fails >= NODE_FAIL_WARN and self._switch_partition(run, tgt):
+            if fails >= NODE_FAIL_SWITCH and self._switch_partition(run, tgt):
                 return
             if fails:
                 part = ((run.get("plan") or {}).get("resources") or {}).get("partition")
