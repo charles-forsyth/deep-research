@@ -22,6 +22,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from deepresearch.dashboard import labcores
 
@@ -117,6 +118,8 @@ class SlurmSSHTarget:
         self.catalog_path: str = cfg.get("catalog_path", "")
         self.catalog: dict | None = None
         self.catalog_fetched: str = ""
+        # optional callable returning the catalog dict (bifrost's hpc://catalog)
+        self.catalog_source: Callable[[], dict] | None = None
         self._argv: list[str] | None = None
         self._dest = ""
         self._lock = threading.Lock()
@@ -625,8 +628,17 @@ class SlurmSSHTarget:
             except ValueError:
                 self.catalog = None
         if refresh or self.catalog is None:
-            raw = self.sh(f"cat {shlex.quote(self.catalog_path)}", timeout=60)
-            cat = json.loads(raw)
+            # catalog_source (set by the Lab when it is signed in to bifrost) reads the
+            # same file through the hpc://catalog resource; SSH is the fallback
+            cat = None
+            if self.catalog_source is not None:
+                try:
+                    cat = self.catalog_source()
+                except Exception:
+                    cat = None
+            if cat is None:
+                raw = self.sh(f"cat {shlex.quote(self.catalog_path)}", timeout=60)
+                cat = json.loads(raw)
             if not isinstance(cat, dict) or not str(cat.get("schema", "")).startswith(
                 "ursa-catalog/"
             ):

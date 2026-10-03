@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.52.2 (package `deepresearch`) |
+| Applies to | deep-research v0.53.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -276,6 +276,8 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | `dashboard/projects.py` | 1,028 | Projects: store, filing rules, citations, dossier and research package exports, summary/Ask prompts, Inbox grouping (22). |
 | `dashboard/project_api.py` | 752 | Project HTTP handlers mixed into `Api` (22.6), including the claims board in dossiers. |
 | `dashboard/claims.py` | 170 | Claims board (22.9): one claim per tested question, outcome ordering, deterministic. |
+| `dashboard/bifrost.py` | 470 | The hosted ursa-bifrost MCP server as a cluster backend (20.20, v0.53.0): `BifrostClient` (stdlib MCP over Streamable HTTP, OAuth sign-in with PKCE as the `bifrost-deep-research` program client, rotating refresh under a lock, 401 retry), and the Lab's reads: `stockouts`, `script_issues`, `explain` (rule -> Lab class), `efficiency`, `read_home`, `catalog`. |
+| `cli/cluster.py` | 80 | `deep-research cluster login | logout | status` (20.20). |
 | `dashboard/cluster.py` | 918 | Cluster access (v0.52.0): `SlurmSSHTarget` (SSH via gcloud IAP or a plain host, one ControlMaster connection, sbatch/squeue/sacct, run folders, warm worker and spool, file transfer, catalog cache), `ScopedTarget` (a workspace's view), `load_targets`. No model or database code. |
 | `dashboard/lab.py` | 4,808 | Lab runs (section 20): always-on keeper, planner, cluster fact checks, pre-flight, fixer, referee hook, refine rounds, laptop fetch, job harness and install ladder, pilot, watcher. Drives `cluster.py`. |
 | `dashboard/labcores.py` | 249 | Cores and memory on shared partitions (20.2b): the request per node, `#SBATCH` lines, share of the node for the estimate, pre-flight warnings, planner text. |
@@ -605,7 +607,7 @@ strings (K16).
 | `run_meta` | server | `session_id` PK, `depth`, `breadth`, `estimate_usd`, `rerun_of`, `launched_at` | Launch parameters and estimate for dashboard runs; re-run links. |
 | `session_usage` | features | `session_id` PK, `usage` (JSON), `fetched_at`, `error` | Cached usage block or definitive "not available" (REQ-COST-3). |
 | `audio_exports` | features | `id`, `kind` (`session`/`notebook`), `ref_id`, `mode` (`full`/`summary`), `voice`, `path`, `seconds`, `cost_usd`, `script`, `created_at`, `src_hash` (hash of the text it was made from; a changed report makes new audio) | One row per generated audio file. |
-| `lab_runs` | lab | `id`, `session_id`, `scope` (`selection`/`document`/`suggestion`), `selection`, `request`, `target`, `status`, `stage`, `plan` (JSON, 20.2a), `script`, `job_id`, `slurm_state`, `node`, `elapsed`, `exit_code`, `error`, `result_md`, `files` (JSON), `estimate_usd`, `ai_cost_usd`, `rerun_of`, `data_sources` (JSON names picked at launch), `verdict` (JSON from `outputs/verdict.json`, 20.13), `smoke` (JSON pilot rounds, 20.11), `created_at`, `updated_at`, `submitted_at`, `finished_at` | One row per lab run (section 20). A cache of the cluster's job folder. |
+| `lab_runs` | lab | `id`, `session_id`, `scope` (`selection`/`document`/`suggestion`), `selection`, `request`, `target`, `status`, `stage`, `plan` (JSON, 20.2a), `script`, `job_id`, `slurm_state`, `node`, `elapsed`, `exit_code`, `error`, `result_md`, `files` (JSON), `estimate_usd`, `ai_cost_usd`, `rerun_of`, `data_sources` (JSON names picked at launch), `verdict` (JSON from `outputs/verdict.json`, 20.13), `smoke` (JSON pilot rounds, 20.11), `cluster` (JSON from bifrost: `efficiency`, `diagnosis`, `job_id`, `as_of`, 20.20), `created_at`, `updated_at`, `submitted_at`, `finished_at` | One row per lab run (section 20). A cache of the cluster's job folder. |
 | `projects` | projects | see 22.1 | Projects (section 22). |
 | `project_items` | projects | see 22.1 | Membership of reports, sources and notebooks in projects (section 22). |
 | `lab_suggestions` | lab | `session_id` PK, `data` (JSON), `cost_usd`, `created_at` | Cached pre-run suggestions for a report. |
@@ -674,6 +676,7 @@ Shared options for `research` and `start`:
 |---|---|
 | `auth login` | Prompts (hidden) for a key, warns if it does not start with `AIza`, and sets the `GEMINI_API_KEY` line of the user `.env`; every other line is kept, the write is atomic and the file is mode 600 (K15, v0.50.3). |
 | `auth logout` | Removes the `GEMINI_API_KEY` line from the user `.env`; other settings stay. |
+| `cluster login \| logout \| status [--json]` | Signs the Lab in to the hosted bifrost MCP server as its own program client (browser, OAuth + PKCE; token in `bifrost-token.json`, mode 600), revokes and deletes it, or shows the email, tiers and caps bifrost reports (20.20, v0.53.0). |
 | `cleanup [--force]` | Lists and deletes **all** File Search Stores on the key, with documents. Confirms unless `--force`. |
 | `repair [IDS] [--apply] [--resynthesize] [--json]` | Restores reports stored with only their last part (before v0.38.2) by re-reading every `model_output` step from Google, while Google still keeps the interaction (older ones report `gone`). Changes a row only when its stored text (before appended follow-ups) is exactly the last part; keeps follow-ups; clears the embedding. `--resynthesize` rebuilds synthesized recursive reports from the full main report and their children, deepest first (one Flash call each). Dry run unless `--apply`. |
 
@@ -972,6 +975,7 @@ environment, so it follows the CLI order.
 | `dashboard.pid` | `{"pid", "host", "port", "allow_remote"}` JSON | `dashboard --start` |
 | `lab_targets.json` | cluster targets and partitions (not in the repo) | the user |
 | `catalog-<target>.json` | cached cluster catalog (20.9) | Lab |
+| `bifrost-token.json` | the Lab's bifrost sign-in (access + rotating refresh token, mode 600; 20.20) | `cluster login` |
 | `lab/run_<N>/` | fetched Lab job outputs, log, plan and write-up | Lab watcher |
 | `uploads/<hex>/<name>` | files uploaded through the dashboard | `POST /api/uploads` (never cleaned up, K10) |
 | `audio/<kind>_<id>_<mode>_<voice>.mp3` | audio exports (WAV if ffmpeg is missing) | `POST /api/audio` |
@@ -1533,6 +1537,7 @@ Target keys (one object per entry in `targets`):
 | `modules` | `[]` | Extra module names for the planner prompt |
 | `software_notes` | `""` | Free-text site notes added to the planner prompt ("Site notes: ...") |
 | `catalog_path` | `""` | Cluster catalog file (20.9) |
+| `bifrost` | none | `{}` or `{url}`: use the hosted ursa-bifrost MCP server for this target's reads once `deep-research cluster login` has run (20.20, v0.53.0). Default URL is the Ursa Major server |
 | `warm` | none | Warm worker settings: `partition`, `hours` (Slurm time limit), `idle_min` (0 = never exit for idleness), `max_par` (tasks at once), `max_workers` (backlog cap), `always_on` (keeper, 20.16), `burst_idle_min` (extra workers, default 20) |
 
 The SSH ControlMaster socket lives in `$XDG_RUNTIME_DIR` (or `/tmp`) as `dr-lab-%C`.
@@ -2122,6 +2127,37 @@ pilot) so the referee does not flag them.
   user allowed notifications, a browser notification ("Lab run #N: CONFIRMED"), on any
   page, not only on the report's Lab panel. A run is announced once per page load. There
   is no push to a phone and nothing is sent when no dashboard tab is open.
+
+### 20.20 Cluster reads through ursa-bifrost (v0.53.0, R1)
+
+Step R1 of the bifrost migration (nexus `2026-10-02_Deep_Research_Bifrost_Migration_Plan.md`,
+`2026-10-02_Deep_Research_Next_Plan.md`). The Lab reads cluster facts from the hosted
+ursa-bifrost MCP server instead of shell commands over SSH. Submitting, watching, logs,
+fetching results and the warm worker still use SSH (`cluster.py`) until R2 and R3.
+
+- **Opt in:** a target with a `bifrost` block in `lab_targets.json` (20.3), and a sign-in:
+  `deep-research cluster login` (9.3). Without either, nothing changes.
+- **Identity:** the pre-registered program client `bifrost-deep-research` (bifrost
+  users.yaml: tiers R1 and A1, 120 calls a minute, its own day cap and ledger). Never
+  Hermes' or a person's chat tokens. Tokens in `bifrost-token.json` (mode 600); refresh
+  tokens rotate, so refreshes run under one lock.
+- **Transport:** MCP Streamable HTTP, one JSON-RPC POST per call (the server is stateless
+  and answers in JSON), standard library only. Text written by users or jobs arrives in
+  `untrusted` fields and is used only as data.
+
+| Read | Before | Now |
+|---|---|---|
+| Cluster catalog (20.9) | `cat catalog.json` over SSH | resource `hpc://catalog`; SSH if it fails |
+| Stocked-out partitions (partition switch, 20.11) | `sinfo -R` scrape | `cluster_status` partition problems; SSH if it fails |
+| Install-ladder notes for the planner | `tail ladder.jsonl` | `files_read` (last 60 KB) |
+| Pre-flight | Lab checks only | plus bifrost `script_check` on the generated batch file: its errors (what bifrost would refuse at submit) become warnings prefixed "Cluster check (bifrost)" |
+| Finished Slurm jobs | nothing | `cluster.efficiency` from `job_show` (cores, CPU %, peak vs allocated memory, restarts); failed jobs also `cluster.diagnosis` from `job_explain` (rule, mapped Lab class, findings), stored next to the Lab's own class for comparison |
+
+A bifrost outage or expired sign-in never blocks planning or a run: each read falls back
+to SSH or is skipped. Warm-worker tasks (`warm:` job ids) are not Slurm jobs and get no
+cluster facts. Tests: `tests/dashboard/test_bifrost.py` (a fake bifrost over HTTP: token
+refresh and rotation, the parallel-refresh race, the 401 retry, tool errors, logout, and
+each Lab read with SSH made to fail).
 
 ## 21. Data sources
 
@@ -2860,3 +2896,4 @@ before v0.39.0).
 | 2026-10-01 | v0.52.0 (docs) | Section 24: open decisions, demo items, blockers, gaps to fix next and future prospects in one list. |
 | 2026-10-02 | v0.52.1 | Cores on shared partitions (20.2b, R0 of the bifrost migration plan): explicit core request on every shared partition (default 2), `cores`/`mem_gb`/`whole_node` plan fields, whole-node partitions keep `--exclusive`, cost by share once the cluster shares, pre-flight warnings (5.1, 20.2, 20.2a, 20.3, 20.5, 16.1). |
 | 2026-10-02 | v0.52.2 | Session list: index on `sessions.parent_id` (the list query took about 100 ms at 280 reports, now about 5 ms) and an `ETag` with 304 for unchanged polls (10.1, 10.2, 11.3); the warm-node banner reads `idle_min` (20.16). |
+| 2026-10-02 | v0.53.0 | Cluster reads through ursa-bifrost (20.20, R1): `dashboard/bifrost.py`, `cli/cluster.py`, `cluster login/logout/status` (9.3), target key `bifrost` (20.3), `lab_runs.cluster` (8.2), `bifrost-token.json` (12.3); catalog, stockouts, ladder notes and pre-flight `script_check` from bifrost; efficiency and diagnosis stored on finished jobs. |

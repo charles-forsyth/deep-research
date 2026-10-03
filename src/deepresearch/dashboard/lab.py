@@ -1330,8 +1330,38 @@ def time_from_history(db_path: str, plan: dict, floor_min: int = 10) -> str | No
     return f"{mins // 60:02d}:{mins % 60:02d}:00"
 
 
-def stocked_out_partitions(target) -> set[str]:
-    """Partitions whose nodes failed to start for lack of GCP capacity (sinfo -R)."""
+def _uses_bifrost(target) -> bool:
+    """A target opts in with a `bifrost` block in lab_targets.json ({} or {url})."""
+    cfg = getattr(target, "cfg", None) or {}
+    return "bifrost" in cfg and cfg["bifrost"] not in (False, None)
+
+
+def _bifrost_for(targets: dict, state_dir: Path):
+    """The bifrost client for the first target with a `bifrost` block, if signed in."""
+    from deepresearch.dashboard import bifrost as bf
+
+    for t in targets.values():
+        if not _uses_bifrost(t):
+            continue
+        cfg = (getattr(t, "cfg", None) or {}).get("bifrost")
+        cfg = cfg if isinstance(cfg, dict) else {}
+        c = bf.BifrostClient(state_dir, url=str(cfg.get("url") or bf.DEFAULT_URL))
+        return c if c.signed_in() else None
+    return None
+
+
+def stocked_out_partitions(target, client=None) -> set[str]:
+    """Partitions whose nodes failed to start for lack of GCP capacity.
+
+    From bifrost's cluster_status when the Lab is signed in to it (R1), else sinfo -R
+    over SSH."""
+    if client is not None:
+        from deepresearch.dashboard import bifrost as bf
+
+        try:
+            return bf.stockouts(client)
+        except bf.BifrostError:
+            pass  # fall back to the SSH scrape
     try:
         out = target.sh(
             "sinfo -h -R -o '%E|%N' 2>/dev/null | grep -iE 'RESOURCE_POOL_EXHAUSTED|stockout|"
@@ -2108,6 +2138,7 @@ class Lab(LabVerdictMixin):
         targets: dict[str, SlurmSSHTarget] | None = None,
         results_dir: Path | None = None,
         workspace: str = "main",
+        bifrost: Any = None,
     ):
         self.db_path = db_path
         self._config = config_factory
@@ -2117,6 +2148,18 @@ class Lab(LabVerdictMixin):
         self.results_dir = results_dir or state_dir / "lab"
         self.workspace = workspace
         self.targets = targets if targets is not None else load_targets(state_dir)
+        # The hosted bifrost MCP server for reads (R1): None when no target asks for
+        # it or deep-research is not signed in. Submit/watch/fetch stay on SSH.
+        self.bifrost = (
+            bifrost if bifrost is not None else _bifrost_for(self.targets, state_dir)
+        )
+        if self.bifrost is not None:
+            from deepresearch.dashboard import bifrost as bf
+
+            client = self.bifrost
+            for t in self.targets.values():
+                if _uses_bifrost(t) and hasattr(t, "catalog_source"):
+                    t.catalog_source = lambda c=client: bf.catalog(c)
         for t in self.targets.values():
             if getattr(t, "catalog_path", ""):
                 try:
@@ -2187,6 +2230,8 @@ class Lab(LabVerdictMixin):
                 conn.execute("ALTER TABLE lab_runs ADD COLUMN verdict TEXT")
             if "smoke" not in cols:  # smoke-test rounds and the plan as submitted
                 conn.execute("ALTER TABLE lab_runs ADD COLUMN smoke TEXT")
+            if "cluster" not in cols:  # bifrost: efficiency and diagnosis (v0.53.0)
+                conn.execute("ALTER TABLE lab_runs ADD COLUMN cluster TEXT")
             conn.commit()
 
     # ---- plumbing --------------------------------------------------------
@@ -2359,7 +2404,7 @@ class Lab(LabVerdictMixin):
     @staticmethod
     def _row(row) -> dict:
         d = dict(row)
-        for k in ("plan", "files", "data_sources", "verdict", "smoke"):
+        for k in ("plan", "files", "data_sources", "verdict", "smoke", "cluster"):
             try:
                 d[k] = json.loads(d[k]) if d.get(k) else None
             except ValueError:
@@ -2448,7 +2493,7 @@ class Lab(LabVerdictMixin):
         """
         if not fields:
             return False
-        for k in ("plan", "files", "verdict", "smoke"):
+        for k in ("plan", "files", "verdict", "smoke", "cluster"):
             if k in fields and not isinstance(fields[k], (str, type(None))):
                 fields[k] = json.dumps(fields[k])
         fields["updated_at"] = _now()
@@ -2622,7 +2667,30 @@ class Lab(LabVerdictMixin):
             + self.url_warnings(plan)
             + self.env_warnings(plan)
             + self.match_warnings(tgt, plan)
+            + self.cluster_check_warnings(tgt, plan)
         )
+
+    def cluster_check_warnings(self, tgt, plan: dict) -> list[str]:
+        """bifrost's script_check on the batch file this plan builds (R1).
+
+        Only its errors become warnings: they are what bifrost would refuse at submit
+        time (no core request on a shared partition, unknown module, a GPU request on a
+        CPU partition, over a cap). Its warnings overlap the Lab's own checks. A bifrost
+        outage never blocks planning: the check is skipped."""
+        if self.bifrost is None or not tgt or not plan.get("script"):
+            return []
+        from deepresearch.dashboard import bifrost as bf
+
+        try:
+            script = build_sbatch(0, plan, tgt, self._safe_sources(plan))
+            issues = bf.script_issues(self.bifrost, script)
+        except Exception:
+            return []
+        return [
+            "Cluster check (bifrost): " + i["message"]
+            for i in issues
+            if i["severity"] == "error"
+        ]
 
     def match_warnings(self, tgt, plan: dict) -> list[str]:
         """Partition and time-limit advice from the workload shape and past runs."""
@@ -3739,7 +3807,11 @@ class Lab(LabVerdictMixin):
         plan = dict(run.get("plan") or {})
         if plan.get("partition_switched"):
             return False
-        out = stocked_out_partitions(tgt)
+        out = (
+            stocked_out_partitions(tgt, self.bifrost)
+            if self.bifrost is not None
+            else stocked_out_partitions(tgt)
+        )
         self._stocked_out[tgt.name] = out
         cur = (plan.get("resources") or {}).get("partition") or tgt.default_partition
         if cur not in out:
@@ -3889,16 +3961,50 @@ class Lab(LabVerdictMixin):
             )
         return res
 
-    def env_notes(self, tgt) -> str:
-        """Which install rung worked for recent package lists (ladder.jsonl), for prompts."""
-        if not tgt or not getattr(tgt, "warm", None):
-            return ""
+    def _ladder_tail(self, tgt) -> str:
+        """The end of envs/ladder.jsonl: through bifrost files_read (R1) or SSH tail."""
+        if self.bifrost is not None:
+            from deepresearch.dashboard import bifrost as bf
+
+            try:
+                d = (
+                    self.bifrost.call(
+                        "files_read",
+                        {"path": "~/deep-research-lab/envs/ladder.jsonl", "bytes": 1},
+                    )
+                    or {}
+                )
+                size = int((d.get("chunk") or {}).get("file_bytes") or 0)
+                start = max(0, size - 60000)
+                d = (
+                    self.bifrost.call(
+                        "files_read",
+                        {
+                            "path": "~/deep-research-lab/envs/ladder.jsonl",
+                            "offset": start,
+                            "bytes": 65536,
+                        },
+                    )
+                    or {}
+                )
+                text = str((d.get("untrusted") or {}).get("text") or "")
+                return text.split("\n", 1)[1] if start and "\n" in text else text
+            except (bf.BifrostError, ValueError, TypeError):
+                pass
         try:
-            raw = tgt.run(
+            return tgt.run(
                 "tail -n 400 ~/deep-research-lab/envs/ladder.jsonl 2>/dev/null",
                 timeout=30,
             ).stdout.decode("utf-8", "replace")
         except Exception:
+            return ""
+
+    def env_notes(self, tgt) -> str:
+        """Which install rung worked for recent package lists (ladder.jsonl), for prompts."""
+        if not tgt or not getattr(tgt, "warm", None):
+            return ""
+        raw = self._ladder_tail(tgt)
+        if not raw:
             return ""
         runs = {}
         for ln in raw.splitlines():
@@ -4702,12 +4808,40 @@ class Lab(LabVerdictMixin):
             result_md=note,
             finished_at=_now(),
         )
+        if changed:
+            self._record_cluster_facts(run, final)
         if changed and final == "completed":
             self._learn_from_fix(run)
             done = self.get(run["id"]) or run
             self._attach_note(done)
             if outcome and outcome["outcome"] == "inconclusive":
                 self._maybe_auto_replan(done)
+
+    def _record_cluster_facts(self, run: dict, final: str) -> None:
+        """bifrost's view of a finished Slurm job, kept on the run (R1).
+
+        `cluster.efficiency` (requested vs used cores and memory) for every finished
+        job; `cluster.diagnosis` (job_explain rule, class and findings) for failed ones,
+        next to the Lab's own classifier so the two can be compared before the old one
+        is retired. Warm-worker tasks are not Slurm jobs and are skipped."""
+        job = str(run.get("job_id") or "")
+        if self.bifrost is None or not job.isdigit():
+            return
+        from deepresearch.dashboard import bifrost as bf
+
+        facts: dict = {}
+        try:
+            eff = bf.efficiency(self.bifrost, job)
+            if eff:
+                facts["efficiency"] = eff
+            if final != "completed":
+                facts["diagnosis"] = bf.explain(self.bifrost, job)
+        except bf.BifrostError as e:
+            facts["error"] = str(e)[:300]
+        if facts:
+            facts["job_id"] = job
+            facts["as_of"] = _now()
+            self._update(run["id"], cluster=facts)
 
     def _learn_from_fix(self, run: dict) -> None:
         """A completed AI fix of a failed run becomes a lesson for future plans."""
