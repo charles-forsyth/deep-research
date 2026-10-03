@@ -349,6 +349,8 @@ class Api(ProjectApi):
         r("POST", r"/api/lab/(\d+)/fix-blocked", self.lab_fix_blocked)
         r("GET", r"/api/lab/pulse", self.lab_pulse)
         r("GET", r"/api/cluster/status", self.cluster_status)
+        r("GET", r"/api/cluster/panel/(\w+)", self.cluster_panel)
+        r("GET", r"/api/cluster/lab", self.cluster_lab)
         r("POST", r"/api/lab/(\d+)/fix-failed", self.lab_fix_failed)
         r("GET", r"/api/lab/(\d+)/log", self.lab_log)
         r("GET", r"/api/lab/(\d+)/file", self.lab_file)
@@ -2036,6 +2038,22 @@ class Api(ProjectApi):
             info = {"error": str(e)[:200]}
         self._whoami_cache = (time.time(), info)
         return {**out, **info}
+
+    def cluster_panel(self, name, query, body):
+        """One Cluster view panel through bifrost, cached (clusterview, v0.57.0)."""
+        from deepresearch.dashboard import clusterview
+
+        try:
+            return clusterview.VIEW.get(name, self.lab.bifrost)
+        except KeyError as e:
+            raise ApiError(404, f"no cluster panel {name!r}") from e
+
+    def cluster_lab(self, query, body):
+        """This workspace's Lab runs summarised for the Cluster view (no cluster call)."""
+        from deepresearch.dashboard import clusterview
+
+        days = int((query.get("days") or ["30"])[0] or 30)
+        return clusterview.lab_summary(self.lab.all_runs(), days=max(1, min(days, 365)))
 
     def lab_fix_blocked(self, rid, query, body):
         self._lab_run(rid)
