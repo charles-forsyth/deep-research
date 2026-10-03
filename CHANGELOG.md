@@ -7,6 +7,31 @@ releases.
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-10-03
+
+### Changed
+
+- Lab runs go to the cluster through the hosted ursa-bifrost server (step R2 of the bifrost
+  migration) for targets with a `bifrost` block once `deep-research cluster login` has run.
+  Submitting, watching, the live log, fetching results and cancelling no longer use SSH for
+  those runs. Pilots and short runs on the warm worker still do, until R3.
+- Pressing Submit on a reviewed plan is the approval: the Lab prepares the bifrost job and
+  confirms it itself only when bifrost's plan is for exactly the script the Lab built, the
+  worst case is within 3x the reviewed estimate (and the new `bifrost.max_usd_per_run`,
+  default $10), and the run has made fewer than 6 submissions. bifrost's own caps for the
+  deep-research program client apply on top. A refusal keeps the run as a draft with the
+  reason.
+- The watcher asks bifrost about every active job in one call per round; the stage marker
+  is read at most once a minute per running job.
+- Data sources that the laptop relays are staged through bifrost (one archive per source,
+  reused while it stays staged) and unpacked by the job into the shared cache.
+
+### Added
+
+- `lab_runs.cluster_jobs`: the jobs submitted through bifrost for a run, with their folder,
+  worst-case cost and plan hash.
+- Target keys `bifrost.jobs` (`false` keeps jobs on SSH) and `bifrost.max_usd_per_run`.
+
 ## [0.54.0] - 2026-10-03
 
 ### Changed

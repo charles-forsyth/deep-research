@@ -235,6 +235,7 @@ const LAB = {
     if ((p.fix_concerns || []).length && r.status === "draft") bits.push(`<span class="label">Check before running</span> ${p.fix_concerns.map(esc).join("; ")}`);
     if (p.partition_switched) bits.push(`<span class="label">Partition</span> ${esc(p.partition_switched)}`);
     if (String(r.job_id || "").startsWith("warm:")) bits.push(`<span class="label">Ran on</span> the warm Lab node (no node boot)`);
+    if ((r.cluster_jobs || []).some((j) => String(j.job_id) === String(r.job_id))) bits.push(`<span class="label">Ran through</span> bifrost (cluster service), job ${esc(r.job_id)}`);
     if (!bits.length) return "";
     return `<div class="lab-q dim" style="font-size:11.5px">${bits.join("<br>")}</div>`;
   },
@@ -352,6 +353,7 @@ const LAB = {
         if (off === 0) box.textContent = "";
         if (d.text) { const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 30; box.insertAdjacentHTML("beforeend", colorLog(d.text)); if (stick) box.scrollTop = box.scrollHeight; }
         if (!box.textContent) box.textContent = "(no output yet)";
+        // bytes over SSH; through bifrost a negative line count (sent back as is)
         off = d.size || off;
       } catch (e) { box.insertAdjacentHTML("beforeend", `\n<span class="err">${esc(e.message)}</span>`); }
       const live = ["queued", "running", "fetching", "submitting", "smoke"].includes(r.status);

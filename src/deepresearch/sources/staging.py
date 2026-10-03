@@ -59,8 +59,21 @@ def sources_json(sources: list[DataSource], remote_root: str) -> str:
     )
 
 
-def staging_block(sources: list[DataSource], remote_root: str) -> str:
-    """Shell for run.sbatch: download direct sources, export DS_* for all of them."""
+def relay_filename(s: DataSource) -> str:
+    """Name of a relay source's archive in bifrost staging and in the job's inputs/."""
+    import re
+
+    return re.sub(r"[^A-Za-z0-9._+-]", "-", cache_key(s))[:110] + ".tar.gz"
+
+
+def staging_block(
+    sources: list[DataSource], remote_root: str, bifrost_inputs: bool = False
+) -> str:
+    """Shell for run.sbatch: download direct sources, export DS_* for all of them.
+
+    `bifrost_inputs`: relay sources arrive as inputs/<name>-<hash>.tar.gz (bifrost
+    staging, v0.55.0) and are unpacked into the shared cache under a lock, unless that
+    exact content is already there."""
     if not sources:
         return ""
     out = ['stage "Staging data"']
@@ -68,7 +81,23 @@ def staging_block(sources: list[DataSource], remote_root: str) -> str:
         d = remote_dir(remote_root, s)
         var = s.env_var
         out.append(f"export {var}={d}")
-        if s.effective_staging == "direct":
+        if s.effective_staging != "direct" and bifrost_inputs:
+            arc = relay_filename(s)
+            out.append(
+                f"""mkdir -p "$(dirname "${var}")"
+exec 8>"${var}.lock"; flock 8
+if [ ! -f "${var}/.ready" ]; then
+  [ -f "inputs/{arc}" ] || {{ echo "[ERROR] data source {s.name} was not staged (inputs/{arc} missing)"; exit 3; }}
+  rm -rf "${var}.part" "${var}"; mkdir -p "${var}.part"
+  tar xzf "inputs/{arc}" -C "${var}.part"
+  touch "${var}.part/.ready"; chmod -R a-w "${var}.part" 2>/dev/null || true
+  mv "${var}.part" "${var}"
+else
+  echo "[INFO] reusing staged {s.name}"
+fi
+flock -u 8"""
+            )
+        elif s.effective_staging == "direct":
             snippet = adapter_for(s).direct_snippet()
             out.append(
                 f"""mkdir -p "$(dirname "${var}")"
@@ -153,6 +182,68 @@ def relay_upload(target: Any, s: DataSource, log=print, refresh: bool = True) ->
             timeout=3600,
         )
     return d
+
+
+def relay_pack(s: DataSource, refresh: bool = True) -> bytes:
+    """Fetch a relay source on this machine and pack it as one tar.gz (bifrost staging).
+
+    Same listing refresh and size cap as relay_upload; the archive name is
+    relay_filename(s), which carries the manifest hash, so a staged copy with that name
+    is this exact content."""
+    cap = int(s.options.get("max_relay_bytes") or RELAY_MAX_BYTES)
+    if refresh:
+        _refresh_manifest(s)
+    _check_relay_size(s, cap)
+    with tempfile.TemporaryDirectory(prefix="dr-relay-") as tmp:
+        local = adapter_for(s).fetch(Path(tmp) / "data")
+        real = sum(p.stat().st_size for p in local.rglob("*") if p.is_file())
+        if real > cap:
+            raise SourceError(
+                f"{s.name} turned out to be {real / 1024**3:.1f} GB when fetched, over "
+                f"the relay limit of {cap / 1024**3:.1f} GB"
+            )
+        tar_path = Path(tmp) / "data.tar.gz"
+        with tarfile.open(tar_path, "w:gz") as tar:
+            for p in sorted(local.rglob("*")):
+                if p.is_file() and not p.is_symlink():
+                    tar.add(p, arcname=str(p.relative_to(local)))
+        return tar_path.read_bytes()
+
+
+def _refresh_manifest(s: DataSource) -> None:
+    fresh = adapter_for(s).manifest()
+    s.manifest = Manifest(
+        **{k: v for k, v in fresh.model_dump().items() if k in Manifest.model_fields}
+    )
+
+
+def _check_relay_size(s: DataSource, cap: int) -> None:
+    m = s.manifest
+    if m is None or m.truncated:
+        raise SourceError(
+            f"{s.name} could not be fully listed, so its size is unknown; narrow it "
+            "(sub-folder or --include) before sending it to the cluster"
+        )
+    if m.total_bytes > cap:
+        raise SourceError(
+            f"{s.name} is {m.total_bytes / 1024**3:.1f} GB, over the relay limit of "
+            f"{cap / 1024**3:.1f} GB (raise options.max_relay_bytes to allow it)"
+        )
+
+
+def bifrost_relay(jobs: Any, s: DataSource, remote_root: str) -> str:
+    """Stage a relay source in bifrost for a job (v0.55.0). Returns the upload id.
+
+    The archive name carries the manifest hash: a copy already in staging (uploads live
+    a few days) is reused without fetching anything, and the job's staging block skips
+    the unpack when the cluster cache already holds that content."""
+    _refresh_manifest(s)  # the name below must describe today's contents
+    _check_relay_size(s, int(s.options.get("max_relay_bytes") or RELAY_MAX_BYTES))
+    name = relay_filename(s)
+    have = jobs.staged().get(name)
+    if have and have.get("upload_id"):
+        return str(have["upload_id"])  # same name = same manifest hash = same content
+    return jobs.upload(name, relay_pack(s, refresh=False))
 
 
 def plan_data_note(sources: list[DataSource], remote_root: str) -> str:
