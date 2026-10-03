@@ -108,6 +108,52 @@ def test_sessions_list_filter_and_detail(app):
     assert app["call"]("GET", "/api/sessions/999")[0] == 404
 
 
+def test_session_list_answers_304_when_unchanged(app):
+    """The page polls the list every 4-20 s; an unchanged list costs a 304, no body."""
+    import urllib.request
+
+    _seed(app["api"], "Quantum error correction")
+    base = f"http://127.0.0.1:{app['port']}"
+
+    def get(tag=None):
+        req = urllib.request.Request(base + "/api/sessions")
+        if tag:
+            req.add_header("If-None-Match", tag)
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, r.headers.get("ETag"), r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("ETag"), e.read()
+
+    st, tag, body = get()
+    assert st == 200 and tag and json.loads(body)["sessions"]
+    st, tag2, body = get(tag)
+    assert (st, tag2, body) == (304, tag, b"")
+    assert get('"stale"')[0] == 200
+    # any change (here a star) gives a new tag and the full list again
+    sid = app["api"].store.session_rows()[0]["id"]
+    app["call"]("PATCH", f"/api/sessions/{sid}/meta", {"starred": True})
+    st, tag3, body = get(tag)
+    assert st == 200 and tag3 != tag and json.loads(body)["sessions"][0]["starred"]
+    assert get(tag3)[0] == 304
+
+
+def test_session_list_has_a_parent_index(app):
+    """Counting children per row used to scan the table once per row."""
+    import sqlite3
+
+    with sqlite3.connect(app["api"].store.db_path) as c:
+        names = {
+            r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+        plan = " ".join(
+            str(r) for r in c.execute(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM sessions WHERE parent_id = 1"
+            )
+        )  # fmt: skip
+    assert "idx_sessions_parent" in names and "idx_sessions_parent" in plan
+
+
 def test_meta_star_and_tags(app):
     sid = _seed(app["api"])
     status, m = app["call"](

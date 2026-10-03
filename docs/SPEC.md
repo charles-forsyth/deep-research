@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.52.1 (package `deepresearch`) |
+| Applies to | deep-research v0.52.2 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -750,6 +750,9 @@ had it earlier). Implemented in `cli/jsonout.py`.
   allowed there.
 - API responses are JSON (`application/json; charset=utf-8`) except audio files. Errors
   are `{"error": "<message>"}` with the status from the table below.
+- The session list (`ETAG_PATHS`) also carries an `ETag` and answers a matching
+  `If-None-Match` with 304; the page sends it itself, since `no-store` keeps the browser
+  from caching (v0.52.2).
 - Every response carries `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`
   and `Referrer-Policy: no-referrer` (audio: `no-store` and `Accept-Ranges` only).
 - Every request whose `Host` is not an IP address, a single-label name, a name ending
@@ -778,7 +781,7 @@ had it earlier). Implemented in `cli/jsonout.py`.
 
 | Method and path | Paid | Behaviour |
 |---|---|---|
-| `GET /api/sessions[?q=&limit=500]` | no | Session rows (no report text) with child, annotation, star and tag data; newest id first; `q` is a LIKE match on prompt and report; limit capped at 5,000. Runs liveness. |
+| `GET /api/sessions[?q=&limit=500]` | no | Session rows (no report text) with child, annotation, star and tag data; newest id first; `q` is a LIKE match on prompt and report; limit capped at 5,000. Runs liveness. Sends an `ETag`; a request with a matching `If-None-Match` gets 304 and no body (v0.52.2). |
 | `GET /api/sessions/{id}` | no | Full row minus embedding, plus `meta`, `children`, `annotations`, `log_available`, `run` (run_meta) and `reruns`. |
 | `DELETE /api/sessions/{id}[?recursive=1]` | no | Deletes the row (and descendants with `recursive=1`) plus their annotations, meta, launch meta, usage, audio rows and files, project memberships and Lab runs; 409 while a Lab run of theirs is still on the cluster (REQ-DASH-6, K10). |
 | `PATCH /api/sessions/{id}/meta` | no | Body `{starred?, tags?}`. |
@@ -865,7 +868,7 @@ generation after each request and stop if the user has moved on.
 
 | What | Interval | Stops when |
 |---|---|---|
-| Session list | 4 s while any run is running, otherwise 20 s; stats on about 30% of polls | never (page open) |
+| Session list | 4 s while any run is running, otherwise 20 s; stats on about 30% of polls; conditional (`If-None-Match`), so an unchanged list is a 304 and no redraw, except once a minute for relative times | never (page open) |
 | Live log of the open session | 2 s while running, otherwise 15 s; incremental by byte offset | tab or session changes |
 | Notebook autosave | 900 ms after the last keystroke; also on tab switch and page unload | saved |
 | Notebook preview | 250 ms debounce | |
@@ -2007,7 +2010,9 @@ pilot) so the referee does not flag them.
   survives an unreachable cluster. The warm Stop button (`POST /api/lab/warm/stop`,
   `{target?}`) asks the workers to exit and pauses the keeper until Start
   (`POST /api/lab/warm/start`, `{target?}`, starts a worker and resumes the keeper);
-  `GET /api/lab/warm` reports workers, queue counts, `always_on` and `keeper_paused`.
+  `GET /api/lab/warm` reports workers, queue counts, `idle_min`, `always_on` and `keeper_paused`;
+  the Lab runs page states the stop rule from `idle_min` (it said 20 minutes whatever the
+  setting was until v0.52.2).
 - v0.48.1: the planner prompt names the default partition and says single-node CPU work
   on it runs on the always-on warm node; the catalog's "Default." wording for another
   partition is dropped. Pre-flight suggests the default partition for single-node CPU
@@ -2854,3 +2859,4 @@ before v0.39.0).
 | 2026-10-01 | v0.52.0 | Cluster layer moved out of `lab.py` into `dashboard/cluster.py` with its own tests (5.1, 19, K20). No behaviour change. |
 | 2026-10-01 | v0.52.0 (docs) | Section 24: open decisions, demo items, blockers, gaps to fix next and future prospects in one list. |
 | 2026-10-02 | v0.52.1 | Cores on shared partitions (20.2b, R0 of the bifrost migration plan): explicit core request on every shared partition (default 2), `cores`/`mem_gb`/`whole_node` plan fields, whole-node partitions keep `--exclusive`, cost by share once the cluster shares, pre-flight warnings (5.1, 20.2, 20.2a, 20.3, 20.5, 16.1). |
+| 2026-10-02 | v0.52.2 | Session list: index on `sessions.parent_id` (the list query took about 100 ms at 280 reports, now about 5 ms) and an `ETag` with 304 for unchanged polls (10.1, 10.2, 11.3); the warm-node banner reads `idle_min` (20.16). |

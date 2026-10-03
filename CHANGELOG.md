@@ -7,6 +7,19 @@ releases.
 
 ## [Unreleased]
 
+## [0.52.2] - 2026-10-02
+
+### Fixed
+
+- The session list is fast again: an index on `sessions.parent_id` takes the list query
+  from about 100 ms to about 5 ms at 280 reports (the child count scanned the table once
+  per row).
+- The page no longer re-downloads the whole session list (about 240 KB) on every poll:
+  `GET /api/sessions` sends an `ETag`, the page sends `If-None-Match`, and an unchanged
+  list is a 304 with no body and no redraw.
+- The Lab runs page said the warm node "stops after 20 idle minutes" whatever
+  `lab_targets.json` said; it now reads `warm.idle_min` (and says "stays on" for 0).
+
 ## [0.52.1] - 2026-10-02
 
 ### Changed

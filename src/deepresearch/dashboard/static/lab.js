@@ -611,6 +611,9 @@ const LAB = {
   },
 
   async warmBox() {
+    // the stop rule comes from lab_targets.json (warm.idle_min; 0 = always on)
+    const idleText = (w) => w.always_on || w.idle_min === 0 ? "It stays on until you stop it."
+      : `It stops after ${Number.isFinite(w.idle_min) ? w.idle_min : 20} idle minutes.`;
     // the warm Lab node: one long-lived job that runs smoke tests, checks and short runs
     const box = $("#warm-box");
     if (!box) return;
@@ -618,7 +621,7 @@ const LAB = {
       const w = await api("/api/lab/warm");
       if (!w.enabled) { box.textContent = ""; return; }
       const ws = (w.workers || []).map((x) => `job ${esc(x.job)} ${esc(x.state.toLowerCase())}${x.node ? " on " + esc(x.node) : ""}${x.left ? `, ${esc(x.left)} left` : ""}${x.busy.length ? `, busy: ${esc(x.busy.join(", "))}` : ", idle"}${x.draining ? " (draining)" : ""}`).join("; ");
-      box.innerHTML = `<b>Warm Lab node</b> (${esc(w.partition || "")}): ${ws || "not running (starts on the next submit)"}; ${w.queued} queued, ${w.running} running. It stops after 20 idle minutes. <button class="btn small" id="warm-start">Start now</button> ${ws ? '<button class="btn small danger" id="warm-stop">Stop</button>' : ""}`;
+      box.innerHTML = `<b>Warm Lab node</b> (${esc(w.partition || "")}): ${ws || "not running (starts on the next submit)"}; ${w.queued} queued, ${w.running} running. ${idleText(w)} <button class="btn small" id="warm-start">Start now</button> ${ws ? '<button class="btn small danger" id="warm-stop">Stop</button>' : ""}`;
       const st = $("#warm-start"), sp = $("#warm-stop");
       if (st) st.onclick = () => busy(st, async () => { await api("/api/lab/warm/start", { method: "POST" }); toast("Warm Lab node requested", "ok"); this.warmBox(); });
       if (sp) sp.onclick = () => busy(sp, async () => { await api("/api/lab/warm/stop", { method: "POST" }); toast("Warm Lab node stopping", "ok"); setTimeout(() => this.warmBox(), 4000); });

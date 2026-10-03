@@ -31,5 +31,10 @@ class DatabaseSchema:
                 conn.execute("ALTER TABLE sessions ADD COLUMN depth INTEGER DEFAULT 1")
             if "embedding" not in columns:
                 conn.execute("ALTER TABLE sessions ADD COLUMN embedding TEXT")
+            # the session list counts children per row; without this index that
+            # subquery scanned the whole table for every row (~100 ms at 280 rows)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_id)"
+            )
 
             conn.commit()
