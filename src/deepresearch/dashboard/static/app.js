@@ -54,7 +54,13 @@ function toast(msg, kind = "") {
   $("#toasts").appendChild(el);
   setTimeout(() => el.remove(), kind === "err" ? 7000 : 3200);
 }
-function status(msg) { $("#sb-left").textContent = msg; }
+// Progress note (uploading, sending a follow-up): a small pill that shows only while
+// something is happening; "ready" (or empty) hides it. Replaces the old status bar.
+function status(msg) {
+  const el = $("#sb-left"); if (!el) return;
+  const idle = !msg || /^ready$/i.test(msg);
+  el.textContent = idle ? "" : msg; el.hidden = idle;
+}
 
 marked.setOptions({ gfm: true, breaks: false });
 function renderMd(md) {
@@ -167,6 +173,7 @@ const S = {
   health: null,
   stats: null,
   project: null,     // left-pane filter: null (all), "inbox", or a project id
+  lab: null,         // Lab pulse (active run ids, recently finished) for the activity dot
 };
 const LS_TABS = "dr.tabs.v1";
 
@@ -228,24 +235,75 @@ async function loadNotebooks() {
   S.notebooks = (await api("/api/notebooks")).notebooks;
 }
 
-// ---------------------------------------------------------------- telemetry
-function renderTelemetry() {
-  const st = S.stats?.by_status || {};
-  const live = S.sessions.filter((s) => s.status === "running").length;
-  const key = S.health?.api_key && S.health?.api_key_valid !== false;
-  $("#telemetry").innerHTML = `
-    <span class="chip ${live ? "live" : ""}"><span class="dot"></span>LIVE <b>${live}</b></span>
-    <span class="chip ok"><span class="dot"></span>COMPLETE <b>${fmtN(st.completed)}</b></span>
-    <span class="chip ${(st.failed || 0) + (st.crashed || 0) ? "bad" : ""}" title="failed, crashed or cancelled (the Failed filter)"><span class="dot"></span>FAILED <b>${fmtN((st.failed || 0) + (st.crashed || 0) + (st.cancelled || 0))}</b></span>
-    <span class="chip"><span class="dot"></span>CORPUS <b>${fmtN(Math.round((S.stats?.result_chars || 0) / 1000))}k</b> chars</span>
-    <span class="chip ${key ? "ok" : "bad"}"><span class="dot"></span>API KEY <b>${key ? "OK" : S.health?.api_key ? "INVALID" : "MISSING"}</b></span>`;
-  $("#sb-right").textContent = `${fmtN(S.stats?.total)} sessions \u00b7 ${fmtN(S.stats?.notebooks)} notebooks \u00b7 ${fmtN(S.stats?.annotations)} annotations`;
+// ---------------------------------------------------------------- activity (top bar)
+// One quiet indicator instead of five counters: hidden when nothing needs you, "2 running"
+// while research or Lab runs are in flight, red with a count when something failed since
+// you last looked. Clicking it lists them. The key shows only when it is missing or bad.
+const LS_SEEN = "dr.seen.v1";
+const SEEN = {
+  get() { return +localStorage.getItem(WS.key(LS_SEEN)) || 0; },
+  mark() { localStorage.setItem(WS.key(LS_SEEN), String(Date.now())); },
+};
+function activity() {
+  const seen = SEEN.get();
+  const running = S.sessions.filter((s) => s.status === "running" && !s.parent_id);
+  const labLive = S.lab ? S.lab.active.length : 0;
+  const newFail = S.sessions.filter((s) => !s.parent_id && ["failed", "crashed"].includes(s.status) && seen && new Date(s.updated_at || s.created_at).getTime() > seen);
+  const labFail = (S.lab?.finished || []).filter((f) => f.status === "failed" && seen && new Date(f.finished_at).getTime() > seen);
+  const labDone = (S.lab?.finished || []).filter((f) => f.status === "completed" && seen && new Date(f.finished_at).getTime() > seen);
+  const done = S.sessions.filter((s) => !s.parent_id && s.status === "completed" && seen && new Date(s.updated_at || s.created_at).getTime() > seen);
+  return { running, labLive, newFail, labFail, labDone, done };
 }
+function renderTelemetry() {
+  const a = activity();
+  const el = $("#activity");
+  const live = a.running.length + a.labLive, bad = a.newFail.length + a.labFail.length;
+  if (el) {
+    el.hidden = !live && !bad;
+    el.className = "activity" + (bad ? " bad" : live ? " live" : "");
+    el.innerHTML = `<span class="dot" aria-hidden="true"></span>${bad ? `${bad} failed` : `${live} running`}${bad && live ? ` <span class="dim">\u00b7 ${live} running</span>` : ""}`;
+    el.title = "What is running and what needs you";
+  }
+  const key = $("#keywarn");
+  if (key) {
+    const bad = S.health && (!S.health.api_key || S.health.api_key_valid === false);
+    key.hidden = !bad;
+    key.textContent = S.health?.api_key ? "API key rejected" : "No API key";
+    key.title = "Run deep-research auth login, then restart the dashboard";
+  }
+  const n = $("#nav-lab-n");
+  if (n) { n.hidden = !a.labLive; n.textContent = a.labLive || ""; }
+}
+function openActivity() {
+  const a = activity();
+  const row = (label, sub, cls, go) => ({ label, sub, cls, go });
+  const rows = [
+    ...a.newFail.map((s) => row(`#${s.id} ${clip(reportTitle(s), 70)}`, "research failed", "bad", () => openSession(s.id))),
+    ...a.labFail.map((f) => row(`Lab #${f.id} ${clip(f.title || "", 60)}`, "Lab run failed", "bad", () => { S.scrollToLab = f.id; openSession(f.session_id); })),
+    ...a.running.map((s) => row(`#${s.id} ${clip(reportTitle(s), 70)}`, `researching, started ${ago(s.created_at)}`, "live", () => openSession(s.id))),
+    ...(a.labLive ? [row(`${a.labLive} Lab run${a.labLive === 1 ? "" : "s"} in progress`, "open Lab runs", "live", openLabRuns)] : []),
+    ...a.done.slice(0, 5).map((s) => row(`#${s.id} ${clip(reportTitle(s), 70)}`, "finished since you last looked", "ok", () => openSession(s.id))),
+    ...a.labDone.slice(0, 5).map((f) => row(`Lab #${f.id} ${clip(f.title || "", 60)}`, (f.outcome || "finished").toLowerCase(), "ok", () => { S.scrollToLab = f.id; openSession(f.session_id); })),
+  ];
+  const m = MODAL.open(`<div class="modal-head"><h3>Activity</h3><button class="icon-btn modal-x" data-x="close" aria-label="Close">\u2715</button></div>
+    <div class="act-list">${rows.map((r, i) => `<button class="act-row ${r.cls}" data-i="${i}"><span class="dot" aria-hidden="true"></span><span class="grow"><b>${esc(r.label)}</b><span class="dim">${esc(r.sub)}</span></span></button>`).join("") || '<div class="dim">Nothing running and nothing new.</div>'}</div>
+    <div class="acts"><button class="btn small" data-x="seen">Mark all as seen</button></div>`, { label: "Activity" });
+  m.querySelector('[data-x="close"]').onclick = () => MODAL.close();
+  m.querySelector('[data-x="seen"]').onclick = () => { SEEN.mark(); MODAL.close(); renderTelemetry(); renderHomeIfOpen(); };
+  m.querySelectorAll("[data-i]").forEach((b) => (b.onclick = () => { MODAL.close(); rows[+b.dataset.i].go(); }));
+}
+async function loadLabPulse() {
+  try { S.lab = await api("/api/lab/pulse"); } catch { S.lab = null; }
+  renderTelemetry();
+}
+// The title a person reads: the report's own first heading, else the prompt.
+function reportTitle(s) { return oneLine(s.title || s.prompt || `Report #${s.id}`); }
 
 // ---------------------------------------------------------------- archive (left)
 function filteredSessions() {
   return (S.q && S.results ? S.results : S.sessions).filter((s) => {
     if (S.rootsOnly && s.parent_id && !S.q) return false;
+    if (S.tag && !(s.tags || []).some((t) => t.toLowerCase() === S.tag)) return false;
     if (!PROJ.matches(s)) return false;
     if (S.filter === "running") return s.status === "running";
     if (S.filter === "starred") return s.starred;
@@ -255,28 +313,75 @@ function filteredSessions() {
 }
 function renderSessionList() {
   const list = filteredSessions();
-  $("#count").textContent = `${list.length} shown`;
+  $("#count").textContent = list.length ? fmtN(list.length) : "";
   const activeId = currentTab()?.kind === "session" ? currentTab().id : null;
-  $("#session-list").innerHTML = list.map((s) => `
-    <div class="sess ${s.id === activeId ? "active" : ""}" data-id="${s.id}" tabindex="0" role="link" aria-label="Session ${s.id}: ${esc(clip(oneLine(s.prompt), 120))} (${esc(s.status)})">
-      <span class="st ${esc(s.status)}" aria-hidden="true"></span>
-      <div>
-        <div class="p">${esc(clip(oneLine(s.prompt), 160))}</div>
+  // A row is the report's title and its age. A dot only when it is running or failed; a
+  // project chip only when the list is not already showing that project; a star when
+  // starred. Characters, children, notes and tags are on the report (Info).
+  $("#session-list").innerHTML = list.map((s) => {
+    const loud = ["running", "failed", "crashed"].includes(s.status);
+    return `
+    <div class="sess ${s.id === activeId ? "active" : ""} ${loud ? "loud" : ""}" data-id="${s.id}" tabindex="0" role="link" aria-label="Report ${s.id}: ${esc(clip(reportTitle(s), 120))} (${esc(s.status)})">
+      <div class="sess-main">
+        <div class="p">${loud ? `<span class="st ${esc(s.status)}" aria-hidden="true"></span>` : ""}${esc(clip(reportTitle(s), 160))}</div>
         <div class="m">
           <span>${ago(s.created_at)}</span>
+          ${s.status === "running" ? `<span class="live-t">researching</span>` : ""}
+          ${["failed", "crashed"].includes(s.status) ? `<span class="bad">failed</span>` : s.status === "cancelled" ? `<span>cancelled</span>` : ""}
           ${s.stalled ? `<span class="bad" title="No progress; open it to stop or re-run">\u26A0 stuck</span>` : ""}
-          ${s.result_chars >= 1000 ? `<span>${fmtN(Math.round(s.result_chars / 1000))}k chars</span>` : ""}
-          ${s.children ? `<span>\u2937 ${s.children}</span>` : ""}
-          ${s.annotations ? `<span>\u270E ${s.annotations}</span>` : ""}
           ${PROJ.pills(s.projects)}
-          ${s.tags.map((t) => `<span class="tagpill">${esc(t)}</span>`).join("")}
         </div>
       </div>
-      <div style="text-align:right">
-        <div class="id">#${s.id}</div>
-        ${s.starred ? '<div class="star">\u2605</div>' : ""}
-      </div>
-    </div>`).join("") || `<div class="dim" style="padding:20px;text-align:center">No sessions match.</div>`;
+      ${s.starred ? '<span class="star" aria-label="starred">\u2605</span>' : ""}
+    </div>`;
+  }).join("") || `<div class="dim" style="padding:20px;text-align:center">No reports match.</div>`;
+  renderFilterChips();
+}
+// Filters live in one menu by the search box (status, sub-reports, a project, a tag);
+// whatever is on shows as a removable chip, so the list never hides things silently.
+const FILTER_LABEL = { all: "", running: "Running", starred: "Starred", failed: "Failed" };
+function renderFilterChips() {
+  const el = $("#filt-chips"); if (!el) return;
+  const chips = [];
+  if (S.filter !== "all") chips.push(["filter", FILTER_LABEL[S.filter]]);
+  if (S.project) chips.push(["project", S.project === "inbox" ? "Inbox" : (PROJ.byId(S.project) || {}).title || "Project"]);
+  if (S.tag) chips.push(["tag", "#" + S.tag]);
+  if (!S.rootsOnly) chips.push(["roots", "With sub-reports"]);
+  el.innerHTML = chips.map(([k, l]) => `<span class="fchip">${esc(l)}<button data-fx="${k}" aria-label="Remove filter ${esc(l)}">\u00d7</button></span>`).join("");
+  el.hidden = !chips.length;
+  $("#filt-btn")?.classList.toggle("on", chips.length > 0);
+  el.querySelectorAll("[data-fx]").forEach((b) => (b.onclick = () => {
+    const k = b.dataset.fx;
+    if (k === "filter") S.filter = "all"; else if (k === "project") S.project = null; else if (k === "tag") S.tag = null; else S.rootsOnly = true;
+    renderSessionList();
+  }));
+}
+function filterMenu(anchor) {
+  const tags = [...new Set(S.sessions.flatMap((s) => (s.tags || []).map((t) => t.toLowerCase())))].sort().slice(0, 12);
+  const items = [
+    { head: "Show" },
+    { label: "All reports", on: S.filter === "all", f: "all" },
+    { label: "Running", on: S.filter === "running", f: "running" },
+    { label: "Starred", on: S.filter === "starred", f: "starred" },
+    { label: "Failed, crashed or cancelled", on: S.filter === "failed", f: "failed" },
+    { sep: 1 },
+    { label: S.rootsOnly ? "Include sub-reports" : "Top-level reports only", roots: 1 },
+    { sep: 1 }, { head: "Project" },
+    { label: "Any project", on: !S.project, p: "all" },
+    { label: `Inbox (${PROJ.inbox})`, on: S.project === "inbox", p: "inbox" },
+    ...PROJ.list.map((p) => ({ label: `${p.title} (${p.counts.session})`, on: S.project === p.id, p: p.id })),
+    { label: "+ New project", np: 1 }, { label: "Sort inbox into projects", sort: 1 },
+    ...(tags.length ? [{ sep: 1 }, { head: "Tag" }, ...tags.map((t) => ({ label: "#" + t, on: S.tag === t, tag: t }))] : []),
+  ];
+  ACT.menu(anchor, items, (it) => {
+    if (it.f) S.filter = it.f;
+    else if (it.roots) S.rootsOnly = !S.rootsOnly;
+    else if (it.p) S.project = it.p === "all" ? null : it.p;
+    else if (it.tag) S.tag = S.tag === it.tag ? null : it.tag;
+    else if (it.np) return PROJ.createDialog();
+    else if (it.sort) return PROJ.openSorter();
+    renderSessionList();
+  });
 }
 
 // ---------------------------------------------------------------- tabs
@@ -304,12 +409,14 @@ async function closeTab(key) {
   if (j < 0) return;
   S.tabs.splice(j, 1);
   if (S.active === key) S.active = (S.tabs[j] || S.tabs[j - 1] || S.tabs[0])?.key || null;
-  if (!S.tabs.length) { S.tabs.push({ key: "home", kind: "home", title: "Mission control" }); S.active = "home"; }
+  if (!S.tabs.length) { S.tabs.push({ key: "home", kind: "home", title: "Home" }); S.active = "home"; }
   saveTabs(); renderTabs(); renderStage();
 }
-const ICONS = { project: "\u25A3", projects: "\u25A3", sorter: "\u21C5", notes: "\u270E", home: "\u25CE", session: "\u00a7", notebook: "\u270E", launch: "+", search: "\u2315", tree: "\u2937", map: "\u2B21", compare: "\u21C4" };
+const ICONS = { settings: "\u2699", stats: "\u2211", labruns: "\u2697", sources: "\u25A6", project: "\u25A3", projects: "\u25A3", sorter: "\u21C5", notes: "\u270E", home: "\u25CE", session: "\u00a7", notebook: "\u270E", launch: "+", search: "\u2315", tree: "\u2937", map: "\u2B21", compare: "\u21C4" };
 function renderTabs() {
   $("#tabs").setAttribute("role", "tablist");
+  // one open page needs no tab strip; it appears once a second page opens
+  document.body.classList.toggle("one-tab", S.tabs.length <= 1);
   $("#tabs").innerHTML = S.tabs.map((t) => `
     <div class="tab ${t.key === S.active ? "on" : ""}" data-key="${esc(t.key)}" title="${esc(t.title)}" role="tab" tabindex="${t.key === S.active ? 0 : -1}" aria-selected="${t.key === S.active}">
       <span class="ico" aria-hidden="true">${ICONS[t.kind] || "\u2022"}</span>
@@ -414,7 +521,11 @@ function renderStage() {
   const v = document.createElement("div");
   v.className = "view";
   stage.appendChild(v);
-  const renderers = { home: renderHome, session: renderSession, notebook: renderNotebook, launch: renderLaunch, search: renderSearch, tree: renderTree, map: renderMap, compare: renderCompare, sources: (v) => SRC.render(v), project: (v, t) => PROJ.render(v, t), projects: renderProjects, sorter: (v) => PROJ.renderSorter(v), labruns: (v) => LAB.renderAll(v), notes: renderNotes, source: (v, t) => SRC.renderOne(v, t.id) };
+  ACT.unbind(); ACT.closeMenu();
+  if (t.kind !== "session" && window.innerWidth < 1200) closeInfo();
+  $$("#sidenav [data-nav]").forEach((b) => b.classList.toggle("on", b.dataset.nav === ({ home: "home", projects: "projects", project: "projects", sorter: "projects", labruns: "labruns", notes: "notes", sources: "sources", source: "sources", settings: "settings", stats: "settings" }[t.kind] || "")));
+  $$("#tabbar [data-tb]").forEach((b) => b.classList.toggle("on", b.dataset.tb === ({ home: "home", session: "reports", labruns: "lab", launch: "new" }[t.kind] || "")));
+  const renderers = { stats: renderStats, settings: renderSettings, home: renderHome, session: renderSession, notebook: renderNotebook, launch: renderLaunch, search: renderSearch, tree: renderTree, map: renderMap, compare: renderCompare, sources: (v) => SRC.render(v), project: (v, t) => PROJ.render(v, t), projects: renderProjects, sorter: (v) => PROJ.renderSorter(v), labruns: (v) => LAB.renderAll(v), notes: renderNotes, source: (v, t) => SRC.renderOne(v, t.id) };
   const gen = ++RENDER_GEN;
   v.dataset.gen = gen;
   (renderers[t.kind] || renderHome)(v, t);
@@ -448,89 +559,102 @@ async function renderProjects(v) {
   v.querySelector("#pv-new").onclick = () => PROJ.createDialog();
   v.querySelector("#pv-sort").onclick = () => PROJ.openSorter();
   v.querySelectorAll("[data-p]").forEach((c) => {
-    const go = () => { if (c.dataset.p === "inbox") { S.project = "inbox"; PROJ.renderStrip(); renderSessionList(); drawer("left"); } else PROJ.open(+c.dataset.p); };
+    const go = () => { if (c.dataset.p === "inbox") { S.project = "inbox"; renderSessionList(); if (window.innerWidth < 820) drawer("left"); else $("#q")?.focus(); } else PROJ.open(+c.dataset.p); };
     c.onclick = go; c.onkeydown = (e) => { if (e.key === "Enter") go(); };
   });
 }
 
 // ---------------------------------------------------------------- home
+// One question box, then what needs you (failed runs, Lab plans to review, reports that
+// finished since you last looked), then recent reports, projects and notebooks. The
+// library counts moved to Settings > Library stats.
+function renderHomeIfOpen() { if (currentTab()?.kind === "home") renderStage(); }
 function renderHome(v) {
-  const st = S.stats || { by_status: {} };
-  const recent = S.sessions.filter((s) => !s.parent_id).slice(0, 12);
+  const a = activity();
+  const recent = S.sessions.filter((s) => !s.parent_id).slice(0, 8);
+  const drafts = (S.labRuns || []).filter((r) => r.status === "draft");
+  const needs = [
+    ...a.newFail.map((s) => ({ t: reportTitle(s), sub: "Research failed: open it to re-run", cls: "bad", go: () => openSession(s.id) })),
+    ...a.labFail.map((f) => ({ t: f.title || `Lab run #${f.id}`, sub: "Lab run failed: a fix may be ready", cls: "bad", go: () => { S.scrollToLab = f.id; openSession(f.session_id); } })),
+    ...drafts.slice(0, 6).map((r) => ({ t: (r.plan || {}).title || `Lab run #${r.id}`, sub: "Lab plan ready for your review", cls: "review", go: () => { S.scrollToLab = r.id; openSession(r.session_id); } })),
+    ...a.running.map((s) => ({ t: reportTitle(s), sub: `Researching, started ${ago(s.created_at)}`, cls: "live", go: () => openSession(s.id) })),
+    ...a.done.slice(0, 6).map((s) => ({ t: reportTitle(s), sub: `Finished ${ago(s.updated_at || s.created_at)}`, cls: "ok", go: () => openSession(s.id) })),
+  ];
   v.innerHTML = `
-  <div class="pad">
-    <div class="hero">
-      <div>
-        <h2>Research, <span>instrumented.</span></h2>
-        <p>Launch autonomous deep research, watch it think in real time, then read, annotate and
-        assemble findings into notebooks you can export.</p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn" data-go="launch">+ Launch</button>
-          <button class="btn" data-go="search">\u2315 Search past research</button>
-          <button class="btn" data-go="notebook">\u270E New notebook</button>
-          <button class="btn" data-go="map">\u2B21 Research map</button>
-        </div>
+  <div class="pad home">
+    <div class="ask-hero">
+      <h2>What do you want to research?</h2>
+      <div class="ask-box">
+        <textarea id="home-q" rows="2" placeholder="Ask a question. Be specific about scope, timeframe and what the answer should contain." aria-label="Research question"></textarea>
+        <button class="btn primary" id="home-go" title="Opens the launch form with this question, so you can set depth and sources and see the cost first">Continue \u2192</button>
       </div>
-      <div class="card">
-        <h3>Corpus &amp; workspace</h3>
-        <div class="stat-grid">
-          <div class="stat"><div class="v">${fmtN(st.total)}</div><div class="k">sessions</div></div>
-          <div class="stat"><div class="v">${fmtN(st.by_status?.completed)}</div><div class="k">complete</div></div>
-          <div class="stat"><div class="v">${fmtN(st.by_status?.running)}</div><div class="k">live</div></div>
-          <div class="stat"><div class="v">${fmtN(Math.round((st.result_chars || 0) / 1e6 * 10) / 10)}M</div><div class="k">chars</div></div>
-          <div class="stat"><div class="v">${fmtN(st.notebooks)}</div><div class="k">notebooks</div></div>
-          <div class="stat"><div class="v">${fmtN(st.annotations)}</div><div class="k">annotations</div></div>
-        </div>
-      </div>
+      <div class="templates">${TEMPLATES.map(([n], i) => `<button data-t="${i}">${esc(n)}</button>`).join("")}</div>
     </div>
-    <div class="card" style="margin-bottom:18px">
-      <div class="card-h"><h3>Projects</h3><span class="grow"></span><button class="linkbtn" id="home-allproj">all projects</button></div>
-      <div class="recent" id="proj-cards-home"></div>
+    ${needs.length ? `<section class="home-sec">
+      <div class="sec-h"><h3>Needs you</h3><span class="grow"></span>${a.newFail.length || a.labFail.length || a.done.length ? '<button class="linkbtn" id="home-seen">Mark as seen</button>' : ""}</div>
+      <div class="needs">${needs.map((n, i) => `<button class="need ${n.cls}" data-n="${i}"><span class="dot" aria-hidden="true"></span><span class="grow"><b>${esc(clip(n.t, 110))}</b><span class="dim">${esc(n.sub)}</span></span><span class="chev" aria-hidden="true">\u203a</span></button>`).join("")}</div>
+    </section>` : ""}
+    <section class="home-sec">
+      <div class="sec-h"><h3>Recent</h3><span class="grow"></span><button class="linkbtn" id="home-search">Search past research</button></div>
+      <div class="recent-list">${recent.map((s) => `
+        <button class="rrow" data-id="${s.id}"><span class="grow"><b>${esc(clip(reportTitle(s), 140))}</b>
+          <span class="dim">${ago(s.created_at)}${s.status !== "completed" ? ` \u00b7 ${esc(s.status)}` : ""}${s.children ? ` \u00b7 ${s.children} sub-reports` : ""}</span></span>
+          ${PROJ.pills(s.projects)}</button>`).join("") || '<div class="dim">No research yet. Ask your first question above.</div>'}</div>
+    </section>
+    <div class="home-two">
+      <section class="home-sec"><div class="sec-h"><h3>Projects</h3><span class="grow"></span><button class="linkbtn" id="home-allproj">All projects</button></div>
+        <div class="mini-list" id="proj-cards-home"></div></section>
+      <section class="home-sec"><div class="sec-h"><h3>Notebooks</h3><span class="grow"></span><button class="linkbtn" id="home-nb">+ New notebook</button></div>
+        <div class="mini-list" id="nb-cards"></div></section>
     </div>
-    <div class="card" style="margin-bottom:18px">
-      <h3>Notebooks</h3>
-      <div class="recent" id="nb-cards"></div>
-    </div>
-    <div class="card">
-      <h3>Recent research</h3>
-      <div class="recent">
-        ${recent.map((s) => `
-          <div class="rcard" data-id="${s.id}">
-            <div style="display:flex;justify-content:space-between;align-items:center">
-              <span class="status-badge ${esc(s.status)}">${esc(s.status)}</span>
-              <span class="id mono dim">#${s.id} \u00b7 ${ago(s.created_at)}</span>
-            </div>
-            <div class="p">${esc(clip(s.prompt, 220))}</div>
-            <div class="mono dim" style="font-size:10.5px">${fmtN(Math.round(s.result_chars / 1000))}k chars${s.children ? ` \u00b7 ${s.children} sub-tasks` : ""}</div>
-          </div>`).join("")}
-      </div>
-    </div>
+    <div class="home-more"><button class="linkbtn" id="home-map">Research map</button><button class="linkbtn" id="home-stats">Library stats</button></div>
   </div>`;
-  v.querySelector('[data-go="launch"]').onclick = () => openLaunch();
-  v.querySelector('[data-go="search"]').onclick = openSearch;
-  v.querySelector('[data-go="notebook"]').onclick = () => NB.create();
-  v.querySelector('[data-go="map"]').onclick = openMap;
-  v.querySelectorAll(".rcard[data-id]").forEach((c) => (c.onclick = () => openSession(c.dataset.id)));
+  const q = v.querySelector("#home-q");
+  const go = () => openLaunch({ prompt: q.value.trim() });
+  v.querySelector("#home-go").onclick = go;
+  q.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); go(); } };
+  v.querySelectorAll(".templates button").forEach((b) => (b.onclick = () => { q.value = TEMPLATES[b.dataset.t][1]; q.focus(); const i = q.value.indexOf("["); if (i >= 0) q.setSelectionRange(i, q.value.indexOf("]", i) + 1); }));
+  v.querySelectorAll("[data-n]").forEach((b) => (b.onclick = () => needs[+b.dataset.n].go()));
+  v.querySelector("#home-seen")?.addEventListener("click", () => { SEEN.mark(); renderTelemetry(); renderStage(); });
+  v.querySelectorAll(".rrow[data-id]").forEach((c) => (c.onclick = () => openSession(c.dataset.id)));
+  v.querySelector("#home-search").onclick = openSearch;
   v.querySelector("#home-allproj").onclick = openProjects;
+  v.querySelector("#home-nb").onclick = () => NB.create();
+  v.querySelector("#home-map").onclick = openMap;
+  v.querySelector("#home-stats").onclick = openStats;
   PROJ.load().then(() => {
     const el = v.querySelector("#proj-cards-home"); if (!el) return;
-    el.innerHTML = PROJ.list.slice(0, 8).map((p) => `<div class="rcard proj-card ${esc(p.color)}" data-p="${p.id}"><div style="display:flex;gap:6px;align-items:center">${PROJ.dot(p.color)}<b class="grow">${esc(p.title)}</b></div>
-      <div class="mono dim" style="font-size:10.5px;margin-top:4px">${p.counts.session} reports \u00b7 ${ago(p.updated_at)}</div></div>`).join("")
-      + `<div class="rcard proj-card" data-new="1"><b>+ New project</b><div class="dim" style="font-size:11.5px;margin-top:4px">${PROJ.inbox} report${PROJ.inbox === 1 ? "" : "s"} in the inbox${PROJ.inbox ? ' \u00b7 <span class="linkbtn">sort them</span>' : ""}</div></div>`;
+    el.innerHTML = PROJ.list.slice(0, 6).map((p) => `<button class="mrow" data-p="${p.id}">${PROJ.dot(p.color)}<span class="grow">${esc(p.title)}</span><span class="dim">${p.counts.session}</span></button>`).join("")
+      + (PROJ.inbox ? `<button class="mrow" data-sort="1"><span class="pdot inbox" aria-hidden="true"></span><span class="grow">Inbox: ${PROJ.inbox} unfiled</span><span class="linkbtn">sort</span></button>` : "")
+      + `<button class="mrow" data-new="1"><span class="grow dim">+ New project</span></button>`;
     el.querySelectorAll("[data-p]").forEach((c) => (c.onclick = () => PROJ.open(+c.dataset.p)));
-    el.querySelector("[data-new]").onclick = (e) => (e.target.classList.contains("linkbtn") ? PROJ.openSorter() : PROJ.createDialog());
+    el.querySelector("[data-sort]")?.addEventListener("click", () => PROJ.openSorter());
+    el.querySelector("[data-new]").onclick = () => PROJ.createDialog();
   }).catch(() => {});
   loadNotebooks().then(() => {
-    const el = v.querySelector("#nb-cards");
-    if (!el) return;
-    el.innerHTML = S.notebooks.slice(0, 8).map((n) => `
-      <div class="rcard" data-nb="${n.id}"><div class="mono dim" style="font-size:10.5px">${ago(n.updated_at)} \u00b7 ${fmtN(n.chars)} chars</div>
-      <div class="p" style="font-weight:600">${esc(n.title)}</div></div>`).join("")
-      || `<div class="dim">No notebooks yet. Select text in any report and send it to a notebook.</div>`;
-    el.querySelectorAll("[data-nb]").forEach((c) => (c.onclick = () => {
-      const n = S.notebooks.find((x) => x.id == c.dataset.nb); openNotebook(n.id, n.title);
-    }));
+    const el = v.querySelector("#nb-cards"); if (!el) return;
+    el.innerHTML = S.notebooks.slice(0, 6).map((n) => `<button class="mrow" data-nb="${n.id}"><span class="grow">${esc(n.title)}</span><span class="dim">${ago(n.updated_at)}</span></button>`).join("")
+      || `<div class="dim" style="font-size:12px">No notebooks yet. Select text in any report and send it to a notebook.</div>`;
+    el.querySelectorAll("[data-nb]").forEach((c) => (c.onclick = () => { const n = S.notebooks.find((x) => x.id == c.dataset.nb); openNotebook(n.id, n.title); }));
   });
+  if (!S.labRuns) loadLabRuns().then(() => { if (currentTab()?.kind === "home" && !stale(v) && S.labRuns.some((r) => r.status === "draft")) renderStage(); });
+}
+async function loadLabRuns() {
+  try { S.labRuns = (await api("/api/lab/runs")).runs || []; } catch { S.labRuns = []; }
+  return S.labRuns;
+}
+// Library stats (the old Home counters and status bar), now one quiet page.
+function openStats() { openTab({ key: "stats", kind: "stats", title: "Library stats" }); }
+function renderStats(v) {
+  const st = S.stats || { by_status: {} };
+  const b = st.by_status || {};
+  v.innerHTML = `<div class="pad" style="max-width:760px"><h2 class="page-h">Library stats</h2>
+    <div class="stat-grid">
+      ${[["reports", st.total], ["top-level", st.roots], ["completed", b.completed], ["running", b.running], ["failed", (b.failed || 0) + (b.crashed || 0)], ["cancelled", b.cancelled],
+        ["characters", Math.round((st.result_chars || 0) / 1000) + "k"], ["notebooks", st.notebooks], ["annotations", st.annotations]]
+        .map(([k, n]) => `<div class="stat"><div class="v">${typeof n === "string" ? esc(n) : fmtN(n)}</div><div class="k">${k}</div></div>`).join("")}
+    </div>
+    <p class="dim" style="margin-top:14px;font-size:12px">Version ${esc(S.health?.version || "")}. Counts are for this workspace.</p></div>`;
 }
 
 // ---------------------------------------------------------------- session reader
@@ -540,53 +664,42 @@ async function renderSession(v, t) {
   try { s = await loadSession(t.id, true); }
   catch (e) { v.innerHTML = `<div class="reader"><div class="empty-result">${esc(e.message)}</div></div>`; return; }
   if (currentTab()?.key !== t.key || stale(v)) return;
-  t.title = clip(s.prompt, 40); renderTabs();
+  t.title = clip(s.title || oneLine(s.prompt), 40); renderTabs();
   const running = s.status === "running";
   // A failed or crashed run has no report: show the error as an error, offer Re-run,
   // and hide the reading tools (Listen, Export, Lab, Ask) that need a report.
   const broken = ["failed", "crashed", "cancelled"].includes(s.status);
   const hasReport = !!s.result && !broken;
+  const title = s.title || texToText(s.prompt);
+  const words = hasReport ? (s.result || "").split(/\s+/).filter(Boolean).length : 0;
+  const home = (s.projects || []).find((p) => p.is_home) || (s.projects || [])[0];
   v.innerHTML = `
-    <div class="vbar">
-      <button class="btn small" data-a="star">${s.meta.starred ? "\u2605 Starred" : "\u2606 Star"}</button>
-      <button class="btn small" data-a="project" title="File this report in projects">\u25A3 ${s.projects?.length ? esc(clip((s.projects.find((p) => p.is_home) || s.projects[0]).title, 22)) + (s.projects.length > 1 ? ` +${s.projects.length - 1}` : "") : "Project"}</button>
-      ${hasReport ? `<button class="btn small" data-a="copy">Copy report</button>
-      <button class="btn small" data-a="to-nb">\u2192 Notebook</button>
-      <button class="btn small" data-a="find">Find</button>
-      <button class="btn small" data-a="listen" title="Read the report aloud, word for word">\u25B6 Listen</button>` : ""}
-      ${hasReport && !s.parent_id && typeof WSUI !== "undefined" && WSUI.enabled ? `<button class="btn small" data-a="ws-copy" title="Copy this report (with sub-reports, notes and Lab runs) into another workspace">\u29C9 Copy to\u2026</button>` : ""}
-      ${s.children.length ? `<button class="btn small" data-a="tree">\u2937 Tree (${s.children.length})</button>` : ""}
-      ${(hasReport || broken) && !s.parent_id ? `<button class="btn small ${broken ? "primary" : ""}" data-a="rerun" title="Run this question again${broken ? "" : " and compare"}">\u21BB Re-run</button>` : ""}
-      ${s.reruns?.length || s.run?.rerun_of ? `<button class="btn small" data-a="compare">\u21C4 Compare</button>` : ""}
+    <div class="vbar rbar">
+      <button class="btn small rb-star ${s.meta.starred ? "on" : ""}" data-a="star" title="${s.meta.starred ? "Starred" : "Star"}" aria-label="${s.meta.starred ? "Starred" : "Star"}" aria-pressed="${!!s.meta.starred}">${s.meta.starred ? "\u2605" : "\u2606"}</button>
       <span class="grow"></span>
-      ${hasReport ? `<select class="btn small" data-a="export" aria-label="Export">
-        <option value="">Export\u2026</option>
-        <option value="md">Markdown (+annotations)</option>
-        <option value="md-rec">Markdown, with sub-reports</option>
-        <option value="html">Standalone HTML</option>
-        <option value="json">JSON</option>
-        <option value="print">Print / PDF</option>
-        <option value="audio-full">Audio: full report (AI voice)</option>
-        <option value="audio-summary">Audio: AI voice summary</option>
-        <option value="brief">Brief: executive, slides, email, grant, lay, lit review</option>
-      </select>` : ""}
       ${running ? `<button class="btn small danger" data-a="cancel">Stop research</button>` : ""}
-      <button class="btn small danger" data-a="delete" title="Delete session">Delete</button>
+      ${broken && !s.parent_id ? `<button class="btn small primary" data-a="rerun">\u21BB Re-run</button>` : ""}
+      ${hasReport ? `<button class="btn small" data-a="listen" title="Read the report aloud, word for word">\u25B6 Listen</button>
+      <button class="btn small" data-a="share" aria-haspopup="menu" title="Copy, export, audio and briefs">Share \u25BE</button>` : ""}
+      <button class="btn small" data-a="info" title="Details, notes, outline and live log (i)">Info</button>
+      <button class="btn small icon" data-a="more" aria-haspopup="menu" aria-label="More actions" title="More actions">\u22EF</button>
     </div>
     <div class="reader">
-      <div class="dossier">
-        <h1>${esc(texToText(s.prompt))}</h1>
-        <div class="meta">
-          <span class="status-badge ${esc(s.status)}">${esc(s.status)}</span>
-          <span>SESSION <b>#${s.id}</b></span>
-          <span>DEPTH <b>${s.depth || 1}</b></span>
-          <span>CREATED <b>${esc((s.created_at || "").replace("T", " ").slice(0, 16))}</b></span>
-          <span>SIZE <b>${fmtN((s.result || "").length)}</b> chars</span>
-          ${s.parent_id ? `<span>PARENT <a href="#" data-open="${s.parent_id}" style="color:var(--cyan)">#${s.parent_id}</a></span>` : ""}
-          ${s.files.length ? `<span>FILES <b>${s.files.length}</b></span>` : ""}
-          ${(s.projects || []).map((p) => `<a href="#" class="projlink" data-proj="${p.id}">${PROJ.pill(p)}</a>`).join("")}
+      <header class="rhead">
+        <h1>${esc(title)}</h1>
+        ${s.title ? `<details class="rprompt"><summary class="dim">Your question</summary><div>${esc(texToText(s.prompt))}</div></details>` : ""}
+        <div class="rmeta">
+          ${running ? `<span class="status-badge running">researching</span>` : broken ? `<span class="status-badge ${esc(s.status)}">${esc(s.status)}</span>` : ""}
+          <span>${esc(niceTime(s.created_at))}</span>
+          ${words ? `<span>${fmtN(words)} words</span>` : ""}
+          ${hasReport && extractSources(s.result || "").length ? `<span>${fmtN(extractSources(s.result || "").length)} sources</span>` : ""}
+          ${(s.depth || 1) > 1 ? `<span>depth ${s.depth}</span>` : ""}
+          ${s.parent_id ? `<span>part of <a href="#" data-open="${s.parent_id}">#${s.parent_id}</a></span>` : ""}
+          ${s.children.length ? `<a href="#" data-a="tree-link">${s.children.length} sub-reports</a>` : ""}
+          ${home ? `<a href="#" class="projlink" data-proj="${home.id}">${PROJ.pill(home)}</a>${s.projects.length > 1 ? `<span class="dim" title="${esc(s.projects.filter((p) => p !== home).map((p) => p.title).join(", "))}">+${s.projects.length - 1}</span>` : ""}` : ""}
+          <span class="mono dim">#${s.id}</span>
         </div>
-      </div>
+      </header>
       ${s.stall ? `<div class="stall-note" role="alert" style="margin:8px 0;padding:10px 12px;border:1px solid var(--amber,#b80);border-radius:6px">
         <b>This research looks stuck.</b> ${esc(s.stall.message)}
         <div style="margin-top:8px"><button class="btn small primary" data-a="stall-restart">Stop and re-run</button>
@@ -602,10 +715,10 @@ async function renderSession(v, t) {
       <article class="md" id="report"></article>
       ${hasReport && !running ? '<section class="lab-panel" id="lab-panel"></section>' : ""}
     </div>
-    ${broken ? "" : `<div class="dock">`}
-      <div class="dock-ds" id="ask-ds" ${running ? "hidden" : ""}></div>
+    ${broken ? "" : `<div class="dock ${running ? "off" : ""}">`}
+      <div class="dock-ds" id="ask-ds" hidden></div>
       <div class="dock-inner">
-        <textarea id="ask-q" rows="1" placeholder="${running ? "Follow-ups unlock when the run finishes\u2026" : (window.innerWidth < 820 ? "Ask a follow-up about this research\u2026" : "Ask a follow-up about this research\u2026 (Enter to send, Shift+Enter for newline)")}" ${running ? "disabled" : ""}></textarea>
+        <textarea id="ask-q" rows="1" placeholder="${running ? "Follow-ups unlock when the research finishes" : "Ask a follow-up about this report"}" ${running ? "disabled" : ""}></textarea>
         <button class="btn primary" data-a="ask" ${running ? "disabled" : ""}>Ask</button>
       </div>
     </div>`;
@@ -613,6 +726,9 @@ async function renderSession(v, t) {
   const art = v.querySelector("#report");
   if (hasReport) {
     art.innerHTML = renderMd(s.result);
+    // the report's own "# Title" is the page heading now; don't show it twice
+    const h0 = art.firstElementChild;
+    if (s.title && h0 && /^H[12]$/.test(h0.tagName) && oneLine(h0.textContent) === oneLine(s.title)) h0.remove();
     art.querySelectorAll("a[href^='http']").forEach((a) => { a.target = "_blank"; a.rel = "noopener noreferrer"; });
     art.querySelectorAll("h1,h2,h3,h4").forEach((h, i) => (h.id = `h-${i}-${slug(h.textContent)}`));
     // Citations first: highlights are saved against the text the reader sees (with
@@ -634,50 +750,95 @@ async function renderSession(v, t) {
     art.innerHTML = `<div class="empty-result ${running ? "scan" : ""}">${running ? "Research in progress. The live log is streaming in the right panel." : "No result stored for this session."}</div>`;
   }
   if (running && S.rtab !== "log") { S.rtab = "log"; }
+  if (running && S.rightAuto !== s.id && window.innerWidth >= 1200) { S.rightAuto = s.id; openInfo(); } // watch it think
   renderRight();
 
-  // toolbar
+  // toolbar: star, Listen, Share, Info and "..." on screen; everything else in the
+  // Share and "..." menus, drawn from the action registry (actions.js)
   const starBtn = v.querySelector('[data-a="star"]');
-  starBtn.onclick = () => busy(starBtn, async () => {
+  const doStar = () => busy(starBtn, async () => {
     const m = await api(`/api/sessions/${s.id}/meta`, { method: "PATCH", body: { starred: !s.meta.starred } });
     s.meta = m; toast(m.starred ? "Starred" : "Unstarred");
-    starBtn.dataset.keepLabel = "1"; starBtn.textContent = m.starred ? "\u2605 Starred" : "\u2606 Star"; // no re-render: keep the reading position
+    starBtn.dataset.keepLabel = "1"; starBtn.textContent = m.starred ? "\u2605" : "\u2606"; // no re-render: keep the reading position
+    starBtn.classList.toggle("on", !!m.starred); starBtn.setAttribute("aria-pressed", String(!!m.starred));
+    starBtn.title = m.starred ? "Starred" : "Star"; starBtn.setAttribute("aria-label", starBtn.title);
     loadSessions().catch(() => {});
   });
-  v.querySelector('[data-a="project"]')?.addEventListener("click", () => PROJ.fileDialog(s));
-  v.querySelector('[data-a="ws-copy"]')?.addEventListener("click", () => WSUI.copyDialog({ reports: [s.id], label: `Report #${s.id}: ${clip(oneLine(s.prompt || ""), 120)}` }));
-  v.querySelector('[data-a="copy"]')?.addEventListener("click", () => copyText(s.result || ""));
-  v.querySelector('[data-a="to-nb"]')?.addEventListener("click", safe(() => NB.append(`## ${s.prompt}\n\n${s.result || ""}\n\n*Source: Session #${s.id}*\n`)));
-  v.querySelector('[data-a="tree"]')?.addEventListener("click", () => openTree(s.id));
-  v.querySelector('[data-a="listen"]')?.addEventListener("click", () => READER.toggle(v, art, s));
-  const rerunBtn = v.querySelector('[data-a="rerun"]');
-  rerunBtn?.addEventListener("click", () => busy(rerunBtn, async () => {
-    const d = s.run?.depth || s.depth || 1, b = s.run?.breadth || 3;
-    let est = null; try { est = await api("/api/estimate", { method: "POST", body: { depth: d, breadth: b } }); } catch { /* ignore */ }
-    if (!(await confirmBox(`Re-run #${s.id}?`, `Runs the same question again (depth ${d})${broken ? "" : " so you can compare what changed"}.${est ? ` Estimated cost about $${est.cost_usd.toFixed(2)}.` : ""}`, "Re-run"))) return;
-    const r = await api("/api/research", { method: "POST", body: { prompt: s.prompt, depth: d, breadth: b, rerun_of: s.id } });
-    toast(`Re-run #${r.id} launched`, "ok"); S.rtab = "log"; await loadSessions(); openSession(r.id);
-  }));
-  v.querySelector('[data-a="compare"]')?.addEventListener("click", () => {
-    const other = s.run?.rerun_of || s.reruns[s.reruns.length - 1];
-    const [a, b] = [Math.min(s.id, other), Math.max(s.id, other)];
-    openCompare(a, b);
-  });
-  v.querySelector("[data-open]")?.addEventListener("click", (e) => { e.preventDefault(); openSession(e.target.dataset.open); });
-  v.querySelectorAll("[data-proj]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); PROJ.open(+a.dataset.proj); }));
-  const exp = v.querySelector('[data-a="export"]');
-  if (exp) exp.onchange = safe(async (e) => {
-    const f = e.target.value; e.target.value = "";
-    if (!f) return;
+  starBtn.onclick = doStar;
+  const exportAs = safe(async (f) => {
     if (f === "print") return window.print();
     if (f === "audio-full" || f === "audio-summary") return AUDIO.exportDialog("session", s.id, f.slice(6), s.prompt);
     if (f === "brief") return BRIEF.dialog("session", s.id, s.prompt);
-    if (f === "html") return download(`session_${s.id}.html`, standaloneHtml(s.prompt, v.querySelector(".dossier").outerHTML + art.outerHTML), "text/html");
+    if (f === "html") return download(`session_${s.id}.html`, standaloneHtml(title, v.querySelector(".rhead").outerHTML + art.outerHTML), "text/html");
     const rec = f === "md-rec" ? "&recursive=1" : "";
     const fmt = f === "json" ? "json" : "md";
     const out = await api(`/api/sessions/${s.id}/export?format=${fmt}${rec}`);
     download(out.filename, fmt === "json" ? JSON.stringify(out.content, null, 2) : out.content, fmt === "json" ? "application/json" : "text/markdown");
   });
+  const rerunBtn = v.querySelector('[data-a="rerun"]');
+  const doRerun = () => busy(rerunBtn, async () => {
+    const d = s.run?.depth || s.depth || 1, b = s.run?.breadth || 3;
+    let est = null; try { est = await api("/api/estimate", { method: "POST", body: { depth: d, breadth: b } }); } catch { /* ignore */ }
+    if (!(await confirmBox(`Re-run #${s.id}?`, `Runs the same question again (depth ${d})${broken ? "" : " so you can compare what changed"}.${est ? ` Estimated cost about $${est.cost_usd.toFixed(2)}.` : ""}`, "Re-run"))) return;
+    const r = await api("/api/research", { method: "POST", body: { prompt: s.prompt, depth: d, breadth: b, rerun_of: s.id } });
+    toast(`Re-run #${r.id} launched`, "ok"); S.rtab = "log"; await loadSessions(); openSession(r.id);
+  });
+  const doDelete = () => busy(null, async () => {
+    const hasKids = s.children.length > 0;
+    const ok = await confirmBox(`Delete report #${s.id}?`, `This removes it from local history${hasKids ? ` along with its ${s.children.length} direct sub-task(s) and their descendants` : ""}, plus its annotations. It cannot be undone.`, "Delete");
+    if (!ok) return;
+    try { await api(`/api/sessions/${s.id}${hasKids ? "?recursive=1" : ""}`, { method: "DELETE" }); }
+    catch (err) { toast(err.message, "err"); return; }
+    toast(`Deleted #${s.id}`, "ok"); delete S.cache[s.id];
+    closeTab(t.key); loadSessions(); loadStats();
+  });
+  const handlers = {
+    star: doStar,
+    listen: () => READER.toggle(v, art, s),
+    info: () => toggleInfo(),
+    ask: () => { const ta = v.querySelector("#ask-q"); ta?.focus(); },
+    stop: () => v.querySelector('[data-a="cancel"]')?.click(),
+    rerun: doRerun,
+    copy: () => copyText(s.result || ""),
+    "to-nb": safe(() => NB.append(`## ${title}\n\n${s.result || ""}\n\n*Source: Session #${s.id}*\n`)),
+    "export-md": () => exportAs("md"), "export-md-rec": () => exportAs("md-rec"), "export-html": () => exportAs("html"),
+    "export-json": () => exportAs("json"), print: () => exportAs("print"),
+    "audio-full": () => exportAs("audio-full"), "audio-summary": () => exportAs("audio-summary"), brief: () => exportAs("brief"),
+    find: () => v.querySelector('[data-a="find"]')?.click(),
+    project: () => PROJ.fileDialog(s),
+    lab: () => LAB.startDialog(s, { scope: "document" }),
+    tree: () => openTree(s.id),
+    compare: () => { const other = s.run?.rerun_of || s.reruns[s.reruns.length - 1]; openCompare(Math.min(s.id, other), Math.max(s.id, other)); },
+    "ws-copy": () => WSUI.copyDialog({ reports: [s.id], label: `Report #${s.id}: ${clip(oneLine(title), 120)}` }),
+    delete: doDelete,
+  };
+  const avail = (id) => ({
+    listen: hasReport, stop: running, rerun: (hasReport || broken) && !s.parent_id, ask: hasReport && !running,
+    copy: hasReport, "to-nb": hasReport, "export-md": hasReport, "export-md-rec": hasReport && s.children.length > 0,
+    "export-html": hasReport, "export-json": hasReport, print: hasReport, "audio-full": hasReport, "audio-summary": hasReport, brief: hasReport,
+    find: hasReport, lab: hasReport && !running && !!LAB.targetLabel,
+    tree: s.children.length > 0, compare: !!(s.reruns?.length || s.run?.rerun_of),
+    "ws-copy": hasReport && !s.parent_id && typeof WSUI !== "undefined" && WSUI.enabled,
+  }[id] ?? true);
+  ACT.bind("report", handlers, avail);
+  const menuOf = (weights) => {
+    const items = [];
+    for (const w of weights) {
+      const group = ACT.of("report", w).filter((x) => avail(x.id));
+      if (!group.length) continue;
+      if (items.length) items.push({ sep: 1 });
+      items.push(...group.map((x) => ({ id: x.id, label: x.label, hint: x.hint, key: x.key, danger: w === "danger" })));
+    }
+    return items;
+  };
+  v.querySelector('[data-a="share"]')?.addEventListener("click", (e) => ACT.menu(e.currentTarget, menuOf(["share"]), (it) => handlers[it.id]()));
+  v.querySelector('[data-a="more"]').addEventListener("click", (e) => ACT.menu(e.currentTarget, menuOf(["menu", "danger"]), (it) => handlers[it.id]()));
+  v.querySelector('[data-a="listen"]')?.addEventListener("click", handlers.listen);
+  v.querySelector('[data-a="info"]').addEventListener("click", handlers.info);
+  rerunBtn?.addEventListener("click", doRerun);
+  v.querySelector('[data-a="tree-link"]')?.addEventListener("click", (e) => { e.preventDefault(); openTree(s.id); });
+  v.querySelector("[data-open]")?.addEventListener("click", (e) => { e.preventDefault(); openSession(e.target.dataset.open); });
+  v.querySelectorAll("[data-proj]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); PROJ.open(+a.dataset.proj); }));
   const stallGo = (restart) => async (ev) => busy(ev.currentTarget, async () => {
     const d = s.run?.depth || s.depth || 1, b = s.run?.breadth || 3;
     const ok = await confirmBox(restart ? `Stop #${s.id} and run it again?` : `Stop #${s.id}?`,
@@ -712,16 +873,6 @@ async function renderSession(v, t) {
     } catch (err) { toast(err.message, "err"); }
     delete S.cache[s.id]; renderStage();
   });
-  const delBtn = v.querySelector('[data-a="delete"]');
-  delBtn.onclick = () => busy(delBtn, async () => {
-    const hasKids = s.children.length > 0;
-    const ok = await confirmBox(`Delete session #${s.id}?`, `This removes it from local history${hasKids ? ` along with its ${s.children.length} direct sub-task(s) and their descendants` : ""}, plus its annotations. It cannot be undone.`, "Delete");
-    if (!ok) return;
-    try { await api(`/api/sessions/${s.id}${hasKids ? "?recursive=1" : ""}`, { method: "DELETE" }); }
-    catch (err) { toast(err.message, "err"); return; }
-    toast(`Deleted #${s.id}`, "ok"); delete S.cache[s.id];
-    closeTab(t.key); loadSessions(); loadStats();
-  });
   // find: Enter / Shift+Enter step through matches, "3 of 471", Esc closes and clears
   const fb = v.querySelector(".findbar");
   const findInput = fb.querySelector("input");
@@ -737,7 +888,8 @@ async function renderSession(v, t) {
     count.textContent = `${cur + 1} of ${marks.length}`;
   };
   const closeFind = () => { clearFind(); findInput.value = ""; count.textContent = ""; fb.hidden = true; };
-  v.querySelector('[data-a="find"]')?.addEventListener("click", () => { if (fb.hidden) { fb.hidden = false; findInput.focus(); findInput.select(); } else closeFind(); });
+  const toggleFind = () => { if (fb.hidden) { fb.hidden = false; findInput.focus(); findInput.select(); } else closeFind(); };
+  handlers.find = hasReport ? toggleFind : () => {};
   findInput.oninput = debounce(() => {
     clearFind();
     const q = findInput.value.trim();
@@ -762,6 +914,12 @@ async function renderSession(v, t) {
   const askSources = askDsEl && typeof SRC !== "undefined" ? SRC.picker(askDsEl, s.project_defaults ? s.project_defaults.data_sources : [], { compact: true }) : () => [];
   const grow = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 160) + "px"; };
   ta.oninput = grow;
+  // the composer is one line until you use it; the data-source picker appears on focus
+  ta.addEventListener("focus", () => { v.querySelector(".dock")?.classList.add("open"); if (askDsEl && SRC.list.length) askDsEl.hidden = false; });
+  ta.addEventListener("blur", () => setTimeout(() => {
+    const d = v.querySelector(".dock"); if (!d || d.contains(document.activeElement) || ta.value.trim() || askSources().length) return;
+    d.classList.remove("open"); if (askDsEl) askDsEl.hidden = true;
+  }, 150));
   ta.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); askBtn.click(); } };
   ta.setAttribute("aria-label", "Ask a follow-up about this research");
   askBtn.onclick = () => busy(askBtn, async () => {
@@ -1263,19 +1421,7 @@ function renderRight() {
       body.innerHTML = `<div class="dim">Notebook autosaves to the local history database. Select text in its preview to copy or quote it. <span class="mono">Ctrl+S</span> saves now.</div>`;
       return;
     }
-    const live = S.sessions.filter((x) => x.status === "running");
-    body.innerHTML = `
-      <div class="label">Live runs</div>
-      <div class="children" style="margin:6px 0 16px">${live.map((x) => `<a data-id="${x.id}"><span class="st running" style="display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px"></span>#${x.id} ${esc(clip(x.prompt, 80))}<br><span class="mono dim" style="font-size:10.5px">started ${ago(x.created_at)}</span></a>`).join("") || '<div class="dim">Nothing running.</div>'}</div>
-      <div class="label">Keyboard</div>
-      <div class="kv" style="margin-top:8px">
-        <span class="k">Ctrl K</span><span class="v">command palette</span>
-        <span class="k">Ctrl F</span><span class="v">find in report</span>
-        <span class="k">Ctrl S</span><span class="v">save notebook</span>
-        <span class="k">select</span><span class="v">highlight, note, quote to notebook, ask, lab run</span>
-      </div>
-      <div class="dim" style="margin-top:16px;font-size:11.5px">Open a session to see its intel, annotations, outline and live log.</div>`;
-    $$(".children a", body).forEach((a) => (a.onclick = () => openSession(a.dataset.id)));
+    body.innerHTML = `<div class="dim">Open a report to see its details, notes, outline and live log.</div>`;
     return;
   }
   if (S.rtab === "info") {
@@ -1502,22 +1648,13 @@ async function busy(btn, fn) {
 const safe = (fn) => async (...a) => { try { return await fn(...a); } catch (e) { toast(e.message || String(e), "err"); } };
 const PAL = { items: [], idx: 0 };
 function paletteItems(q) {
+  // the page's own actions first (what "..." and Share offer on this report), then every
+  // page and command from the registry, then projects, notebooks and reports
   const cmds = [
-    ["cmd", "New research", () => openLaunch()],
-    ["cmd", "Projects", openProjects],
-    ["cmd", "New project", () => PROJ.createDialog()],
-    ["cmd", "Sort inbox into projects", () => PROJ.openSorter()],
+    ...ACT.paletteRows(),
     ...PROJ.list.map((p) => ["project", p.title, () => PROJ.open(p.id)]),
-    ["cmd", "Semantic search", openSearch],
-    ["cmd", "New notebook", () => NB.create()],
-    ["cmd", "Research map", openMap],
-    ["cmd", "Data sources", openSources],
-    ["cmd", "All notes and highlights", openNotes],
-    ["cmd", "Lab runs", openLabRuns],
-    ["cmd", "Mission control", () => openTab({ key: "home", kind: "home", title: "Mission control" })],
-    ["cmd", "Refresh archive", () => { loadSessions(); loadStats(); }],
     ...S.notebooks.map((n) => ["notebook", n.title, () => openNotebook(n.id, n.title)]),
-    ...S.sessions.slice(0, 400).map((s) => ["#" + s.id, s.prompt, () => openSession(s.id)]),
+    ...S.sessions.slice(0, 400).map((s) => ["#" + s.id, reportTitle(s) + (s.title ? "  \u00b7  " + oneLine(s.prompt) : ""), () => openSession(s.id)]),
   ];
   const ql = q.toLowerCase();
   return (ql ? cmds.filter(([g, t]) => (g + " " + t).toLowerCase().includes(ql)) : cmds).slice(0, 40);
@@ -1547,37 +1684,90 @@ $("#palette-input").addEventListener("keydown", (e) => {
 });
 $("#palette-back").addEventListener("click", (e) => { if (e.target.id === "palette-back") $("#palette-back").hidden = true; });
 
-// ---------------------------------------------------------------- wiring
-// Drawers for narrow screens (archive left, inspector right).
-function drawer(side) {
-  const b = document.body, cls = `show-${side}`, other = side === "left" ? "show-right" : "show-left";
-  b.classList.remove(other);
-  b.classList.toggle(cls);
-  if (side === "right" && b.classList.contains(cls)) renderRight();
+// ---------------------------------------------------------------- settings
+// One place for the things that used to be scattered: workspace, API key, cluster
+// sign-in, Lab defaults, voice and library stats. Read-only views plus links to the
+// dialogs that already change each one.
+function openSettings() { openTab({ key: "settings", kind: "settings", title: "Settings" }); }
+async function renderSettings(v) {
+  const h = S.health || {};
+  const keyOk = h.api_key && h.api_key_valid !== false;
+  const ws = typeof WSUI !== "undefined" && WSUI.enabled ? (WSUI.list.find((w) => w.slug === WS.get()) || {}) : null;
+  v.innerHTML = `<div class="pad settings" style="max-width:760px"><h2 class="page-h">Settings</h2>
+    <section class="set-row"><div class="grow"><b>Workspace</b><div class="dim">${ws ? `${esc(ws.name || "Main")}. Each workspace is a separate library.` : "Workspaces are off (one library)."}</div></div>
+      ${ws ? '<button class="btn small" id="set-ws">Workspaces\u2026</button>' : ""}</section>
+    <section class="set-row"><div class="grow"><b>Gemini API key</b><div class="dim">${keyOk ? (h.api_key_valid === null ? "Set (could not check with Google just now)." : "Set and accepted by Google.") : h.api_key ? "Google rejected it." : "Not set."}</div>
+      ${keyOk ? "" : '<div class="dim">Run <span class="mono">deep-research auth login</span> in a terminal, then restart the dashboard.</div>'}</div>
+      <span class="status-badge ${keyOk ? "completed" : "failed"}">${keyOk ? "ok" : "fix"}</span></section>
+    <section class="set-row"><div class="grow"><b>Cluster sign-in</b><div class="dim" id="set-cluster">Checking\u2026</div></div></section>
+    <section class="set-row"><div class="grow"><b>Lab</b><div class="dim" id="set-lab">${esc(LAB.targetLabel || "No compute target configured")}</div></div>
+      <button class="btn small" id="set-labruns">Lab runs</button></section>
+    <section class="set-row"><div class="grow"><b>Read-aloud voice</b><div class="dim">AI audio: ${esc(localStorage.getItem("dr.aivoice") || "Charon")}. Browser voice: ${esc(localStorage.getItem("dr.voice") || "system default")}. Change either from a report's Listen or Share \u203a Audio.</div></div></section>
+    <section class="set-row"><div class="grow"><b>Library</b><div class="dim">${fmtN(S.stats?.total)} reports, ${fmtN(S.stats?.notebooks)} notebooks, ${fmtN(S.stats?.annotations)} notes.</div></div>
+      <button class="btn small" id="set-stats">Library stats</button></section>
+    <section class="set-row"><div class="grow"><b>Keyboard</b><div class="kv" style="margin-top:6px">
+      <span class="k">Ctrl K</span><span class="v">search reports, run any command</span>
+      <span class="k">i</span><span class="v">report info (details, notes, outline, live log)</span>
+      <span class="k">/</span><span class="v">ask a follow-up on the open report</span>
+      <span class="k">Ctrl F</span><span class="v">find in report</span>
+      <span class="k">Ctrl S</span><span class="v">save notebook</span>
+      <span class="k">select</span><span class="v">highlight, note, quote to notebook, ask, Lab run</span></div></div></section>
+    <p class="dim" style="font-size:11.5px">deep-research ${esc(h.version || "")}</p></div>`;
+  v.querySelector("#set-ws")?.addEventListener("click", () => WSUI.menu());
+  v.querySelector("#set-labruns").onclick = openLabRuns;
+  v.querySelector("#set-stats").onclick = openStats;
+  try {
+    const c = await api("/api/cluster/status");
+    if (stale(v)) return;
+    v.querySelector("#set-cluster").innerHTML = !c.configured ? "Not used: the Lab reaches the cluster over SSH."
+      : c.signed_in ? `Signed in to the cluster service as <b>${esc(c.email || "?")}</b> (program ${esc(c.program || "?")}${c.own_caps ? `, up to $${c.own_caps.max_cost_usd_per_day}/day` : ""}).`
+      : `Not signed in. Run <span class="mono">deep-research cluster login</span>, then restart the dashboard.`;
+  } catch (e) { if (!stale(v)) v.querySelector("#set-cluster").textContent = e.message; }
 }
-function closeDrawers() { document.body.classList.remove("show-left", "show-right"); }
+
+// ---------------------------------------------------------------- app actions
+Object.assign(APP_ACTIONS, {
+  new: () => openLaunch(), home: () => NAV.home(), projects: () => openProjects(), "new-project": () => PROJ.createDialog(),
+  "sort-inbox": () => PROJ.openSorter(), labruns: () => openLabRuns(), notes: () => openNotes(), sources: () => openSources(),
+  search: () => openSearch(), notebook: () => NB.create(), map: () => openMap(), settings: () => openSettings(),
+  stats: () => openStats(), workspaces: () => (typeof WSUI !== "undefined" && WSUI.enabled ? WSUI.menu() : openSettings()),
+  refresh: () => { loadSessions(); loadStats(); loadLabPulse(); },
+});
+
+// ---------------------------------------------------------------- wiring
+// The info sheet (right) is closed by default and opens from a report's Info button or
+// the i key; the sidebar (left) is a drawer on narrow screens.
+function openInfo() { document.body.classList.add("info-open"); document.body.classList.remove("show-left"); renderRight(); }
+function closeInfo() { document.body.classList.remove("info-open"); }
+function toggleInfo() { if (document.body.classList.contains("info-open")) closeInfo(); else openInfo(); }
+function drawer(side) {
+  if (side === "right") return toggleInfo();
+  document.body.classList.remove("info-open");
+  document.body.classList.toggle("show-left");
+}
+function closeDrawers() { document.body.classList.remove("show-left"); if (window.innerWidth < 1200) closeInfo(); }
+const NAV = { home: () => openTab({ key: "home", kind: "home", title: "Home" }), projects: openProjects, labruns: openLabRuns, notes: openNotes, sources: openSources, settings: () => openSettings() };
 $("#btn-left").onclick = () => drawer("left");
-$("#btn-right").onclick = () => drawer("right");
-$("#scrim").onclick = closeDrawers;
+$("#btn-right").onclick = closeInfo;
+$("#scrim").onclick = () => { document.body.classList.remove("show-left"); closeInfo(); };
 $("#btn-new").onclick = () => { closeDrawers(); openLaunch(); };
-$("#btn-sources").onclick = () => { closeDrawers(); openSources(); };
-$("#btn-projects").onclick = () => { closeDrawers(); openProjects(); };
-$("#btn-labruns").onclick = () => { closeDrawers(); openLabRuns(); };
-$("#nav-labruns").onclick = () => { closeDrawers(); openLabRuns(); };
-$("#nav-sources").onclick = () => { closeDrawers(); openSources(); };
-$("#btn-notes").onclick = () => { closeDrawers(); openNotes(); };
-$("#nav-notes").onclick = () => { closeDrawers(); openNotes(); };
+$("#sidenav").addEventListener("click", (e) => { const b = e.target.closest("[data-nav]"); if (b) { closeDrawers(); NAV[b.dataset.nav](); } });
+$("#btn-settings").onclick = () => { closeDrawers(); openSettings(); };
+$("#activity").onclick = openActivity;
+$("#tabbar").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-tb]"); if (!b) return;
+  const k = b.dataset.tb;
+  if (k === "reports") return drawer("left");
+  closeDrawers();
+  if (k === "home") NAV.home(); else if (k === "lab") openLabRuns(); else if (k === "new") openLaunch();
+});
 $("#btn-palette").onclick = openPalette;
 $("#q").addEventListener("input", debounce(async (e) => {
   S.q = e.target.value.trim();
   try { await loadSearch(); } catch (err) { toast(err.message, "err"); }
   renderSessionList();
 }, 250));
-$("#roots-only").onchange = (e) => { S.rootsOnly = e.target.checked; renderSessionList(); };
-$("#filter-seg").addEventListener("click", (e) => {
-  const b = e.target.closest("button"); if (!b) return;
-  S.filter = b.dataset.f; $$("#filter-seg button").forEach((x) => x.classList.toggle("on", x === b)); renderSessionList();
-});
+$("#filt-btn").onclick = (e) => filterMenu(e.currentTarget);
 $("#session-list").addEventListener("click", (e) => { const el = e.target.closest(".sess"); if (el) { closeDrawers(); openSession(el.dataset.id); } });
 $("#session-list").addEventListener("keydown", (e) => {
   const el = e.target.closest(".sess"); if (!el) return;
@@ -1589,43 +1779,48 @@ $("#tabs").addEventListener("click", (e) => {
   const t = e.target.closest(".tab"); if (t) activateTab(t.dataset.key);
 });
 $("#tabs").addEventListener("auxclick", (e) => { const t = e.target.closest(".tab"); if (e.button === 1 && t) closeTab(t.dataset.key); });
-$("#rtabs").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { S.rtab = b.dataset.r; renderRight(); } });
+$("#rtabs").addEventListener("click", (e) => { const b = e.target.closest("button[data-r]"); if (b) { S.rtab = b.dataset.r; renderRight(); } });
+const typing = (e) => e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]");
 document.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); openPalette(); }
+  else if (!mod && !e.altKey && !typing(e) && !MODAL.isOpen && $("#palette-back").hidden && e.key === "i" && currentTab()?.kind === "session") { e.preventDefault(); toggleInfo(); }
+  else if (!mod && !e.altKey && !typing(e) && !MODAL.isOpen && $("#palette-back").hidden && e.key === "/" && currentTab()?.kind === "session") { const ta = $("#ask-q"); if (ta && !ta.disabled) { e.preventDefault(); ta.focus(); } }
+  else if (e.key === "Escape" && document.body.classList.contains("info-open") && !MODAL.isOpen && !ACT.open && window.innerWidth < 1200) closeInfo();
   else if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); if (currentTab()?.kind === "notebook") NB.saveNow().then(() => toast("Saved", "ok")); }
-  else if (mod && e.key.toLowerCase() === "f" && currentTab()?.kind === "session") { e.preventDefault(); $('[data-a="find"]')?.click(); }
+  else if (mod && e.key.toLowerCase() === "f" && currentTab()?.kind === "session") { e.preventDefault(); ACT.run("find"); }
   else if (e.key === "Escape") hideSelbar();
 });
 window.addEventListener("beforeunload", (e) => { if (NB.dirty) { NB.saveNow(); e.preventDefault(); } });
 
 // ---------------------------------------------------------------- boot
 (async function boot() {
-  try { S.health = await api("/api/health?check=1"); $("#version").textContent = "v" + S.health.version; }
+  try { S.health = await api("/api/health?check=1"); }
   catch (e) {
     // the stored workspace may have been deleted or archived elsewhere: go back to Main
     if (WS.get() !== "main" && /404|409|not found|archived/i.test(String(e.message))) { WS.set("main"); location.reload(); return; }
     toast("Dashboard API unreachable", "err");
   }
   if (typeof WSUI !== "undefined") await WSUI.init(); // before any page renders (Copy to buttons)
-  await Promise.all([PROJ.load(), loadStats(), loadNotebooks(), LAB.loadTargets()]).catch((e) => toast(e.message, "err"));
+  await Promise.all([PROJ.load(), loadStats(), loadNotebooks(), LAB.loadTargets(), loadLabPulse()]).catch((e) => toast(e.message, "err"));
+  if (!SEEN.get()) SEEN.mark(); // first visit: nothing is "new" yet
   await loadSessions().catch((e) => toast(e.message, "err"));
   // If the user already opened something while boot was loading (the project strip
   // draws early), keep it instead of restoring saved tabs over it.
   if (!S.tabs.length) {
     try {
       const saved = JSON.parse(localStorage.getItem(WS.key(LS_TABS)) || "null");
-      if (saved?.tabs?.length) { S.tabs = saved.tabs; S.active = saved.active; }
+      if (saved?.tabs?.length) { S.tabs = saved.tabs.map((t) => (t.kind === "home" ? { ...t, title: "Home" } : t)); S.active = saved.active; }
     } catch { /* ignore */ }
   }
   const navigated = S.tabs.length && S.bootNav;
-  if (!S.tabs.find((t) => t.kind === "home")) S.tabs.unshift({ key: "home", kind: "home", title: "Mission control" });
+  if (!S.tabs.find((t) => t.kind === "home")) S.tabs.unshift({ key: "home", kind: "home", title: "Home" });
   if (!S.tabs.find((t) => t.key === S.active)) S.active = "home";
   renderTabs(); if (!navigated) renderStage();
   S.booted = true;
   // live refresh: fast while anything runs, slow otherwise
   const poll = async () => {
-    try { await loadSessions(); if (Math.random() < 0.3) loadStats(); } catch { /* offline */ }
+    try { await loadSessions(); if (Math.random() < 0.3) loadStats(); if (Math.random() < 0.25) loadLabPulse(); } catch { /* offline */ }
     setTimeout(poll, S.sessions.some((s) => s.status === "running") ? 4000 : 20000);
   };
   setTimeout(poll, 4000);

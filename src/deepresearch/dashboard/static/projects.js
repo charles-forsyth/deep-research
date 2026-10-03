@@ -29,7 +29,10 @@ const PROJ = {
 
   // ------------------------------------------------------------------ left pane
   renderStrip() {
-    const el = $("#proj-strip"); if (!el) return;
+    // v0.54.0: projects are chosen from the report filter menu; this strip stays as a
+    // hidden container (kept for the old element id) and the filter chip is refreshed
+    if (typeof renderFilterChips === "function") renderFilterChips();
+    const el = $("#proj-strip"); if (!el || el.hidden) return;
     const cur = S.project || "all";
     const row = (key, label, count, extra = "") => `<button class="proj-row ${String(cur) === String(key) ? "on" : ""}" data-p="${esc(key)}">${extra}<span class="t">${esc(label)}</span><span class="n">${count ?? ""}</span></button>`;
     el.innerHTML = `
