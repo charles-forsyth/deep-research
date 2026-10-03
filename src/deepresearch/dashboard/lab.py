@@ -1086,8 +1086,9 @@ def _slug(s: str, n: int = 40) -> str:
 
 
 def build_sbatch(
-    run_id: int, plan: dict, target: SlurmSSHTarget, sources: list | None = None
-) -> str:
+    run_id: int, plan: dict, target: SlurmSSHTarget, sources: list | None = None,
+    bifrost_inputs: bool = False,
+) -> str:  # fmt: skip
     r = plan.get("resources") or {}
     part = str(r.get("partition") or target.default_partition)
     if part not in target.partitions and target.partitions:
@@ -1205,8 +1206,9 @@ echo "[INFO] container {img} -> $HOME/deep-research-lab/images/{name}.sif"
         from deepresearch.sources.staging import staging_block
 
         body += staging_block(
-            sources, getattr(target, "remote_root", "~/deep-research-lab")
-        )
+            sources, getattr(target, "remote_root", "~/deep-research-lab"),
+            bifrost_inputs=bifrost_inputs,
+        )  # fmt: skip
     body += f"""
 stage "Running"
 cat > user_script.sh <<'DR_LAB_EOF'
@@ -1334,6 +1336,15 @@ def _uses_bifrost(target) -> bool:
     """A target opts in with a `bifrost` block in lab_targets.json ({} or {url})."""
     cfg = getattr(target, "cfg", None) or {}
     return "bifrost" in cfg and cfg["bifrost"] not in (False, None)
+
+
+def _bifrost_cfg(targets: dict) -> dict:
+    """The `bifrost` block of the first target that has one ({} when none)."""
+    for t in targets.values():
+        if _uses_bifrost(t):
+            cfg = (getattr(t, "cfg", None) or {}).get("bifrost")
+            return cfg if isinstance(cfg, dict) else {}
+    return {}
 
 
 def _bifrost_for(targets: dict, state_dir: Path):
@@ -2153,6 +2164,9 @@ class Lab(LabVerdictMixin):
         self.bifrost = (
             bifrost if bifrost is not None else _bifrost_for(self.targets, state_dir)
         )
+        # R2 (v0.55.0): the Lab's Slurm jobs through bifrost too, for targets whose
+        # bifrost block does not say `"jobs": false`
+        self.bifrost_jobs = None
         if self.bifrost is not None:
             from deepresearch.dashboard import bifrost as bf
 
@@ -2160,6 +2174,14 @@ class Lab(LabVerdictMixin):
             for t in self.targets.values():
                 if _uses_bifrost(t) and hasattr(t, "catalog_source"):
                     t.catalog_source = lambda c=client: bf.catalog(c)
+            cfg = _bifrost_cfg(self.targets)
+            if cfg.get("jobs", True) is not False:
+                self.bifrost_jobs = bf.BifrostJobs(
+                    client,
+                    max_usd_per_run=float(
+                        cfg.get("max_usd_per_run") or bf.DEFAULT_MAX_USD_PER_RUN
+                    ),
+                )
         for t in self.targets.values():
             if getattr(t, "catalog_path", ""):
                 try:
@@ -2178,6 +2200,8 @@ class Lab(LabVerdictMixin):
             str, set[str]
         ] = {}  # target -> partitions GCP can't fill
         self._gone_polls: dict[int, int] = {}
+        self._bf_stage: dict[int, tuple[float, str]] = {}  # run -> (when, last stage)
+        self._bf_round: dict[str, dict] | None = None  # this watcher round's jobs_list
         self._watch_lock = threading.Lock()
         self._watcher: threading.Thread | None = None
         self._stop = threading.Event()
@@ -2232,6 +2256,8 @@ class Lab(LabVerdictMixin):
                 conn.execute("ALTER TABLE lab_runs ADD COLUMN smoke TEXT")
             if "cluster" not in cols:  # bifrost: efficiency and diagnosis (v0.53.0)
                 conn.execute("ALTER TABLE lab_runs ADD COLUMN cluster TEXT")
+            if "cluster_jobs" not in cols:  # bifrost-run jobs of this run (v0.55.0)
+                conn.execute("ALTER TABLE lab_runs ADD COLUMN cluster_jobs TEXT")
             conn.commit()
 
     # ---- plumbing --------------------------------------------------------
@@ -2404,7 +2430,9 @@ class Lab(LabVerdictMixin):
     @staticmethod
     def _row(row) -> dict:
         d = dict(row)
-        for k in ("plan", "files", "data_sources", "verdict", "smoke", "cluster"):
+        for k in (
+            "plan", "files", "data_sources", "verdict", "smoke", "cluster", "cluster_jobs",
+        ):  # fmt: skip
             try:
                 d[k] = json.loads(d[k]) if d.get(k) else None
             except ValueError:
@@ -2493,7 +2521,7 @@ class Lab(LabVerdictMixin):
         """
         if not fields:
             return False
-        for k in ("plan", "files", "verdict", "smoke", "cluster"):
+        for k in ("plan", "files", "verdict", "smoke", "cluster", "cluster_jobs"):
             if k in fields and not isinstance(fields[k], (str, type(None))):
                 fields[k] = json.dumps(fields[k])
         fields["updated_at"] = _now()
@@ -3514,7 +3542,10 @@ class Lab(LabVerdictMixin):
         log = log_path.read_text("utf-8", "replace") if log_path.exists() else ""
         if not log.strip() and run.get("job_id"):
             try:
-                log, _ = tgt.log(run_id, 0)
+                if self._bf_run(run) and self.bifrost_jobs is not None:
+                    log = self.bifrost_jobs.log_text(str(run["job_id"]))
+                else:
+                    log, _ = tgt.log(run_id, 0)
             except Exception:  # cluster unreachable: fix from state alone
                 log = ""
         self._fresh_catalog(tgt)
@@ -3636,8 +3667,14 @@ class Lab(LabVerdictMixin):
             sources = self._plan_sources(plan)
             from deepresearch.sources.staging import relay_upload, sources_json
 
+            bf_jobs = (
+                self._jobs_for(tgt)
+                if not self._smoke_applies(tgt, plan)
+                and not self._warm_full_ok(tgt, plan)
+                else None
+            )
             for src in sources:
-                if src.effective_staging == "relay":
+                if src.effective_staging == "relay" and bf_jobs is None:
                     self._update(
                         run_id, stage=f"Uploading data source {src.name} to the cluster"
                     )
@@ -3716,7 +3753,7 @@ class Lab(LabVerdictMixin):
             # so stop it rather than leave it billing untracked.
             self._update(run_id, job_id=job)
             try:
-                tgt.cancel(job)
+                self._cancel_job(self.get(run_id) or run, tgt, job)
             except Exception:
                 pass
         self.ensure_watcher()
@@ -3769,7 +3806,7 @@ class Lab(LabVerdictMixin):
             tgt = self.target(run["target"])
             if tgt:
                 try:
-                    tgt.cancel(run["job_id"])
+                    self._cancel_job(run, tgt, run["job_id"])
                 except Exception:
                     # scancel fails when the job ended between the page's last poll
                     # and this click; the watcher has then moved the run on.
@@ -3820,19 +3857,25 @@ class Lab(LabVerdictMixin):
         if new == cur:
             return False
         try:
-            tgt.cancel(run["job_id"])
+            self._cancel_job(run, tgt, run["job_id"])
         except Exception:
             return False
         plan["resources"] = {**(plan.get("resources") or {}), "partition": new}
         plan["partition_switched"] = f"{cur} -> {new} (GCP had no capacity for {cur})"
         script = build_sbatch(run["id"], plan, tgt, self._safe_sources(plan))
         try:
-            tgt.upload(
-                run["id"],
-                {"run.sbatch": script, "plan.json": json.dumps(plan, indent=2)},
-                fresh=False,
-            )
-            job = tgt.sbatch_uploaded(run["id"])
+            if self._bf_run(run) and self.bifrost_jobs is not None:
+                job = self._bifrost_submit(
+                    run["id"], tgt, plan, self.bifrost_jobs, why="partition switch"
+                )
+                script = (self.get(run["id"]) or {}).get("script") or script
+            else:
+                tgt.upload(
+                    run["id"],
+                    {"run.sbatch": script, "plan.json": json.dumps(plan, indent=2)},
+                    fresh=False,
+                )
+                job = tgt.sbatch_uploaded(run["id"])
         except Exception as e:
             self._update(
                 run["id"],
@@ -4105,9 +4148,131 @@ class Lab(LabVerdictMixin):
             )
             self._keep_warm(tgt, force=True)
             return "warm:" + task
+        jobs = self._jobs_for(tgt)
+        if jobs is not None:
+            return self._bifrost_submit(run_id, tgt, plan, jobs, why="full")
         if files:
             return tgt.submit(run_id, files)
         return tgt.sbatch_uploaded(run_id)
+
+    # ---- bifrost jobs (R2, v0.55.0) ----------------------------------------------
+    def _jobs_for(self, tgt):
+        """The bifrost job client when this target runs its Slurm jobs through bifrost."""
+        if self.bifrost_jobs is not None and tgt is not None and _uses_bifrost(tgt):
+            return self.bifrost_jobs
+        return None
+
+    @staticmethod
+    def _bf_run(run: dict) -> bool:
+        """Whether the run's current job was submitted through bifrost."""
+        job = str(run.get("job_id") or "")
+        return bool(job) and any(
+            str(j.get("job_id")) == job for j in run.get("cluster_jobs") or []
+        )
+
+    def _bifrost_submit(self, run_id: int, tgt, plan: dict, jobs, why: str) -> str:
+        """Build the run's script and submit it through bifrost (prepare, guards,
+        confirm). The Submit click on the reviewed draft is the approval (SPEC 20.21).
+        Returns the job id; raises NotSubmitted when nothing reached the scheduler."""
+        from deepresearch.dashboard import bifrost as bf
+        from deepresearch.sources.staging import bifrost_relay
+
+        run = self.get(run_id) or {}
+        sources = self._plan_sources(plan)
+        inputs: list[str] = []
+        try:
+            for src in sources:
+                if src.effective_staging == "relay":
+                    self._update(
+                        run_id, stage=f"Staging data source {src.name} for the cluster"
+                    )
+                    uid = bifrost_relay(
+                        jobs, src, getattr(tgt, "remote_root", "~/deep-research-lab")
+                    )
+                    self.sources.save_check(src)
+                    if uid:
+                        inputs.append(uid)
+            script = build_sbatch(run_id, plan, tgt, sources, bifrost_inputs=True)
+            m = re.search(r"^#SBATCH --job-name=(\S+)", script, re.M)
+            est = run.get("estimate_usd") or estimate_cost(tgt, plan)
+            # the reviewed estimate bounds what may be confirmed without a new click
+            budget = jobs.max_usd_per_run
+            if est:
+                budget = min(budget, max(3 * float(est), 1.0))
+            prev = list(run.get("cluster_jobs") or [])
+            got = bf.BifrostJobs(
+                jobs.c, max_usd_per_run=budget, http_get=jobs._get, http_put=jobs._put
+            ).submit(
+                script, m.group(1) if m else f"lab-{run_id}", inputs,
+                submits_so_far=len(prev),
+            )  # fmt: skip
+        except bf.NotSignedIn as e:
+            raise NotSubmitted(
+                "cluster sign-in expired: run `deep-research cluster login`, then "
+                "restart the dashboard"
+            ) from e
+        except bf.SubmitRefused as e:
+            raise NotSubmitted(f"bifrost refused the job: {e}") from e
+        except bf.BifrostError as e:
+            if "cannot reach bifrost" in str(e):
+                raise NotSubmitted(str(e)) from e
+            raise
+        prev.append({**got, "why": why, "at": _now(), "inputs": inputs})
+        # recorded before anything else, so a cancel goes to bifrost from now on
+        self._update(run_id, cluster_jobs=prev, script=script)
+        return got["job_id"]
+
+    def _cancel_job(self, run: dict, tgt, job: str) -> None:
+        if self._bf_run({**run, "job_id": job}):
+            if self.bifrost_jobs is None:
+                raise TargetError(
+                    "this job runs through bifrost and the dashboard is not signed in: "
+                    "run `deep-research cluster login` and restart, or cancel it on the "
+                    "cluster (scancel " + str(job) + ")"
+                )
+            self.bifrost_jobs.cancel(job)
+            return
+        tgt.cancel(job)
+
+    def _bf_status(self, run: dict) -> dict:
+        """bifrost's view of the run's job in the shape SlurmSSHTarget.status returns.
+        Uses this watcher round's batched jobs_list answer when there is one."""
+        jobs = self.bifrost_jobs
+        job = str(run["job_id"])
+        rows = getattr(self, "_bf_round", None)
+        if rows is None or job not in rows:
+            rows = {**(rows or {}), **jobs.states([job])}  # type: ignore[union-attr]
+        r = rows.get(job) or {}
+        state = str(r.get("state") or "").split()[0] if r.get("state") else ""
+        stage = ""
+        now = time.monotonic()
+        seen = self._bf_stage.get(run["id"])
+        if state in ("RUNNING", "COMPLETING") or not r:
+            if seen and now - seen[0] < self.BF_STAGE_EVERY_S:
+                stage = seen[1]
+            else:
+                try:
+                    stage = jobs.stage(job)  # type: ignore[union-attr]
+                except Exception:
+                    stage = seen[1] if seen else ""
+                if stage:  # nothing written yet: look again next round, not in a minute
+                    self._bf_stage[run["id"]] = (now, stage)
+        el = int(r.get("elapsed_s") or 0)
+        return {
+            "slurm_state": state,
+            "reason": str(r.get("reason") or ""),
+            "elapsed": f"{el // 3600:d}:{(el % 3600) // 60:02d}:{el % 60:02d}"
+            if el
+            else "",
+            "node": str(r.get("nodes") or ""),
+            "exit_code": str(r.get("exit_code") or ""),
+            "started": str(r.get("started") or ""),
+            "stage": stage,
+            "log_size": 0,
+            "node_fails": int(r.get("restarts") or 0),
+        }
+
+    BF_STAGE_EVERY_S = 60.0  # stage.txt read at most once a minute per running run
 
     def _start_smoke(
         self, run_id: int, tgt, plan: dict, round_no: int, original: dict,
@@ -4588,6 +4753,15 @@ class Lab(LabVerdictMixin):
         local = self.results_dir / f"run_{run_id}" / "job.log"
         if run["status"] in ("completed", "failed", "cancelled") and local.exists():
             data = local.read_bytes()
+            if offset < 0:  # a line count from the bifrost live log: continue after it
+                cut = 0
+                for _ in range(-offset):
+                    nl = data.find(b"\n", cut)
+                    if nl < 0:
+                        cut = len(data)
+                        break
+                    cut = nl + 1
+                offset = cut
             off = offset if 0 <= offset <= len(data) else 0
             return {
                 "text": data[off:].decode("utf-8", "replace"),
@@ -4608,8 +4782,32 @@ class Lab(LabVerdictMixin):
             return {"text": "", "size": 0, "source": "none"}
         if not tgt:
             return {"text": "", "size": 0, "source": "none"}
+        if self._bf_run(run):
+            return self._bf_log(run, offset)
         text, size = tgt.log(run_id, offset)
         return {"text": text, "size": size, "source": "cluster"}
+
+    def _bf_log(self, run: dict, offset: int) -> dict:
+        """Live log through bifrost, paged by line. The returned size is the NEGATIVE
+        last line number, so the page sends it back as the offset unchanged and the
+        next call continues after it (also once the log is local)."""
+        from deepresearch.dashboard import bifrost as bf
+
+        if self.bifrost_jobs is None:
+            raise TargetError(
+                "this job runs through bifrost: run `deep-research cluster login`, "
+                "then restart the dashboard"
+            )
+        start = -offset + 1 if offset < 0 else 0  # 0 = the end of the log
+        try:
+            w = self.bifrost_jobs.log(str(run["job_id"]), start, 400)
+        except bf.BifrostError as e:
+            raise TargetError(str(e)) from e
+        text = w["text"]
+        if start and w["first_line"] > start:
+            text = f"[... {w['first_line'] - start} lines not shown ...]\n" + text
+        last = w["last_line"] or (start - 1 if start else 0)
+        return {"text": text, "size": -last if last else offset, "source": "bifrost"}
 
     # ---- watcher ---------------------------------------------------------
     def ensure_watcher(self) -> None:
@@ -4634,6 +4832,7 @@ class Lab(LabVerdictMixin):
                     return
             else:
                 idle_rounds = 0
+            self._bf_round = self._bifrost_round(runs)
             for run in runs:
                 try:
                     self.poll(run)
@@ -4641,7 +4840,21 @@ class Lab(LabVerdictMixin):
                     self._update(
                         run["id"], only_if=ACTIVE, error=f"watcher: {str(e)[:300]}"
                     )
+            self._bf_round = None
             self._stop.wait(interval)
+
+    def _bifrost_round(self, runs: list[dict]) -> dict[str, dict] | None:
+        """One jobs_list call for every bifrost-run job this round (SPEC 20.21)."""
+        ids = [
+            str(r["job_id"]) for r in runs
+            if r["status"] in ("queued", "running") and self._bf_run(r)
+        ]  # fmt: skip
+        if not ids or self.bifrost_jobs is None:
+            return None
+        try:
+            return self.bifrost_jobs.states(ids)
+        except Exception:
+            return None  # each poll then asks for its own job (and reports errors)
 
     def poll(self, run: dict) -> None:
         """Advance one active run by one step. Safe to call repeatedly."""
@@ -4669,9 +4882,20 @@ class Lab(LabVerdictMixin):
             self._keep_warm(tgt)
         if not tgt or not run.get("job_id"):
             return
+        if self._bf_run(run) and self.bifrost_jobs is None:
+            self._update(
+                run["id"], only_if=ACTIVE,
+                error="This job runs through bifrost and the dashboard is not signed in: "
+                "run `deep-research cluster login`, then restart the dashboard.",
+            )  # fmt: skip
+            return
         if run["status"] in ("fetching", "analyzing"):
             return self._finish(run, tgt)
-        st = tgt.status(run["id"], run["job_id"])
+        st = (
+            self._bf_status(run)
+            if self._bf_run(run)
+            else tgt.status(run["id"], run["job_id"])
+        )
         state = st["slurm_state"]
         stage = st["stage"] or run.get("stage")
         upd: dict[str, Any] = {
@@ -4707,6 +4931,9 @@ class Lab(LabVerdictMixin):
                 )
             upd.update(status="queued", stage=label)
         elif state in ("RUNNING", "COMPLETING"):
+            # a queue label left from before the job started is not a stage
+            if not st["stage"] and run["status"] != "running":
+                stage = ""
             upd.update(status="running", stage=stage or "Running")
         elif not state and run["status"] == "running":
             # squeue and sacct both know nothing (accounting off, or the record aged
@@ -4747,7 +4974,11 @@ class Lab(LabVerdictMixin):
         final = SLURM_DONE.get(state.split()[0] if state else "", "failed")
         if run["status"] == "fetching":
             try:
-                files = tgt.fetch(run["id"], dest)
+                files = (
+                    self._bf_fetch(run, dest)
+                    if self._bf_run(run)
+                    else tgt.fetch(run["id"], dest)
+                )
             except Exception as e:
                 # A fetch can block the watcher for up to 10 minutes; stop retrying
                 # after a few attempts instead of stalling every other run forever.
@@ -4816,6 +5047,25 @@ class Lab(LabVerdictMixin):
             self._attach_note(done)
             if outcome and outcome["outcome"] == "inconclusive":
                 self._maybe_auto_replan(done)
+
+    _BF_FETCH = re.compile(r"(outputs/.+|job\.log|stage\.txt)")
+
+    def _bf_fetch(self, run: dict, dest: Path) -> list[dict]:
+        """outputs/, job.log and stage.txt from bifrost's job folder (exact bytes via
+        signed links), plus the run's own script and plan written locally. Never the
+        folder's job.sbatch: bifrost adds signed input links to it."""
+        files = self.bifrost_jobs.fetch(  # type: ignore[union-attr]
+            str(run["job_id"]), dest, MAX_FETCH_BYTES, MAX_FILE_BYTES,
+            keep=lambda p: bool(self._BF_FETCH.fullmatch(p)),
+        )  # fmt: skip
+        for name, text in (
+            ("run.sbatch", run.get("script") or ""),
+            ("plan.json", json.dumps(run.get("plan") or {}, indent=2)),
+        ):
+            if text:
+                (dest / name).write_text(text)
+                files.append({"path": name, "size": len(text.encode())})
+        return files
 
     def _record_cluster_facts(self, run: dict, final: str) -> None:
         """bifrost's view of a finished Slurm job, kept on the run (R1).

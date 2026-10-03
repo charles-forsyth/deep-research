@@ -98,9 +98,22 @@ def make_server(fake: Fake):
                     }
                 else:
                     ans = fake.answers.get(name, {})
-                    ans = ans(args) if callable(ans) else ans
-                    env = {"data": ans, "source": {"backend": "fake"}, "as_of": "now"}
-                    res = {"content": [{"type": "text", "text": json.dumps(env)}]}
+                    try:
+                        ans = ans(args) if callable(ans) else ans
+                    except Exception as e:  # an answer may refuse, like a real tool
+                        ans = e
+                    if isinstance(ans, Exception):
+                        res = {
+                            "content": [{"type": "text", "text": str(ans)}],
+                            "isError": True,
+                        }
+                    else:
+                        env = {
+                            "data": ans,
+                            "source": {"backend": "fake"},
+                            "as_of": "now",
+                        }
+                        res = {"content": [{"type": "text", "text": json.dumps(env)}]}
                 return self._json(
                     200, {"jsonrpc": "2.0", "id": msg["id"], "result": res}
                 )
