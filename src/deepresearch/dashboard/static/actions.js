@@ -42,6 +42,7 @@ const ACTIONS = [
   { id: "new-project", scope: "app", label: "New project" },
   { id: "sort-inbox", scope: "app", label: "Sort inbox into projects" },
   { id: "labruns", scope: "app", label: "Lab runs" },
+  { id: "cluster", scope: "app", label: "Cluster view", hint: "Live cluster state, our jobs, spend and storage (bifrost)" },
   { id: "notes", scope: "app", label: "All notes and highlights" },
   { id: "sources", scope: "app", label: "Data sources" },
   { id: "search", scope: "app", label: "Semantic search" },

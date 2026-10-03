@@ -634,10 +634,11 @@ const LAB = {
   async renderAll(v) {
     v.innerHTML = `<div class="runs-view"><div class="runs-head"><h2>Lab runs</h2>
       <select id="runs-filter" aria-label="Filter lab runs"><option value="">All</option><option value="live">Running or queued</option><option value="draft">Waiting for review</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select>
-      <span class="grow"></span><span class="dim" id="runs-count"></span></div>
+      <span class="grow"></span><span class="dim" id="runs-count"></span><button class="btn small" id="runs-cluster" title="What the cluster is doing for us: live state, jobs, spend, storage">Cluster view</button></div>
       <div id="warm-box" class="dim" style="font-size:12px;margin:6px 0 10px"></div>
       <div id="runs-body"><span class="spinner"></span></div></div>`;
     this.warmBox();
+    $("#runs-cluster").onclick = () => openCluster();
     const live = ["planning", "submitting", "smoke", "queued", "running", "fetching", "analyzing"];
     const draw = (runs) => {
       const f = $("#runs-filter").value;

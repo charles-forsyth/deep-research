@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.56.1 (package `deepresearch`) |
+| Applies to | deep-research v0.57.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -277,6 +277,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | `dashboard/projects.py` | 1,028 | Projects: store, filing rules, citations, dossier and research package exports, summary/Ask prompts, Inbox grouping (22). |
 | `dashboard/project_api.py` | 752 | Project HTTP handlers mixed into `Api` (22.6), including the claims board in dossiers. |
 | `dashboard/claims.py` | 170 | Claims board (22.9): one claim per tested question, outcome ordering, deterministic. |
+| `dashboard/clusterview.py` | 150 | The Lab's Cluster view (20.23, v0.57.0): five bifrost read panels (`cluster_status`, `jobs_list`, `my_usage`, `waste_report`, `storage_usage`) cached per panel with a background refresh, and `lab_summary` (the workspace's Lab runs, their Slurm job ids, outcomes and spend). |
 | `dashboard/bifrost.py` | 470 | The hosted ursa-bifrost MCP server as a cluster backend (20.20, v0.53.0): `BifrostClient` (stdlib MCP over Streamable HTTP, OAuth sign-in with PKCE as the `bifrost-deep-research` program client, rotating refresh under a lock, 401 retry), and the Lab's reads: `stockouts`, `script_issues`, `explain` (rule -> Lab class), `efficiency`, `read_home`, `catalog`; and the Lab's jobs (20.21, v0.55.0): `BifrostJobs` (submit with self-confirmation inside guards, batched `states`, line-paged `log`, `fetch` through read and signed links, `cancel`, staging `upload`). |
 | `cli/cluster.py` | 80 | `deep-research cluster login | logout | status` (20.20). |
 | `dashboard/cluster.py` | 918 | Cluster access (v0.52.0): `SlurmSSHTarget` (SSH via gcloud IAP or a plain host, one ControlMaster connection, sbatch/squeue/sacct, run folders, warm worker and spool, file transfer, catalog cache), `ScopedTarget` (a workspace's view), `load_targets`. No model or database code. |
@@ -289,7 +290,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | `dashboard/labfetch.py` | 322 | Fetch on this laptop for cluster-blocked URLs (20.18): blocked-URL detection, safe fetch, provenance. |
 | `dashboard/warm_worker.sh` | 125 | Warm worker on the cluster: spool queue, parallel tasks, heartbeats, idle and time-limit handling (20.16). |
 | `sources/` | 3,458 | Data sources (section 21): `model`, `registry`, `adapters`, `public`, `staging`, `usage`, `index`, `discover`, `cloud_catalogs`, `provenance`, `service`, `browse`, `gdrive`. |
-| `dashboard/static/` | 5,261 | `index.html`, `app.css`, `app.js`, `actions.js`, `features.js`, `lab.js`, `sources.js`, `filebrowser.js`, `projects.js`, `workspaces.js`, vendored `marked` and `DOMPurify`. |
+| `dashboard/static/` | 5,261 | `index.html`, `app.css`, `app.js`, `actions.js`, `features.js`, `lab.js`, `cluster.js`, `sources.js`, `filebrowser.js`, `projects.js`, `workspaces.js`, vendored `marked` and `DOMPurify`. |
 
 Total Python: about 21,600 lines. Total client: about 5,300 lines plus vendored libraries. Line counts as of v0.50.1.
 
@@ -2268,6 +2269,31 @@ for Lab work:
   never starts a worker. The warm worker code stays for targets without bifrost and as
   the fallback when signed out.
 
+### 20.23 Cluster view and the report's cluster jobs (v0.57.0)
+
+**Cluster view.** A Lab page (sidebar *Cluster* under *Lab*, the Lab runs page's
+*Cluster view* button, Ctrl K) showing what Ursa Major is doing for us, read through
+bifrost as the Lab's program client. Four sections, each with "as of" time:
+
+| Section | Source | Shows |
+|---|---|---|
+| Now | `cluster_status` (cached 30 s, re-read every 30 s while open) | spend per hour, nodes up, running and waiting jobs, our live Lab runs; one bar per partition (busy, booting, idle and billing, down, as a share of that partition's nodes) with its price; problem nodes; nodes billing with no job |
+| Our jobs | `jobs_list` 14 days (60 s) + `waste_report` 7 days (10 min) | totals, completion rate, failures, a jobs-per-day column chart by outcome, the latest 12 jobs with Lab runs and pilots named and linked, avoidable-spend kinds |
+| Spend and efficiency | `my_usage` by partition 30 days (10 min) + local Lab runs | cluster spend, CPU efficiency weighted by core-hours, Lab runs with AI and worst-case cluster spend, spend and efficiency per partition, Lab outcomes |
+| Storage | `storage_usage` (30 min; the read takes ~100 s) | shared filesystem use, our home and scratch, largest folders in home |
+
+`GET /api/cluster/panel/{name}` (now, jobs, usage, waste, storage) returns
+`{data, error, fetched_at, age_s, refreshing}`, `{loading: true}` while a first read is
+running (the page polls), or `{signed_in: false}`. Panels are cached per process with a
+background refresh; a failed read keeps the last answer and reports the error. Only
+read tools are called. `GET /api/cluster/lab?days=N` summarises the workspace's Lab
+runs (no cluster call). Charts are plain HTML/CSS, no library.
+
+**Report's cluster jobs.** The Live log tab of a report shows that report's Lab runs
+and their Slurm jobs (status, stage, node, elapsed, the last three job ids with their
+partition and purpose). Runs on the cluster now go to the top of the tab and refresh
+every 10 s; finished ones sit below the report's timeline and refresh every minute.
+
 ## 21. Data sources
 
 A data source is a named reference to data that lives somewhere else: an open dataset
@@ -3010,3 +3036,4 @@ before v0.39.0).
 | 2026-10-03 | v0.55.0 | Lab jobs through ursa-bifrost (20.21, R2): submit with self-confirmation inside guards, batched watcher, line-paged logs, fetch through read and signed links, cancel, relay data sources through bifrost staging; `lab_runs.cluster_jobs` (8.2); target keys `bifrost.jobs` and `bifrost.max_usd_per_run` (20.3). |
 | 2026-10-03 | v0.56.0 | Pilots and planning checks through ursa-bifrost on the always-on `check` partition (20.22, R3); no SSH for Lab work while signed in; short full runs no longer use the warm node; target key `bifrost.check_partition` (20.3). |
 | 2026-10-03 | v0.56.1 | Audio jobs started in a workspace write to that workspace (the worker thread captured Main's context). |
+| 2026-10-03 | v0.57.0 | Lab Cluster view through bifrost (20.23): Now, Our jobs, Spend and efficiency, Storage; routes `GET /api/cluster/panel/{name}`, `GET /api/cluster/lab`; `dashboard/clusterview.py`, `static/cluster.js`; the report's cluster jobs on the Live log tab. |

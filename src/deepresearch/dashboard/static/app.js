@@ -412,7 +412,7 @@ async function closeTab(key) {
   if (!S.tabs.length) { S.tabs.push({ key: "home", kind: "home", title: "Home" }); S.active = "home"; }
   saveTabs(); renderTabs(); renderStage();
 }
-const ICONS = { settings: "\u2699", stats: "\u2211", labruns: "\u2697", sources: "\u25A6", project: "\u25A3", projects: "\u25A3", sorter: "\u21C5", notes: "\u270E", home: "\u25CE", session: "\u00a7", notebook: "\u270E", launch: "+", search: "\u2315", tree: "\u2937", map: "\u2B21", compare: "\u21C4" };
+const ICONS = { settings: "\u2699", stats: "\u2211", labruns: "\u2697", cluster: "\u25A6", sources: "\u25A6", project: "\u25A3", projects: "\u25A3", sorter: "\u21C5", notes: "\u270E", home: "\u25CE", session: "\u00a7", notebook: "\u270E", launch: "+", search: "\u2315", tree: "\u2937", map: "\u2B21", compare: "\u21C4" };
 function renderTabs() {
   $("#tabs").setAttribute("role", "tablist");
   // one open page needs no tab strip; it appears once a second page opens
@@ -508,6 +508,7 @@ async function renderNotes(v) {
   draw();
 }
 function openLabRuns() { openTab({ key: "labruns", kind: "labruns", title: "Lab runs" }); }
+function openCluster() { openTab({ key: "cluster", kind: "cluster", title: "Cluster" }); }
 function openCompare(a, b) { openTab({ key: `c${a}-${b}`, kind: "compare", a: Number(a), b: Number(b), title: `#${a} \u21C4 #${b}` }); }
 
 function renderStage() {
@@ -523,9 +524,9 @@ function renderStage() {
   stage.appendChild(v);
   ACT.unbind(); ACT.closeMenu();
   if (t.kind !== "session" && window.innerWidth < 1200) closeInfo();
-  $$("#sidenav [data-nav]").forEach((b) => b.classList.toggle("on", b.dataset.nav === ({ home: "home", projects: "projects", project: "projects", sorter: "projects", labruns: "labruns", notes: "notes", sources: "sources", source: "sources", settings: "settings", stats: "settings" }[t.kind] || "")));
+  $$("#sidenav [data-nav]").forEach((b) => b.classList.toggle("on", b.dataset.nav === ({ home: "home", projects: "projects", project: "projects", sorter: "projects", labruns: "labruns", cluster: "cluster", notes: "notes", sources: "sources", source: "sources", settings: "settings", stats: "settings" }[t.kind] || "")));
   $$("#tabbar [data-tb]").forEach((b) => b.classList.toggle("on", b.dataset.tb === ({ home: "home", session: "reports", labruns: "lab", launch: "new" }[t.kind] || "")));
-  const renderers = { stats: renderStats, settings: renderSettings, home: renderHome, session: renderSession, notebook: renderNotebook, launch: renderLaunch, search: renderSearch, tree: renderTree, map: renderMap, compare: renderCompare, sources: (v) => SRC.render(v), project: (v, t) => PROJ.render(v, t), projects: renderProjects, sorter: (v) => PROJ.renderSorter(v), labruns: (v) => LAB.renderAll(v), notes: renderNotes, source: (v, t) => SRC.renderOne(v, t.id) };
+  const renderers = { stats: renderStats, settings: renderSettings, home: renderHome, session: renderSession, notebook: renderNotebook, launch: renderLaunch, search: renderSearch, tree: renderTree, map: renderMap, compare: renderCompare, sources: (v) => SRC.render(v), project: (v, t) => PROJ.render(v, t), projects: renderProjects, sorter: (v) => PROJ.renderSorter(v), labruns: (v) => LAB.renderAll(v), cluster: (v) => CLV.render(v), notes: renderNotes, source: (v, t) => SRC.renderOne(v, t.id) };
   const gen = ++RENDER_GEN;
   v.dataset.gen = gen;
   (renderers[t.kind] || renderHome)(v, t);
@@ -1511,12 +1512,29 @@ function renderRight() {
     body.innerHTML = `<div class="outline">${hs.map((h) => `<a href="#" data-h="${h.id}" style="--lvl:${+h.tagName[1] - 1}">${esc(h.textContent)}</a>`).join("") || '<div class="dim">No headings in this report.</div>'}</div>`;
     $$(".outline a", body).forEach((a) => (a.onclick = (e) => { e.preventDefault(); document.getElementById(a.dataset.h)?.scrollIntoView({ behavior: "smooth", block: "start" }); }));
   } else if (S.rtab === "log") {
-    body.innerHTML = `<div id="timeline"></div>
+    body.innerHTML = `<div id="timeline"></div><div id="lablive" class="lablive"></div>
       <details class="rawlog" ${s.status === "running" ? "" : ""}><summary class="label">Raw log: session_${s.id}.log ${s.status === "running" ? '<span class="spinner" style="margin-left:6px"></span>' : ""}</summary><div class="log" id="log"></div></details>`;
     TIMELINE.start(s);
     startLog(s);
+    LABLIVE.start(s);
   }
 }
+// The report's cluster jobs on the Live log tab (v0.57.0): every 10 s while a Lab run of
+// this report is active, every minute otherwise; stops when the tab changes.
+const LABLIVE = {
+  timer: null, sid: null,
+  stop() { clearTimeout(LABLIVE.timer); LABLIVE.sid = null; },
+  start(s) {
+    LABLIVE.stop(); LABLIVE.sid = s.id;
+    const tick = async () => {
+      if (LABLIVE.sid !== s.id || !$("#lablive")) return;
+      let n = 0;
+      try { n = await CLV.jobsBox(s); } catch { /* transient */ }
+      if (LABLIVE.sid === s.id) LABLIVE.timer = setTimeout(tick, n ? 10000 : 60000);
+    };
+    tick();
+  },
+};
 function colorLog(text) {
   return esc(text)
     .replace(/^(.*\[THOUGHT\].*)$/gm, '<span class="th">$1</span>')
@@ -1525,7 +1543,7 @@ function colorLog(text) {
     .replace(/^(.*\[WARN\].*)$/gm, '<span class="wa">$1</span>');
 }
 let LOG_GEN = 0;
-function stopLog() { clearTimeout(LOG.timer); LOG.sid = null; LOG_GEN++; TIMELINE.stop(); }
+function stopLog() { clearTimeout(LOG.timer); LOG.sid = null; LOG_GEN++; TIMELINE.stop(); LABLIVE.stop(); }
 async function startLog(s) {
   stopLog();
   const gen = LOG_GEN; // a tick from an older loop (same session, re-rendered) stops itself
@@ -1728,7 +1746,7 @@ async function renderSettings(v) {
 // ---------------------------------------------------------------- app actions
 Object.assign(APP_ACTIONS, {
   new: () => openLaunch(), home: () => NAV.home(), projects: () => openProjects(), "new-project": () => PROJ.createDialog(),
-  "sort-inbox": () => PROJ.openSorter(), labruns: () => openLabRuns(), notes: () => openNotes(), sources: () => openSources(),
+  "sort-inbox": () => PROJ.openSorter(), labruns: () => openLabRuns(), cluster: () => openCluster(), notes: () => openNotes(), sources: () => openSources(),
   search: () => openSearch(), notebook: () => NB.create(), map: () => openMap(), settings: () => openSettings(),
   stats: () => openStats(), workspaces: () => (typeof WSUI !== "undefined" && WSUI.enabled ? WSUI.menu() : openSettings()),
   refresh: () => { loadSessions(); loadStats(); loadLabPulse(); },
@@ -1746,7 +1764,7 @@ function drawer(side) {
   document.body.classList.toggle("show-left");
 }
 function closeDrawers() { document.body.classList.remove("show-left"); if (window.innerWidth < 1200) closeInfo(); }
-const NAV = { home: () => openTab({ key: "home", kind: "home", title: "Home" }), projects: openProjects, labruns: openLabRuns, notes: openNotes, sources: openSources, settings: () => openSettings() };
+const NAV = { home: () => openTab({ key: "home", kind: "home", title: "Home" }), projects: openProjects, labruns: openLabRuns, cluster: openCluster, notes: openNotes, sources: openSources, settings: () => openSettings() };
 $("#btn-left").onclick = () => drawer("left");
 $("#btn-right").onclick = closeInfo;
 $("#scrim").onclick = () => { document.body.classList.remove("show-left"); closeInfo(); };

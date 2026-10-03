@@ -7,6 +7,17 @@ releases.
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-10-03
+
+### Added
+- Cluster view in the Lab (sidebar *Cluster*, *Cluster view* on the Lab runs page,
+  Ctrl K): live cluster state with one bar per partition, our jobs over 14 days with a
+  jobs-per-day chart and Lab runs named, spend and CPU efficiency by partition with Lab
+  outcomes, and storage. Read through bifrost; each panel is cached and refreshed in the
+  background, so the page opens at once.
+- The Live log tab of a report shows that report's cluster jobs (status, stage, node,
+  elapsed, job ids), refreshing every 10 s while one runs.
+
 ## [0.56.1] - 2026-10-03
 
 ### Fixed
