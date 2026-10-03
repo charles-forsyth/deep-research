@@ -434,6 +434,13 @@ def test_workload_shape_and_partition_suggestion():
     assert labm.suggest_partition(t, mpi) == ("standard", "")  # fine as asked
     part, why = labm.suggest_partition(t, mpi, {"standard"})
     assert part == "computehigh" and "stocked out" in why
+    # plain CPU work and sweeps go to the cheap e2 partitions first (cluster 2026-10-03)
+    cpu = {"resources": {"partition": "highmem"}, "script": "python a.py"}
+    assert labm.suggest_partition(t, cpu, {"highmem"})[0] == "standard"
+    assert labm.suggest_partition(t, cpu, {"highmem", "standard"})[0] == "computehigh"
+    sweep = {"resources": {"partition": "highmem"}, "approach": "parameter sweep"}
+    assert labm.workload_shape(sweep) == "sweep"
+    assert labm.suggest_partition(t, sweep, {"highmem"})[0] == "spot"
 
 
 def test_time_from_history(wlab):

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.57.1 (package `deepresearch`) |
+| Applies to | deep-research v0.57.2 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -3060,3 +3060,4 @@ before v0.39.0).
 | 2026-10-03 | v0.56.1 | Audio jobs started in a workspace write to that workspace (the worker thread captured Main's context). |
 | 2026-10-03 | v0.57.0 | Lab Cluster view through bifrost (20.23): Now, Our jobs, Spend and efficiency, Storage; routes `GET /api/cluster/panel/{name}`, `GET /api/cluster/lab`; `dashboard/clusterview.py`, `static/cluster.js`; the report's cluster jobs on the Live log tab. |
 | 2026-10-03 | v0.57.1 | Capacity check before queueing (live stockouts + partitions that lost one of our nodes in 3 h), move after the first node failure; CA bundle exported in every job; planner checks run from files (20.24). |
+| 2026-10-03 | v0.57.2 | Ursa Major moved to fewer, cheaper node types (standard/spot on e2-standard-32 in any us-central1 zone; `lab` partition removed). `suggest_partition` now puts CPU work on standard and sweeps on spot first; computehigh stays first only for MPI. Live config: default partition standard, warm worker off. |

@@ -7,6 +7,13 @@ releases.
 
 ## [Unreleased]
 
+## [0.57.2] - 2026-10-03
+
+### Changed
+- Partition advice follows the new Ursa Major layout: plain CPU work goes to standard
+  (e2-standard-32, cheapest cores, any us-central1 zone) and sweeps to spot first;
+  computehigh is first only for multi-node MPI.
+
 ## [0.57.1] - 2026-10-03
 
 ### Fixed

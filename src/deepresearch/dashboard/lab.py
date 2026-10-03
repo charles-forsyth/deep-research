@@ -1270,12 +1270,14 @@ def suggest_partition(
     want = (plan.get("resources") or {}).get("partition") or target.default_partition
     out = set(stocked_out or ())
     shape = workload_shape(plan)
+    # standard (e2 in any us-central1 zone, the cheapest cores) first for CPU work;
+    # computehigh (fast cores, Tier_1) first only for MPI (v0.57.2, cluster 2026-10-03)
     by_shape = {
         "gpu": ["gpul4"],
         "mpi": ["computehigh", "standard"],
         "bigmem": ["highmem"],
-        "sweep": ["computehigh", "spot", "standard"],
-        "cpu": ["computehigh", "standard"],
+        "sweep": ["spot", "standard", "computehigh"],
+        "cpu": ["standard", "computehigh"],
     }[shape]
     ok = [p for p in by_shape if p in parts and p not in out]
     warm = getattr(target, "warm", None) or {}
