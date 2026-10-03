@@ -376,6 +376,7 @@ class SlurmSSHTarget:
         return {
             "enabled": True,
             "partition": (self.warm or {}).get("partition"),
+            "idle_min": int((self.warm or {}).get("idle_min", 20)),
             "workers": jobs,
             "queued": int(q[0]) if q and q[0].isdigit() else 0,
             "running": int(q[1]) if len(q) > 1 and q[1].isdigit() else 0,

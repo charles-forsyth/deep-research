@@ -143,6 +143,27 @@ def test_warm_task_reads_where_a_task_is(target, monkeypatch):
     assert target.warm_task("gone")["where"] == "missing"
 
 
+def test_warm_status_reports_the_idle_setting(target, monkeypatch):
+    """The Lab page said "stops after 20 idle minutes" whatever the setting was."""
+    monkeypatch.setattr(
+        C.subprocess, "run", FakeSSH([("::SQ::", 0, b"::SQ::\n::HB::\n::Q::\n0\n0\n")])
+    )
+    target.cfg["warm"] = {"partition": "computehigh", "idle_min": 60}
+    assert target.warm_status()["idle_min"] == 60
+    monkeypatch.setattr(
+        C.subprocess, "run", FakeSSH([("::SQ::", 0, b"::SQ::\n::HB::\n::Q::\n0\n0\n")])
+    )
+    target.cfg["warm"] = {"partition": "computehigh"}
+    assert target.warm_status()["idle_min"] == 20
+
+
+def test_warm_banner_reads_the_setting_not_a_fixed_number():
+    from pathlib import Path
+
+    js = (Path(C.__file__).parent / "static" / "lab.js").read_text()
+    assert "stops after 20 idle minutes" not in js and "w.idle_min" in js
+
+
 def _tgz(files: dict[str, bytes]) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:

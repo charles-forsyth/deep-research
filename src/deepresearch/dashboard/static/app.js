@@ -34,7 +34,13 @@ async function api(path, opts = {}) {
   // The server refuses non-JSON writes (cross-site protection), even bodyless ones.
   if (init.method !== "GET") init.headers["Content-Type"] = "application/json";
   if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
+  // conditional GET (opts.etag = {tag}): 304 resolves to null, a new tag is stored back
+  if (opts.etag?.tag) init.headers["If-None-Match"] = opts.etag.tag;
   const res = await fetch(path, init);
+  if (opts.etag) {
+    if (res.status === 304) return null;
+    opts.etag.tag = res.ok ? res.headers.get("ETag") || "" : "";
+  }
   let data = null;
   try { data = await res.json(); } catch { /* empty */ }
   if (!res.ok) throw new Error((data && data.error) || `${res.status} ${res.statusText}`);
@@ -169,8 +175,18 @@ const LS_TABS = "dr.tabs.v1";
 // read it). A search fills S.results instead; a slow reply to an older keystroke is
 // dropped rather than overwriting a newer one.
 let SEARCH_SEQ = 0;
+// The list is polled every 4-20 s and rarely changes: send the last ETag and skip the
+// re-render on 304 (redraw at least once a minute so "5m ago" stays true).
+// (A workspace switch reloads the page, so the tag never crosses workspaces.)
+const LIST = { tag: "", drawn: 0 };
 async function loadSessions() {
-  const data = await api("/api/sessions");
+  const data = await api("/api/sessions", { etag: LIST });
+  if (!data) {
+    if (S.q) await loadSearch();
+    if (Date.now() - LIST.drawn > 60000) { LIST.drawn = Date.now(); renderSessionList(); renderTelemetry(); }
+    return;
+  }
+  LIST.drawn = Date.now();
   NOTIFY.diff(S.sessions, data.sessions);
   refreshFinished(S.sessions, data.sessions);
   S.sessions = data.sessions;

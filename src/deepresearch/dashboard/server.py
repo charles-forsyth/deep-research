@@ -6,6 +6,7 @@ processes, exactly like `deep-research start`, so they survive a dashboard
 restart and show up in the CLI's `list`.
 """
 
+import hashlib
 import json
 import mimetypes
 import os
@@ -36,6 +37,8 @@ from deepresearch.dashboard.projects import ProjectStore
 from deepresearch.dashboard.store import DashboardStore
 
 MAX_BODY = 25 * 1024 * 1024  # uploads are base64 in JSON
+# GET routes answered with an ETag (304 when unchanged); the page polls these
+ETAG_PATHS = frozenset({"/api/sessions"})
 MAX_IMPORT = 5 * 1024**3  # workspace zips are streamed, not JSON
 LOG_DIR = Path(xdg_config_home) / "deepresearch" / "logs"
 UPLOAD_DIR = Path(xdg_config_home) / "deepresearch" / "uploads"
@@ -2165,6 +2168,30 @@ def make_handler(api: Api, local_only: bool = False):
                 "application/json; charset=utf-8",
             )
 
+        def _json_etag(self, obj: Any) -> None:
+            """JSON with an ETag; 304 and no body when the client already has it.
+
+            The page polls the session list every 4-20 s and it rarely changes
+            (about 240 KB at 280 reports). The page sends If-None-Match itself, since
+            no-store keeps the browser from caching it."""
+            payload = json.dumps(obj, default=str).encode()
+            tag = '"' + hashlib.sha256(payload).hexdigest()[:32] + '"'
+            if self.headers.get("If-None-Match", "") == tag:
+                self.send_response(304)
+                self.send_header("ETag", tag)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("ETag", tag)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+            self.wfile.write(payload)
+
         def _handle(self, method: str) -> None:
             url = urlparse(self.path)
             if local_only and not _loopback_peer(self.client_address[0]):
@@ -2219,6 +2246,8 @@ def make_handler(api: Api, local_only: bool = False):
                 status, obj = api.dispatch(method, url.path, q, body, workspace=ws)
                 if isinstance(obj, RawResponse):
                     return self._raw(obj)
+                if method == "GET" and url.path in ETAG_PATHS and status == 200:
+                    return self._json_etag(obj)
                 self._json(status, obj)
             except ApiError as e:
                 self._json(e.status, {"error": e.message})
