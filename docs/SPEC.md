@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.57.0 (package `deepresearch`) |
+| Applies to | deep-research v0.57.1 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -2294,6 +2294,28 @@ and their Slurm jobs (status, stage, node, elapsed, the last three job ids with 
 partition and purpose). Runs on the cluster now go to the top of the tab and refresh
 every 10 s; finished ones sit below the report's timeline and refresh every minute.
 
+### 20.24 Capacity check before queueing; CA bundle; probe files (v0.57.1)
+
+**Capacity check.** GCP stockouts on one machine type come and go for hours (the
+`standard` c2d-standard-32 nodes failed to boot on 5 of the last 6 days). Before the
+real run is queued, the Lab asks which partitions cannot start nodes now: bifrost's
+`cluster_status` stockout problems plus any partition where one of our jobs lost a node
+(requeued, or NODE_FAIL) in the last 3 hours (`jobs_list since=now-3hours`). A run
+planned on such a partition is queued on the same-shape partition `suggest_partition`
+picks instead; the plan records `partition_switched` ("... checked before queueing")
+and the estimate is redone. A failed check submits as planned. A queued job now moves
+after its first node failure on a stocked-out partition (was three); that mid-queue
+move still happens at most once per run (`partition_requeue_moved`).
+
+**CA bundle.** Every batch file exports `SSL_CERT_FILE` (certifi's bundle, else
+`/etc/pki/tls/certs/ca-bundle.crt`), `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` before
+the plan's script, unless the plan set them. The module Pythons have no CA path for
+urllib (CERTIFICATE_VERIFY_FAILED on NCBI downloads cost run 4 a pilot round).
+
+**Probe files.** Each planner check is written to its own file and sourced in a
+subshell; a check holding a here-document (`pyhelp`) no longer breaks the one-line
+wrapper with a syntax error.
+
 ## 21. Data sources
 
 A data source is a named reference to data that lives somewhere else: an open dataset
@@ -3037,3 +3059,4 @@ before v0.39.0).
 | 2026-10-03 | v0.56.0 | Pilots and planning checks through ursa-bifrost on the always-on `check` partition (20.22, R3); no SSH for Lab work while signed in; short full runs no longer use the warm node; target key `bifrost.check_partition` (20.3). |
 | 2026-10-03 | v0.56.1 | Audio jobs started in a workspace write to that workspace (the worker thread captured Main's context). |
 | 2026-10-03 | v0.57.0 | Lab Cluster view through bifrost (20.23): Now, Our jobs, Spend and efficiency, Storage; routes `GET /api/cluster/panel/{name}`, `GET /api/cluster/lab`; `dashboard/clusterview.py`, `static/cluster.js`; the report's cluster jobs on the Live log tab. |
+| 2026-10-03 | v0.57.1 | Capacity check before queueing (live stockouts + partitions that lost one of our nodes in 3 h), move after the first node failure; CA bundle exported in every job; planner checks run from files (20.24). |

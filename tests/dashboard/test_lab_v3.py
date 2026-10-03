@@ -348,6 +348,37 @@ def test_probe_commands_are_read_only_and_refuse_anything_else():
     assert subprocess.run(["bash", "-n"], input=script, text=True).returncode == 0
 
 
+def test_probe_with_a_here_document_runs(tmp_path):
+    """Job 505: the pyhelp probe holds a here-document, which broke the one-line
+    `( cmd )` wrapper (syntax error, so no answer). Each probe now runs from its file."""
+    script, ok = labm.probe_script(
+        [
+            {"kind": "pyhelp", "target": "json.dumps"},
+            {"kind": "help", "cmd": "ls --help"},
+        ]
+    )
+    assert len(ok) == 2 and "<<" in labm._probe_cmd(ok[0])
+    r = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=60,
+        env={"PATH": "/usr/bin:/bin", "TMPDIR": str(tmp_path), "HOME": str(tmp_path)},
+    )  # fmt: skip
+    assert "syntax error" not in r.stdout + r.stderr
+    after = r.stdout.split("=== CHECK 1", 1)[1].split("=== CHECK 2", 1)
+    assert "signature: (obj" in after[0] and "=== CHECK 2" in r.stdout
+
+
+def test_every_job_trusts_a_ca_bundle_before_the_script_runs():
+    """Run 4 lost a pilot round to CERTIFICATE_VERIFY_FAILED from urllib under the
+    module Python. The batch file now points TLS clients at a CA bundle up front."""
+    plan = {**PLAN, "script": "python fetch.py\n"}
+    s = labm.build_sbatch(9, plan, FakeTarget(), [])
+    head, _, user = s.partition("cat > user_script.sh")
+    assert "export SSL_CERT_FILE" in head and "REQUESTS_CA_BUNDLE" in head
+    assert "certifi" in head and "/etc/pki/tls/certs/ca-bundle.crt" in head
+    assert 'if [ -z "${SSL_CERT_FILE:-}" ]' in head  # a plan's own setting wins
+    assert subprocess.run(["bash", "-n"], input=s, text=True).returncode == 0
+
+
 def test_script_urls_and_url_warnings():
     plan = {
         "script": "curl -sSfL https://x.org/data.csv -o d\n# docs https://y.org/${V}/f\n",
@@ -446,6 +477,22 @@ def test_stockout_moves_a_queued_job_to_another_partition(wlab, monkeypatch):
         and "Moved from standard to computehigh" in moved["stage"]
     )
     assert t.cancelled and moved["job_id"] == "5151"
+
+
+def test_ssh_submit_dodges_a_stocked_out_partition(wlab, monkeypatch):
+    """Over SSH too: the batch file uploaded with the real run names the partition that
+    can start a node, not the stocked-out one in the plan."""
+    t = wlab.fake
+    t.partitions = {"standard": {}, "computehigh": {}}
+    t.warm = None
+    monkeypatch.setattr(labm, "stocked_out_partitions", lambda tgt: {"standard"})
+    run = _draft(
+        wlab, smoke=False, resources={**PLAN["resources"], "partition": "standard"}
+    )
+    wlab.submit(run["id"])
+    sent = t.submitted[run["id"]]
+    assert "#SBATCH --partition=computehigh" in sent["run.sbatch"]
+    assert '"partition": "computehigh"' in sent["plan.json"]
 
 
 def test_ensure_warm_scales_out_with_the_backlog(tmp_path):
