@@ -7,6 +7,14 @@ releases.
 
 ## [Unreleased]
 
+## [0.56.1] - 2026-10-03
+
+### Fixed
+- Audio made in a workspace other than Main is saved and played in that workspace. The
+  audio worker thread had no request context, so it wrote to Main's table: the
+  workspace's player listed nothing and the file link returned 404 (report and project
+  audio).
+
 ## [0.56.0] - 2026-10-03
 
 ### Changed

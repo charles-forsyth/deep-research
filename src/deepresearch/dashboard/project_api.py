@@ -623,11 +623,13 @@ class ProjectApi:
                 "error": None,
             }  # type: ignore[attr-defined]
 
+        fx = self.fx  # type: ignore[attr-defined]  # the request's workspace (see audio_start)
+
         def work():
             try:
-                res = self.fx.make_audio(
+                res = fx.make_audio(
                     "project", int(pid), title, content, "summary", voice
-                )  # type: ignore[attr-defined]
+                )
                 res.pop("path", None)
                 self._jobs[jid].update(status="done", result=res)  # type: ignore[attr-defined]
             except Exception as e:
