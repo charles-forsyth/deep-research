@@ -5098,7 +5098,25 @@ class Lab(LabVerdictMixin):
         try:
             w = self.bifrost_jobs.log(str(run["job_id"]), start, 400)
         except bf.BifrostError as e:
-            raise TargetError(str(e)) from e
+            # a queued job, or one whose node is still booting, has written no log yet:
+            # say so instead of showing the cluster's "not a regular file" (v0.57.3)
+            msg = str(e)
+            if run.get("status") in ("queued", "submitting") or re.search(
+                r"not a regular file|no such file|does not exist|not found", msg, re.I
+            ):
+                stage = str(run.get("stage") or "").strip()
+                wait = (
+                    "[waiting for the job to start"
+                    + (f": {stage}" if stage else "")
+                    + "; the log appears once it runs]\n"
+                )
+                return {
+                    "text": wait,
+                    "size": offset,
+                    "source": "bifrost",
+                    "waiting": True,
+                }
+            raise TargetError(msg) from e
         text = w["text"]
         if start and w["first_line"] > start:
             text = f"[... {w['first_line'] - start} lines not shown ...]\n" + text

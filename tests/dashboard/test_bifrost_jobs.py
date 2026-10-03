@@ -370,6 +370,27 @@ def test_live_log_pages_by_line_and_continues_locally(blab):
     assert lb.log(rid, -4)["text"] == "five\n"
 
 
+def test_live_log_says_waiting_before_the_job_writes_one(blab):
+    """Job 515: queued on a booting node, the log file did not exist yet and the tab
+    showed bifrost's 'not a regular file'. It now says the job is waiting (v0.57.3)."""
+    lb, cl, fake, _ = blab
+    rid = draft(lb)
+    lb.submit(rid)
+    lb._update(rid, stage="Queued, waiting for a node")
+    fake.errors["job_log_tail"] = (
+        "reading .../job.log: bash exited 4: job.log: not a regular file"
+    )
+    d = lb.log(rid, 0)
+    assert d["waiting"] and "waiting for the job to start" in d["text"]
+    assert "Queued, waiting for a node" in d["text"] and "regular file" not in d["text"]
+    assert d["size"] == 0  # the next poll starts from the top once the log exists
+    # a real failure on a running job is still reported
+    lb._update(rid, status="running")
+    fake.errors["job_log_tail"] = "permission denied"
+    with pytest.raises(Exception, match="permission denied"):
+        lb.log(rid, 0)
+
+
 # ---- cancel ----------------------------------------------------------------------
 
 

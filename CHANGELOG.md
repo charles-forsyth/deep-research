@@ -7,6 +7,12 @@ releases.
 
 ## [Unreleased]
 
+## [0.57.3] - 2026-10-03
+
+### Fixed
+- The live log of a job still waiting for its node says so ("waiting for the job to
+  start") instead of showing a "not a regular file" error.
+
 ## [0.57.2] - 2026-10-03
 
 ### Changed
