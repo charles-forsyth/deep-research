@@ -7,6 +7,38 @@ releases.
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-10-03
+
+### Changed
+
+- A calmer dashboard (U1 of the clean-up plan). Same colours and every feature, far fewer
+  things on screen at once:
+  - Top bar: brand, workspace, one search field (opens the command palette), New. The
+    counters and version moved to Settings; an activity pill appears only while runs are
+    live or something failed in the last day, and a key warning only when the key is bad.
+  - Sidebar: Home, Projects, Lab, Notes, Sources, then Reports. Reports show the report's
+    own title instead of the question. Filters (Running, Starred, Failed, sub-reports,
+    project) moved into one filter menu with removable chips. Settings sits at the foot.
+  - Home: one question box with the templates, then "Needs you" (failures, plans to
+    review, Lab runs waiting) and Recent. Projects, notebooks and activity sit below.
+  - Report page: four controls (star, Listen, Share, Info) plus a "..." menu. Share holds
+    copy, notebook, every export, audio and briefs; "..." holds re-run, find, projects,
+    Lab, sub-report tree, compare, copy to workspace and delete. The question folds under
+    the title, and the follow-up box is one line until used.
+  - The Info sheet (details, notes, outline, live log) is closed by default; open it with
+    Info or the `i` key.
+  - Phones get a bottom tab bar (Home, Reports, Lab, New) and no tab strip.
+  - The permanent status bar is gone; progress notes show briefly at the bottom.
+
+### Added
+
+- Settings page: workspace, API key state, cluster (bifrost) sign-in, Lab target, voices,
+  library stats and keyboard shortcuts.
+- `GET /api/cluster/status`: the Lab's bifrost sign-in for Settings (never returns a token).
+- `title` on session rows and session detail: the report's first heading.
+- Action registry (`actions.js`): each page action is declared once and feeds the toolbar,
+  the menus and the command palette, so nothing is lost when it moves (REQ-DASH-13).
+
 ## [0.53.0] - 2026-10-02
 
 ### Added

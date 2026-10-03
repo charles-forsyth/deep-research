@@ -5,6 +5,7 @@ the CLI never reads them).
 """
 
 import json
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -17,6 +18,27 @@ from deepresearch.storage.database import DatabaseSchema
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def report_title(text: str | None) -> str | None:
+    """The report's own title: its first Markdown heading, if it opens with one (v0.54.0).
+
+    Deep Research reports start with `# Title`; the list shows that instead of the prompt.
+    None when there is no leading heading (running, failed, or a follow-up)."""
+    if not text:
+        return None
+    for line in text.lstrip().splitlines()[:3]:
+        m = re.match(r"^#{1,2}\s+(.+?)\s*#*\s*$", line)
+        if m:
+            t = re.sub(
+                r"\[([^\]]*)\]\([^)]*\)", r"\1", m.group(1)
+            )  # [text](url) -> text
+            t = re.sub(r"[*_`]+", "", t)
+            t = re.sub(r"\s+", " ", t).strip()
+            return t[:160] or None
+        if line.strip():
+            return None
+    return None
 
 
 class DashboardStore:
@@ -82,6 +104,7 @@ class DashboardStore:
             "SELECT s.id, s.interaction_id, s.prompt, s.status, s.created_at, "
             "s.updated_at, s.files, s.pid, s.parent_id, s.depth, "
             "LENGTH(COALESCE(s.result, '')) AS result_chars, "
+            "SUBSTR(s.result, 1, 400) AS head, "
             "(SELECT COUNT(*) FROM sessions c WHERE c.parent_id = s.id) AS children, "
             "(SELECT COUNT(*) FROM annotations a WHERE a.session_id = s.id) AS annotations, "
             "COALESCE(m.starred, 0) AS starred, COALESCE(m.tags, '[]') AS tags "
@@ -99,6 +122,7 @@ class DashboardStore:
             r["tags"] = _loads(r["tags"], [])
             r["files"] = _loads(r["files"], [])
             r["starred"] = bool(r["starred"])
+            r["title"] = report_title(r.pop("head", None))
         return rows
 
     def set_status(self, session_id: int, status: str) -> None:

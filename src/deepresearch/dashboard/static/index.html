@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Deep Research // Workstation</title>
+<title>Deep Research</title>
 <link rel="stylesheet" href="/app.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='none' stroke='%2322d3ee' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='4' fill='%23f59e0b'/%3E%3C/svg%3E">
 </head>
@@ -11,60 +11,46 @@
 <div id="app">
 
   <header class="topbar">
-    <button class="btn ghost mnav l" id="btn-left" title="Archive" aria-label="Show archive">&#9776;</button>
-    <div class="brand">
+    <button class="btn ghost mnav l" id="btn-left" title="Reports" aria-label="Show reports">&#9776;</button>
+    <div class="brand" title="Deep Research">
       <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
         <circle cx="16" cy="16" r="13" /><circle cx="16" cy="16" r="8" />
         <circle class="core" cx="16" cy="16" r="3" />
-        <line x1="16" y1="1" x2="16" y2="6" /><line x1="16" y1="26" x2="16" y2="31" />
-        <line x1="1" y1="16" x2="6" y2="16" /><line x1="26" y1="16" x2="31" y2="16" />
       </svg>
-      <div>
-        <div class="brand-name">DEEP&nbsp;RESEARCH</div>
-        <div class="brand-sub">analyst workstation <span id="version"></span></div>
-      </div>
+      <span class="brand-name">Deep Research</span>
     </div>
     <button class="ws-switch" id="ws-switch" hidden aria-haspopup="dialog"><span class="ws-dot"></span><span class="ws-name"></span><span class="ws-caret" aria-hidden="true">&#9662;</span></button>
-    <div class="telemetry" id="telemetry"></div>
+    <button class="gsearch" id="btn-palette" title="Search reports or run a command (Ctrl+K)">
+      <span class="gs-ico" aria-hidden="true">&#8981;</span><span class="gs-t"><span class="gs-long">Search reports or run a command</span><span class="gs-short">Search</span></span><span class="kbd">Ctrl K</span>
+    </button>
     <div class="top-actions">
-      <button class="btn ghost" id="btn-projects" title="Your projects">Projects</button>
-      <button class="btn ghost" id="btn-labruns" title="Every Lab run, newest first">Lab runs</button>
-      <button class="btn ghost" id="btn-notes" title="Every highlight and note across your reports">Notes</button>
-      <button class="btn ghost" id="btn-sources" title="Your data sources (folders, buckets, datasets)">Data sources</button>
-      <button class="btn ghost" id="btn-palette" title="Command palette (Ctrl+K)">
-        <span class="kbd">Ctrl K</span> Commands
-      </button>
-      <button class="btn ghost mnav r" id="btn-right" title="Details" aria-label="Show details">Details</button>
-      <button class="btn primary" id="btn-new">+<span class="lbl"> New research</span></button>
+      <span class="keywarn" id="keywarn" hidden></span>
+      <button class="activity" id="activity" hidden aria-haspopup="dialog"></button>
+      <button class="btn primary" id="btn-new">+<span class="lbl"> New</span></button>
     </div>
   </header>
 
   <div class="layout">
 
-    <!-- LEFT: archive -->
+    <!-- LEFT: navigation and reports -->
     <aside class="panel left" id="left">
-      <div class="panel-head">
-        <span class="label">Archive</span>
-        <div class="seg" id="filter-seg">
-          <button data-f="all" class="on">All</button>
-          <button data-f="running">Live</button>
-          <button data-f="starred" aria-label="Starred" title="Starred">&#9733;</button>
-          <button data-f="failed" title="Failed, crashed or cancelled">Failed</button>
-        </div>
-      </div>
-      <div class="proj-strip" id="proj-strip"></div>
+      <nav class="sidenav" id="sidenav" aria-label="Pages">
+        <button class="nav-row" data-nav="home"><span class="ni" aria-hidden="true">&#9678;</span>Home</button>
+        <button class="nav-row" data-nav="projects" id="btn-projects"><span class="ni" aria-hidden="true">&#9635;</span>Projects</button>
+        <button class="nav-row" data-nav="labruns" id="btn-labruns"><span class="ni" aria-hidden="true">&#9879;</span>Lab<span class="nb-count" id="nav-lab-n" hidden></span></button>
+        <button class="nav-row" data-nav="notes" id="btn-notes"><span class="ni" aria-hidden="true">&#9998;</span>Notes</button>
+        <button class="nav-row" data-nav="sources" id="btn-sources"><span class="ni" aria-hidden="true">&#9638;</span>Sources</button>
+      </nav>
+      <div class="side-h"><span>Reports</span><span class="grow"></span><span id="count" class="dim"></span></div>
       <div class="search-box">
-        <input id="q" type="search" placeholder="Filter prompts and reports..." autocomplete="off" aria-label="Filter prompts and reports">
+        <input id="q" type="search" placeholder="Filter reports" autocomplete="off" aria-label="Filter reports">
+        <button class="icon-btn filt-btn" id="filt-btn" title="Filter: status, projects, sub-reports" aria-haspopup="menu" aria-label="Filter options">&#9776;</button>
       </div>
-      <div class="toggle-row">
-        <label><input type="checkbox" id="roots-only" checked> Top-level only</label>
-        <span id="count" class="dim"></span>
-      </div>
+      <div class="filt-chips" id="filt-chips"></div>
+      <div class="proj-strip" id="proj-strip" hidden></div>
       <div class="session-list" id="session-list"></div>
-      <div class="left-nav">
-        <button class="btn ghost small" id="nav-labruns">Lab runs</button>
-        <button class="btn ghost small" id="nav-sources">Data sources</button>
-        <button class="btn ghost small" id="nav-notes">Notes</button>
+      <div class="side-foot">
+        <button class="nav-row" data-nav="settings" id="btn-settings"><span class="ni" aria-hidden="true">&#9881;</span>Settings</button>
       </div>
     </aside>
 
@@ -74,25 +60,30 @@
       <section class="stage" id="stage"></section>
     </main>
 
-    <!-- RIGHT: inspector -->
-    <aside class="panel right" id="right">
+    <!-- RIGHT: info sheet (closed by default) -->
+    <aside class="panel right" id="right" aria-label="Report info">
       <nav class="rtabs" id="rtabs">
         <button data-r="info" class="on">Details</button>
         <button data-r="notes">Notes</button>
         <button data-r="outline">Outline</button>
         <button data-r="log">Live log</button>
+        <button class="icon-btn rclose" id="btn-right" title="Close (i)" aria-label="Close info">&#10005;</button>
       </nav>
       <div class="rbody" id="rbody"></div>
     </aside>
 
   </div>
 
+  <nav class="tabbar" id="tabbar" aria-label="Main">
+    <button data-tb="home"><span aria-hidden="true">&#9678;</span>Home</button>
+    <button data-tb="reports"><span aria-hidden="true">&#9776;</span>Reports</button>
+    <button data-tb="lab"><span aria-hidden="true">&#9879;</span>Lab</button>
+    <button data-tb="new" class="tb-new"><span aria-hidden="true">+</span>New</button>
+  </nav>
+
   <div class="scrim" id="scrim"></div>
 
-  <footer class="statusbar">
-    <span id="sb-left">ready</span>
-    <span class="sb-right" id="sb-right"></span>
-  </footer>
+  <div class="statuspill" id="sb-left" hidden></div>
 </div>
 
 <!-- Selection toolbar -->
@@ -133,6 +124,7 @@
 <script src="/lab.js"></script>
 <script src="/projects.js"></script>
 <script src="/workspaces.js"></script>
+<script src="/actions.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

@@ -34,7 +34,7 @@ from deepresearch.dashboard.features import VOICES, Features
 from deepresearch.dashboard.lab import Lab, TargetError
 from deepresearch.dashboard.project_api import ProjectApi
 from deepresearch.dashboard.projects import ProjectStore
-from deepresearch.dashboard.store import DashboardStore
+from deepresearch.dashboard.store import DashboardStore, report_title
 
 MAX_BODY = 25 * 1024 * 1024  # uploads are base64 in JSON
 # GET routes answered with an ETag (304 when unchanged); the page polls these
@@ -348,6 +348,7 @@ class Api(ProjectApi):
         r("POST", r"/api/lab/(\d+)/laptop-fetch", self.lab_laptop_fetch)
         r("POST", r"/api/lab/(\d+)/fix-blocked", self.lab_fix_blocked)
         r("GET", r"/api/lab/pulse", self.lab_pulse)
+        r("GET", r"/api/cluster/status", self.cluster_status)
         r("POST", r"/api/lab/(\d+)/fix-failed", self.lab_fix_failed)
         r("GET", r"/api/lab/(\d+)/log", self.lab_log)
         r("GET", r"/api/lab/(\d+)/file", self.lab_file)
@@ -714,6 +715,7 @@ class Api(ProjectApi):
         s["files"] = json.loads(s.get("files") or "[]")
         s.pop("embedding", None)
         s["meta"] = self.store.get_meta(int(sid))
+        s["title"] = report_title(s.get("result"))
         s["children"] = [
             {"id": c["id"], "status": c["status"], "prompt": c["prompt"]}
             for c in self.sessions.get_children(int(sid))
@@ -2005,6 +2007,30 @@ class Api(ProjectApi):
 
     def lab_pulse(self, query, body):
         return self.lab.pulse()
+
+    def cluster_status(self, query, body):
+        """The Lab's bifrost sign-in for Settings (v0.54.0): local token file only, plus
+        one /whoami when signed in (cached 5 minutes). Never returns a token."""
+        import time
+
+        c = self.lab.bifrost
+        configured = c is not None or any(
+            "bifrost" in (getattr(t, "cfg", None) or {})
+            for t in self.lab.targets.values()
+        )
+        out: dict[str, Any] = {"configured": configured, "signed_in": c is not None}
+        if c is None:
+            return out
+        cached = getattr(self, "_whoami_cache", None)
+        if cached and time.time() - cached[0] < 300:
+            return {**out, **cached[1]}
+        try:
+            w = c.whoami()
+            info = {k: w.get(k) for k in ("email", "program", "tiers", "own_caps")}
+        except Exception as e:  # noqa: BLE001  shown as text in Settings
+            info = {"error": str(e)[:200]}
+        self._whoami_cache = (time.time(), info)
+        return {**out, **info}
 
     def lab_fix_blocked(self, rid, query, body):
         self._lab_run(rid)

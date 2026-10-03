@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.53.0 (package `deepresearch`) |
+| Applies to | deep-research v0.54.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -225,6 +225,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | REQ-DASH-6 | Deleting a session shall also delete its annotations and tags; with `recursive=1` it shall delete all descendants too. | `test_delete_recursive_purges_children_and_annotations` |
 | REQ-DASH-12 | Every non-GET API request shall be `application/json` (with or without a body), shall be refused when its `Origin` differs from its `Host`, and every request shall be refused when its `Host` is not an IP address, a single-label name, a local or tailnet suffix, or listed in `DR_ALLOWED_HOSTS`. | `test_bodyless_cross_site_post_cannot_cancel`, `test_foreign_origin_write_refused`, `test_dns_rebinding_host_refused`, `test_local_host_names_allowed` |
 | REQ-DASH-7 | Uploads shall only be accepted as JSON (base64), limited to 25 MB per request, stored under a random folder in `uploads/`, and research may only reference upload paths inside that folder. | `test_upload_then_research_with_upload`, `test_json_content_type_required_for_writes`, `test_start_research_validation` |
+| REQ-DASH-13 | Every action a page offers shall stay reachable after the v0.54.0 clean-up: declared once in the action registry and shown as a toolbar button, in the Share or "..." menu, or in the command palette (every registered action that is available on the page appears in the palette). | `test_ui_shell.py` |
 | REQ-DASH-8 | The layout shall be usable at phone (390 px), tablet and desktop widths: side panes become drawers below the tablet breakpoint and nothing overflows horizontally. | manual (Playwright) |
 | REQ-DASH-9 | Reading aloud word for word shall use the browser's speech engine (free) and highlight the current paragraph; source lists, URLs and citation markers shall not be read. | `test_speakable_strips_markup_citations_urls_and_sources` |
 | REQ-DASH-10 | Audio exports shall support HTTP Range requests so browsers can seek. | `test_range_request_returns_partial_content` |
@@ -288,7 +289,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | `dashboard/labfetch.py` | 322 | Fetch on this laptop for cluster-blocked URLs (20.18): blocked-URL detection, safe fetch, provenance. |
 | `dashboard/warm_worker.sh` | 125 | Warm worker on the cluster: spool queue, parallel tasks, heartbeats, idle and time-limit handling (20.16). |
 | `sources/` | 3,458 | Data sources (section 21): `model`, `registry`, `adapters`, `public`, `staging`, `usage`, `index`, `discover`, `cloud_catalogs`, `provenance`, `service`, `browse`, `gdrive`. |
-| `dashboard/static/` | 5,261 | `index.html`, `app.css`, `app.js`, `features.js`, `lab.js`, `sources.js`, `filebrowser.js`, `projects.js`, `workspaces.js`, vendored `marked` and `DOMPurify`. |
+| `dashboard/static/` | 5,261 | `index.html`, `app.css`, `app.js`, `actions.js`, `features.js`, `lab.js`, `sources.js`, `filebrowser.js`, `projects.js`, `workspaces.js`, vendored `marked` and `DOMPurify`. |
 
 Total Python: about 21,600 lines. Total client: about 5,300 lines plus vendored libraries. Line counts as of v0.50.1.
 
@@ -778,13 +779,14 @@ had it earlier). Implemented in `cli/jsonout.py`.
 | Method and path | Paid | Behaviour |
 |---|---|---|
 | `GET /api/health[?check=1]` | no | `{ok, version, api_key, workspace}`; with `check=1` adds `api_key_valid` (true, false or null) from a cached key probe (REQ-DASH-4). |
+| `GET /api/cluster/status` | no | The Lab's ursa-bifrost sign-in for Settings (v0.54.0): `{configured, signed_in}` from the local token file, plus `email`, `program`, `tiers`, `own_caps` from bifrost `/whoami` when signed in (cached 5 minutes). Never returns a token. |
 | `GET /api/stats` | no | Counts by status, total, roots, total report characters, notebook and annotation counts. Runs liveness. |
 
 **Sessions**
 
 | Method and path | Paid | Behaviour |
 |---|---|---|
-| `GET /api/sessions[?q=&limit=500]` | no | Session rows (no report text) with child, annotation, star and tag data; newest id first; `q` is a LIKE match on prompt and report; limit capped at 5,000. Runs liveness. Sends an `ETag`; a request with a matching `If-None-Match` gets 304 and no body (v0.52.2). |
+| `GET /api/sessions[?q=&limit=500]` | no | Session rows (no report text) with child, annotation, star and tag data, and `title` (the report's first Markdown heading, null when none; v0.54.0); newest id first; `q` is a LIKE match on prompt and report; limit capped at 5,000. Runs liveness. Sends an `ETag`; a request with a matching `If-None-Match` gets 304 and no body (v0.52.2). |
 | `GET /api/sessions/{id}` | no | Full row minus embedding, plus `meta`, `children`, `annotations`, `log_available`, `run` (run_meta) and `reruns`. |
 | `DELETE /api/sessions/{id}[?recursive=1]` | no | Deletes the row (and descendants with `recursive=1`) plus their annotations, meta, launch meta, usage, audio rows and files, project memberships and Lab runs; 409 while a Lab run of theirs is still on the cluster (REQ-DASH-6, K10). |
 | `PATCH /api/sessions/{id}/meta` | no | Body `{starred?, tags?}`. |
@@ -833,7 +835,8 @@ had it earlier). Implemented in `cli/jsonout.py`.
 
 ### 11.1 Stack and layout
 
-- `index.html` shell, `app.css`, `app.js` (core, dialogs, tabs, reader, notes), `features.js`
+- `index.html` shell, `app.css`, `app.js` (core, dialogs, tabs, reader, notes, Settings), `actions.js`
+  (action registry, popup menus, v0.54.0), `features.js`
   (cost, map, compare, audio, briefs), `lab.js` (Lab runs), `sources.js` (data sources),
   `filebrowser.js` (the "+ Add source" file browser, 21.11), `projects.js` (projects, 22.7),
   `workspaces.js` (switcher and Workspaces dialog, section 23). Every API call sends the
@@ -843,19 +846,35 @@ had it earlier). Implemented in `cli/jsonout.py`.
 - Markdown is rendered with vendored `marked` (GFM) and always passed through vendored
   `DOMPurify` before insertion. External links open in a new tab with
   `noopener noreferrer`.
-- Three panes: **archive** (left: session list, filter, stars, tags), **stage** (centre:
-  tabs), **inspector** (right: Details, Notes, Outline, Live log). Below 1200 px the inspector becomes a slide-out drawer; below 820 px the archive does
-  too, and split views (notebook, compare) stack vertically.
-- Top bar: brand, version, the workspace switcher (a subtle pill with a coloured dot,
-  23), live telemetry counters (running, completed, failed, corpus size, key health),
-  Projects, Lab runs, Notes, Data sources, the command palette button and New research.
-  Telemetry chips that do not fit are hidden rather than wrapping (v0.43.1). On phones
-  those pages move into the archive drawer's menu. The FAILED counter counts failed,
-  crashed and cancelled sessions, the same set as the Failed filter.
+- Shell (v0.54.0, U1): top bar, sidebar, stage, and an Info sheet that opens on demand.
+  The design rule is "one primary action per screen, status only when it needs you, every
+  other action one click away in a menu or the command palette".
+  - **Top bar**: brand, workspace switcher (23), one search field that opens the command
+    palette (Ctrl K), an activity pill that appears only while runs are live or when the
+    last 24 h has failures, a key warning only when the key is missing or rejected, and
+    New research. The old telemetry counters and the version moved to Settings.
+  - **Sidebar**: Home, Projects, Lab, Notes, Sources; then Reports with a filter box, a
+    filter menu (All / Running / Starred / Failed, Include sub-reports, project) whose
+    active choices show as removable chips; then Settings at the foot. Report rows show
+    the report's own title (`title`, the first Markdown heading, falling back to the
+    prompt), a status dot only when not completed, a star, and the date.
+  - **Stage**: tabs; the tab strip hides while only Home is open (desktop) and always on
+    phones.
+  - **Info sheet** (right): Details, Notes, Outline, Live log. Closed by default; opens
+    with Info, the `i` key, or a note/highlight action; remembered in `dr.info`. Below
+    1200 px it slides over the page.
+  - Below 820 px the sidebar becomes a drawer and a bottom tab bar (Home, Reports, Lab,
+    New) replaces the top-bar buttons; split views (notebook, compare) stack vertically.
+- **Action registry** (`actions.js`): every page action is declared once with an id,
+  label, scope and weight (`primary`, `bar`, `share`, `more`, `danger`). Toolbars, the
+  Share and "..." menus, and the command palette all draw from it, so an action can move
+  between the toolbar and a menu without being lost (REQ-DASH-13).
+- Progress notes (uploading, sending a follow-up) show as a short-lived pill at the
+  bottom instead of a permanent status bar.
 
 ### 11.2 Tabs
 
-Tab kinds: `home` (Mission control, always present), `session`, `notebook`, `launch`,
+Tab kinds: `home` (Home, always present), `settings` (v0.54.0), `session`, `notebook`, `launch`,
 `search`, `tree`, `map`, `compare`, `sources`, `source`, `labruns`, `notes`, `projects`,
 `project`, `sorter` (Inbox sort, 22.4). Open tabs and
 the active tab persist in `localStorage` (`dr.tabs.v1`); launch tabs are not persisted.
@@ -1350,7 +1369,7 @@ only of the code.
 | A cluster command | Put it in `dashboard/cluster.py` (on `SlurmSSHTarget`, and on `ScopedTarget` if it builds a run folder path) and test it in `tests/dashboard/test_cluster.py` with the fake ssh; never run anything on the login node except Slurm and file commands. |
 | A Lab step that calls a model | Go through `Lab._ask` / `_ask_plan` (shared client, cost accounting, one retry on a bad reply); keep bookkeeping keys out of prompts (`PLAN_DIFF_SKIP`); never submit from AI code, only produce drafts. |
 | An environment variable | Read it with `os.getenv("NAME")` and add a row to 12.1 (the sync test checks). |
-| Client features | Plain JavaScript in the page's module (`app.js`, `features.js`, `lab.js`, `projects.js`, `sources.js`, `workspaces.js`); no build step, no CDN. Use `api()` so the workspace header is sent. Sanitise any HTML built from report or user text. Check at 390 px and desktop, run `node --check`, keep the console clean. |
+| Client features | Plain JavaScript in the page's module (`app.js`, `actions.js`, `features.js`, `lab.js`, `projects.js`, `sources.js`, `workspaces.js`); no build step, no CDN. Use `api()` so the workspace header is sent. Sanitise any HTML built from report or user text. Check at 390 px and desktop, run `node --check`, keep the console clean. |
 | A requirement | Give it the next free ID in its group, name the test that covers it, and update this document in the same pull request as the code. |
 
 ---
