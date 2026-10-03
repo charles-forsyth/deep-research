@@ -627,7 +627,9 @@ class ProjectApi:
 
         def work():
             try:
-                res = fx.make_audio("project", int(pid), title, content, "summary", voice)
+                res = fx.make_audio(
+                    "project", int(pid), title, content, "summary", voice
+                )
                 res.pop("path", None)
                 self._jobs[jid].update(status="done", result=res)  # type: ignore[attr-defined]
             except Exception as e:
