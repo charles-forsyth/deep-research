@@ -41,29 +41,69 @@ class Fake:
 
     def call(self, tool, args=None):
         self.calls.append((tool, args))
-        return json.dumps(self.answers[tool])  # Nexus tools answer JSON text
+        a = self.answers.get(tool, [])
+        if tool == "nexus_search" and isinstance(a, list) and self.term_aware:
+            words = str((args or {}).get("term", "")).lower().split()
+            a = [r for r in a if all(w in json.dumps(r).lower() for w in words)]
+        return json.dumps(a)  # Nexus tools answer JSON text
+
+    term_aware = False
 
     def signed_in(self):
         return True
 
 
-def test_search_keeps_only_linkable_entities_and_never_private_text():
-    c = Fake({"nexus_search": SEARCH})
-    rows = nx.search(c, "x")
-    assert c.calls == [("nexus_search", {"term": "x", "limit": 25})]
-    assert [(r["kind"], r["id"]) for r in rows] == [
-        ("lab", "Boris Baer Lab (borisbar)"),
-        ("grant", "2502990"),
+LABS = [{"name": "Boris Baer Lab (borisbar)", "description": "Research lab led by Boris Baer", "_type": "Lab"},
+        {"name": "Adam Godzik Lab (agodzik)", "description": "Research lab led by Adam Godzik", "_type": "Lab"}]  # fmt: skip
+GRANTS = [{"c_number": "2502990", "title": "NSF CC* Research Networking", "agency": "National Science Foundation (NSF)", "_type": "Grant"}]  # fmt: skip
+GCP = [{"project_id": "ucr-ursa-major-godzik-lab", "name": "UCR-Ursa-Major-Godzik-Lab", "_type": "GCPProject"},
+       {"project_id": "x", "name": "Godzik person row", "_type": "Researcher"}]  # fmt: skip
+
+
+def _fake():
+    nx._lists.clear()
+    s = [dict(r, _reason="Name/Summary Match") for r in SEARCH]
+    # a semantic guess that even contains the word: still not a name match
+    s.append({"summary": "Shelton semantic guess", "name": "ucr-ursa-major-koner-stats", "_type": "ResearchProject", "_reason": "Semantic (dist=0.40)"})  # fmt: skip
+    f = Fake({"nexus_search": s, "nexus_labs_list": LABS, "nexus_grants_list": GRANTS, "nexus_gcp_list": GCP})  # fmt: skip
+    f.term_aware = True
+    return f
+
+
+def test_search_matches_names_in_the_lists_and_never_private_text():
+    c = _fake()
+    rows = nx.search(c, "godzik")
+    assert [(r["kind"], r["id"]) for r in rows[:2]] == [
+        ("lab", "Adam Godzik Lab (agodzik)"),
         ("gcp", "ucr-ursa-major-godzik-lab"),
-        ("project", "ucr-ursa-major-christidis-lab"),
     ]
+    assert nx.search(c, "2502990")[0]["name"] == "NSF CC* Research Networking (2502990)"
+    assert nx.search(c, "national science")[0]["id"] == "2502990"  # sponsor matches too
+    # every word must match: "godzik nsf" is nobody in the lists
+    assert nx.search(c, "godzik nsf") == [] or all(
+        r["kind"] == "project" for r in nx.search(c, "godzik nsf")
+    )
+    # nexus_search adds only name matches of linkable types; people, interactions,
+    # tasks and semantic guesses never appear
+    rows = nx.search(c, "shelton")
     flat = json.dumps(rows)
     assert (
         "RITM0335701" not in flat
         and "Matthew Barth" not in flat
         and "cshelton" not in flat
     )
-    assert rows[1]["name"] == "NSF CC* Research Networking (2502990)"
+    assert "koner" not in flat
+    assert "person row" not in json.dumps(
+        nx.search(c, "godzik")
+    )  # list rows are typed too
+    # research projects come only from nexus_search name matches
+    assert [(r["kind"], r["id"]) for r in nx.search(c, "christidis")] == [
+        ("project", "ucr-ursa-major-christidis-lab")
+    ]
+    # the three lists are read once, then cached
+    n = sum(1 for t, _ in c.calls if t.endswith("_list"))
+    nx.search(c, "baer")
+    assert n == 3 and sum(1 for t, _ in c.calls if t.endswith("_list")) == 3
 
 
 def test_show_lists_pi_members_and_links_but_skips_interactions():
@@ -92,7 +132,8 @@ def test_grant_show_reads_the_grant_by_c_number():
 
 def test_api_routes_need_sign_in_and_validate(app, monkeypatch):  # noqa: F811
     api = app["api"]
-    c = Fake({"nexus_search": SEARCH, "nexus_labs_show": LAB_SHOW})
+    c = _fake()
+    c.answers["nexus_labs_show"] = LAB_SHOW
     c.signed_in = lambda: False
     api._nexus_client = c
     assert app["call"]("GET", "/api/nexus/status")[1] == {"signed_in": False}
@@ -100,7 +141,7 @@ def test_api_routes_need_sign_in_and_validate(app, monkeypatch):  # noqa: F811
     assert st == 409 and "nexus login" in body["error"]
     c.signed_in = lambda: True
     st, body = app["call"]("GET", "/api/nexus/search?q=baer")
-    assert st == 200 and len(body["results"]) == 4
+    assert st == 200 and body["results"][0]["id"] == "Boris Baer Lab (borisbar)"
     assert app["call"]("GET", "/api/nexus/search?q=b")[1] == {"results": []}
     nx._cache.clear()
     st, d = app["call"](

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.61.1 (package `deepresearch`) |
+| Applies to | deep-research v0.61.2 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -2410,9 +2410,12 @@ id. A plan that takes over 180 s is cancelled.
 Reads only, through the Nexus MCP server as the pre-registered program client
 `nexus-deep-research` (max role read): `deep-research nexus login` once. A project's
 settings replace the free-text Nexus field with a picker: type a name, NetID-ish word,
-grant number or `ucr-ursa-major-...`; `nexus_search` results are filtered to labs,
-grants, GCP projects and research projects (people, interactions and tasks are dropped
-here, whatever Nexus returns). The pick is stored in `nexus_ref` as `kind:id` (`lab:<exact
+grant number, sponsor or `ucr-ursa-major-...`. Since v0.61.2 every word must appear in a
+lab, grant or GCP project from the three Nexus lists (`labs_list type=LAB`,
+`grants_list`, `gcp_list`, about 520 rows, read once and cached 10 minutes); research
+projects come from `nexus_search` name matches only. `nexus_search`'s semantic hits put
+unrelated projects first ("godzik" never showed the Godzik labs), so they are not used.
+People, interactions and tasks are dropped here, whatever Nexus returns. The pick is stored in `nexus_ref` as `kind:id` (`lab:<exact
 name>`, `grant:<c_number>`, `gcp:<project_id>`, `project:<name>`); older free text still
 shows as a chip. The project page shows a "From Nexus" box from the matching `*_show`
 tool: PI or lead, members, sponsor and dates, linked grants and projects. Connections are
@@ -3171,3 +3174,4 @@ before v0.39.0).
 | 2026-10-03 | v0.60.0 | Calm Lab card and review decision summary (20.27, U2). |
 | 2026-10-03 | v0.61.0 | Deep Research Max and Plan first in the launcher; one shared estimate with search costs (20.28); Nexus project links, read-only (20.29). |
 | 2026-10-03 | v0.61.1 | Tests can no longer write to the real history DB (tests/conftest.py guard); the v0.61.0 recursion test had left 16 "a gap" rows in Main (removed, backup kept). |
+| 2026-10-03 | v0.61.2 | Nexus picker matches names in the lab, grant and GCP lists instead of nexus_search's semantic hits (20.29). |
