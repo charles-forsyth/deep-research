@@ -7,6 +7,21 @@ releases.
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-10-03
+
+### Changed
+- Lab cards are calm: title, one status phrase ("Needs your review", "Running, 12 min",
+  "Confirmed", "Failed: a fix is ready"), one primary button, Details and a "..." menu.
+  Job, exit code, node, cost, fingerprint and pilot rounds moved under Details; the step
+  bar shows only while a run is active. The Lab runs table uses the same phrases.
+- The review dialog opens on a decision summary: what runs, where, worst-case cost, the
+  referee in one line, and Submit. A red box shows success criteria an AI fix changed,
+  before and after. Sections 1-5 are folded below.
+
+### Fixed
+- AI fix notes no longer leave a fragment of a "REVIEW:" line that contained a decimal.
+- "AI fix of failed run #" with no number on pilot fixes.
+
 ## [0.59.0] - 2026-10-03
 
 ### Added

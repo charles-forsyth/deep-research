@@ -1306,3 +1306,46 @@ body:not(.info-open) .panel.right .rbody { display: none; }
 
 .clv-num { text-align: right; }
 .clv-hbar > :nth-child(3) { text-align: right; }
+
+/* U2 (v0.60.0): calm Lab card and review decision summary */
+.lab-run-h .lab-title { font-size: 13.5px; }
+.lab-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted, #8a97a8); }
+.lab-status.act { color: var(--cyan); border-color: rgba(34, 211, 238, .45); }
+.lab-status.live { color: var(--amber); border-color: rgba(245, 165, 36, .45); }
+.lab-status.ok { color: var(--green); border-color: rgba(52, 211, 153, .45); }
+.lab-status.refuted { color: #c4b5fd; border-color: rgba(196, 181, 253, .45); }
+.lab-status.warn { color: var(--amber); border-color: rgba(245, 165, 36, .45); }
+.lab-status.bad { color: var(--red); border-color: rgba(248, 113, 113, .5); }
+.lab-status .spinner { width: 10px; height: 10px; }
+.lab-run .lab-stage { color: var(--muted, #8a97a8); margin-top: 4px; }
+.lab-details { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
+.lab-details .lab-steps { margin: 0 0 6px; }
+.lab-details .lab-kv > .label { color: #a9b6c9; }
+.lab-run .lab-foot .btn.ghost.lab-more { margin-left: auto; }
+.lab-kv { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; padding: 2px 0; }
+.lab-kv > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.lab-more { font-size: 15px; line-height: 1; padding: 2px 10px; }
+.lab-decide { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 4px 0 10px; background: rgba(255, 255, 255, .02); }
+.lab-decide-q { font-size: 14px; line-height: 1.45; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.lab-decide-grid { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 7px 14px; margin: 0; font-size: 12.5px; line-height: 1.45; align-items: baseline; }
+.lab-decide-grid dt { color: #a9b6c9; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; }
+.lab-decide-grid dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.lab-decide-grid dd.ok { color: var(--green); }
+.lab-decide-grid dd.warn { color: var(--amber); font-family: inherit; }
+.lab-decide-grid dd.ok, .lab-decide-grid dd.bad, .lab-decide-grid dd.dim { font-family: inherit; }
+.lab-decide-grid dd.bad { color: var(--red); }
+.lab-decide-acts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.lab-decide-acts .dim { line-height: 1.3; }
+.lab-crit { margin-top: 10px; }
+.lab-crit-row { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 8px; font-size: 12px; margin-top: 4px; }
+.lab-crit .del { color: var(--red); text-decoration: line-through; text-decoration-color: rgba(248, 113, 113, .5); }
+.lab-crit .add { color: var(--text, #e6edf3); }
+details.lab-fold { margin-top: 6px; }
+details.lab-fold > summary.lab-h { cursor: pointer; list-style: none; }
+details.lab-fold > summary.lab-h::before { content: "\25B8  "; color: var(--faint); }
+details.lab-fold[open] > summary.lab-h::before { content: "\25BE  "; }
+@media (max-width: 600px) {
+  .lab-decide-grid, .lab-kv { grid-template-columns: minmax(0, 1fr); gap: 0 0; }
+  .lab-decide-grid dd { margin-bottom: 6px; }
+}
+.runs-table .lab-status { white-space: nowrap; }

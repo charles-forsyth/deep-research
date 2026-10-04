@@ -36,7 +36,7 @@ const LAB = {
         <span class="lab-cat dim" style="font-size:11px;margin-left:auto"></span>
       </div>
       <div class="lab-sug">${sug ? this.sugHtml(sug) : `<div class="lab-sug-empty"><button class="btn small" data-l="sug">Suggest computations for this report</button> <span class="dim" style="font-size:11px">Gemini reads the report and proposes up to 3 runnable jobs (about a cent)</span></div>`}</div>
-      <div class="lab-runs">${data.runs.map((r) => this.runHtml(r)).join("")}</div>`;
+      <div class="lab-runs">${this.withChildren(data.runs).map((r) => this.runHtml(r)).join("")}</div>`;
     if (S.scrollToLab) {  // arrived from the Lab runs page: show that run
       const card = body.querySelector(`.lab-run[data-run="${S.scrollToLab}"]`);
       S.scrollToLab = null;
@@ -103,29 +103,30 @@ const LAB = {
 
   // ------------------------------------------------------------------ one run card
   runHtml(r) {
+    // U2 (v0.60.0): title, one status phrase, one primary button and "...". The step bar
+    // shows only while the run is active; exit codes, node, pilot rounds, cost and the
+    // inputs fingerprint live under Details.
     const p = r.plan || {};
-    const live = ["planning", "submitting", "smoke", "queued", "running", "fetching", "analyzing"].includes(r.status);
-    const badge = { draft: "review", plan_failed: "failed", planning: "planning", submitting: "running", smoke: "pilot", queued: "queued", running: "running", fetching: "running", analyzing: "running" }[r.status] || r.status;
+    const live = this.isLive(r);
     // SVG can carry scripts, so it is listed as a download, never shown inline
     const images = (r.files || []).filter((f) => !f.skipped && /\.(png|jpe?g|gif|webp)$/i.test(f.path));
     const others = (r.files || []).filter((f) => !images.includes(f));
+    const st = this.statusPhrase(r);
+    const prim = this.primaryAction(r);
+    const det = this.detailsHtml(r);
     return `
     <div class="lab-run ${esc(r.status)}" data-run="${r.id}">
       <div class="lab-run-h">
-        <span class="status-badge ${esc(badge)}">${esc(badge)}</span>
-        ${this.outcomeBadge(r)}
-        <b>#${r.id} ${esc(p.title || (r.scope === "selection" ? "Selected passage" : "Whole report"))}</b>
-        <span class="grow"></span>
-        ${r.job_id ? `<span class="mono dim lab-meta">${this.metaText(r)}</span>` : ""}
-        ${r.provenance ? `<span class="mono dim lab-fp" title="Fingerprint of the script, software, resources and data (with content hashes) this run used${(r.provenance.sources || []).length ? ": " + esc(r.provenance.sources.map((d) => d.name + "@" + (d.manifest_hash || "").slice(0, 8)).join(", ")) : ""}">inputs ${esc(r.provenance.fingerprint)}</span>` : ""}
+        <b class="lab-title">${esc(p.title || (r.scope === "selection" ? "Selected passage" : "Whole report"))}</b>
+        <span class="lab-status ${esc(st.tone)}">${live ? '<span class="spinner"></span>' : ""}${esc(st.text)}</span>
       </div>
-      ${live || r.status === "draft" ? `<div class="lab-stage">${live ? '<span class="spinner"></span>' : ""}<span>${esc(r.stage || r.status)}</span></div>` : ""}
-      ${this.stepsHtml(r)}
+      ${live ? `${this.stepsHtml(r)}<div class="lab-stage">${esc(this.stepLine(r))}</div>` : ""}
       ${r.error && (r.status !== "draft" || r.stage === "Not submitted") ? `<div class="lab-err">${r.status === "draft" ? "Not submitted: " : ""}${esc(r.error)}</div>` : ""}
       ${p.question ? `<div class="lab-q"><span class="label">Question</span> ${esc(p.question)}</div>` : ""}
       ${r.scope === "selection" && r.selection ? `<details class="lab-sel"><summary class="dim">Selected passage</summary><blockquote>${esc(clip(r.selection, 1200))}</blockquote></details>` : ""}
       ${r.status === "plan_failed" && p.why_not ? `<div class="lab-q dim">${esc(p.why_not)}</div>` : ""}
-      ${this.smokeHtml(r)}
+      ${(p.fix_concerns || []).length && r.status === "draft" ? this.concernsHtml(p) : ""}
+      ${this.pilotOutcomeHtml(r)}
       ${this.blockedHtml(r, p)}
       ${this.verdictHtml(r.verdict, r.assessment)}
       ${r.result_md ? `<div class="lab-result md">${renderMd(this.plainMath(r.result_md))}</div>` : ""}
@@ -134,19 +135,114 @@ const LAB = {
         ? `<span class="mono dim" title="left on the cluster (too large)">${esc(f.path)} (${this.size(f.size)}, not copied)</span>`
         : `<a class="mono" href="${this.fileUrl(r.id, f.path)}${/\.(svg|html?)$/i.test(f.path) ? "&download=1" : ""}" target="_blank" rel="noopener noreferrer">${esc(f.path)} <span class="dim">${this.size(f.size)}</span></a>`).join("")}</div>` : ""}
       <div class="lab-foot">
-        ${r.status === "draft" ? `<button class="btn small primary" data-la="review">Review and submit</button>` : ""}
-        ${r.status === "plan_failed" && !p.why_not ? `<button class="btn small primary" data-la="replan">\u21BB Retry plan</button>` : ""}
-        ${p.script ? `<button class="btn small" data-la="plan">${r.status === "draft" ? "Plan" : "Plan and script"}</button>` : ""}
-        ${r.job_id ? `<button class="btn small" data-la="log">${live ? "Live log" : "Log"}</button>` : ""}
-        ${r.status === "failed" && p.script ? `<button class="btn small primary" data-la="fixfailed" title="The AI reads the error in the job log and fixes only what failed. You review the new plan before anything runs.">Fix with AI</button>` : ""}
-        ${["completed", "failed", "cancelled"].includes(r.status) && p.script ? `<button class="btn small" data-la="rerun">\u21BB Re-run with changes</button>` : ""}
-        ${r.result_md ? `<button class="btn small" data-la="nb">\u2192 Notebook</button>` : ""}
+        ${prim ? `<button class="btn small primary" data-la="${esc(prim.id)}"${prim.hint ? ` title="${esc(prim.hint)}"` : ""}>${esc(prim.label)}</button>` : ""}
+        ${det ? `<button class="btn small ghost" data-la="details" aria-expanded="false">Details</button>` : ""}
         <span class="grow"></span>
-        <span class="mono dim" style="font-size:10.5px">${r.estimate_usd != null ? `compute est $${(+r.estimate_usd).toFixed(2)}` : ""}${r.ai_cost_usd ? ` \u00b7 AI $${(+r.ai_cost_usd).toFixed(2)}` : ""}${r.rerun_of ? ` \u00b7 re-run of #${r.rerun_of}` : ""}</span>
-        ${live ? `<button class="btn small danger" data-la="cancel">Stop run</button>` : `<button class="btn small danger" data-la="del" title="Delete this lab run and its local results">Delete</button>`}
+        <button class="btn small ghost lab-more" data-la="more" aria-label="More actions for lab run ${r.id}" title="More">\u22ef</button>
       </div>
+      ${det ? `<div class="lab-details" hidden>${det}</div>` : ""}
       <div class="log lab-log" hidden></div>
     </div>`;
+  },
+
+  // a run's re-runs/fix drafts, so the card can say "a fix is ready"
+  withChildren(runs) {
+    const kids = {};
+    runs.forEach((x) => { if (x.rerun_of != null) (kids[x.rerun_of] = kids[x.rerun_of] || []).push({ id: x.id, status: x.status }); });
+    runs.forEach((x) => { x.children = kids[x.id] || []; });
+    return runs;
+  },
+
+  isLive(r) { return ["planning", "submitting", "smoke", "queued", "running", "fetching", "analyzing"].includes(r.status); },
+
+  // one phrase that says where the run is and whether it needs Chuck
+  statusPhrase(r) {
+    const o = r.assessment && r.assessment.outcome;
+    const mins = (() => { const m = /^(?:(\d+)-)?(\d+):(\d+):(\d+)$/.exec(String(r.elapsed || "")); return m ? (+(m[1] || 0)) * 1440 + (+m[2]) * 60 + (+m[3]) : null; })();
+    const fixReady = (r.children || []).some((c) => c.status === "draft");
+    const tone = { confirmed: "ok", refuted: "refuted", inconclusive: "warn", broken: "bad" };
+    if (r.status === "completed" && o) {
+      const word = { confirmed: "Confirmed", refuted: "Refuted", inconclusive: "Inconclusive", broken: "Broken" }[o] || o;
+      return { text: o === "broken" && fixReady ? "Broken: a fix is ready" : word, tone: tone[o] || "" };
+    }
+    switch (r.status) {
+      case "draft": return { text: r.stage === "Not submitted" ? "Not submitted" : "Needs your review", tone: "act" };
+      case "planning": return { text: "Planning", tone: "live" };
+      case "plan_failed": return { text: (r.plan || {}).why_not ? "No test possible" : "Planning failed", tone: "bad" };
+      case "submitting": return { text: "Submitting", tone: "live" };
+      case "smoke": return { text: "Pilot on the check node", tone: "live" };
+      case "queued": return { text: "Waiting for a node", tone: "live" };
+      case "running": return { text: mins != null ? `Running, ${mins} min` : "Running", tone: "live" };
+      case "fetching": return { text: "Copying results", tone: "live" };
+      case "analyzing": return { text: "Writing up", tone: "live" };
+      case "completed": return { text: "Done", tone: "ok" };
+      case "cancelled": return { text: "Stopped", tone: "" };
+      case "failed": {
+        const sm = r.smoke || {};
+        if (sm.pilot) return { text: `Stopped after the pilot: ${String(sm.pilot.outcome || "").toLowerCase()}`, tone: "warn" };
+        return { text: fixReady ? "Failed: a fix is ready" : "Failed", tone: "bad" };
+      }
+      default: return { text: r.status, tone: "" };
+    }
+  },
+
+  // "Step 4 of 7: running" (only drawn while active)
+  stepLine(r) {
+    const names = ["planning", "review", "waiting for a node", "running", "copying results", "writing up", "done"];
+    const at = { planning: 0, submitting: 2, smoke: 2, queued: 2, running: 3, fetching: 4, analyzing: 5 }[r.status] ?? 0;
+    const extra = r.status === "smoke" ? " (pilot on the check node)" : r.status === "submitting" ? " (submitting)" : "";
+    return `Step ${at + 1} of 7: ${names[at]}${extra}${r.stage && r.stage !== r.status ? ` \u00b7 ${r.stage}` : ""}`;
+  },
+
+  // the single button that moves this run forward
+  primaryAction(r) {
+    const p = r.plan || {};
+    if (r.status === "draft") return { id: "review", label: "Review and submit" };
+    if (r.status === "plan_failed" && !p.why_not) return { id: "replan", label: "\u21BB Retry plan" };
+    if (r.status === "failed" && p.script) return { id: "fixfailed", label: "Fix with AI", hint: "The AI reads the error in the job log and fixes only what failed. You review the new plan before anything runs." };
+    if (this.isLive(r) && r.job_id) return { id: "log", label: "Live log" };
+    if (r.status === "completed" && r.result_md) return { id: "nb", label: "\u2192 Notebook" };
+    return null;
+  },
+
+  // everything else, for the "..." menu (ACT.menu items)
+  moreItems(r) {
+    const p = r.plan || {};
+    const live = this.isLive(r);
+    const prim = (this.primaryAction(r) || {}).id;
+    const it = [];
+    if (p.script) it.push({ id: "plan", label: r.status === "draft" ? "Open the plan" : "Plan and script" });
+    if (r.job_id && prim !== "log") it.push({ id: "log", label: live ? "Live log" : "Job log" });
+    if (["completed", "failed", "cancelled"].includes(r.status) && p.script) it.push({ id: "rerun", label: "\u21BB Re-run with changes" });
+    if (r.result_md && prim !== "nb") it.push({ id: "nb", label: "\u2192 Notebook" });
+    it.push({ sep: true });
+    it.push(live ? { id: "cancel", label: "Stop run", danger: true } : { id: "del", label: "Delete run", danger: true, hint: "Delete this lab run and its local results" });
+    return it;
+  },
+
+  // pilot verdict that stopped the run stays on the card (it is the answer); rounds go to Details
+  pilotOutcomeHtml(r) {
+    const sm = r.smoke;
+    if (!sm || !sm.pilot) return "";
+    return `<div class="lab-warn"><span class="label">Pilot result: ${esc(String(sm.pilot.outcome || "").toUpperCase())}</span> <span style="font-size:12px">${esc(sm.pilot.why || "")} The full run was not started.</span></div>`;
+  },
+
+  detailsHtml(r) {
+    const p = r.plan || {};
+    const rows = [];
+    const kv = (k, v) => rows.push(`<div class="lab-kv"><span class="label">${esc(k)}</span><span>${v}</span></div>`);
+    kv("Run", `#${esc(r.id)}${r.rerun_of ? ` <span class="dim">(re-run of #${esc(r.rerun_of)})</span>` : ""}`);
+    if (r.job_id) kv("Job", `<span class="mono mono-job">${this.metaText(r)}</span>`);
+    if (r.exit_code != null && r.exit_code !== "") kv("Exit code", `<span class="mono" title="Slurm: program exit code : signal">${esc(r.exit_code)}</span>`);
+    if ((p.resources || {}).partition) kv("Partition", `<span class="mono">${esc(p.resources.partition)}</span>${p.partition_switched ? ` <span class="dim">${esc(p.partition_switched)}</span>` : ""}`);
+    if ((r.cluster_jobs || []).some((j) => String(j.job_id) === String(r.job_id))) kv("Ran through", "bifrost (cluster service)");
+    if (String(r.job_id || "").startsWith("warm:")) kv("Ran on", "the warm Lab node (retired)");
+    if (r.estimate_usd != null || r.ai_cost_usd) kv("Cost", `${r.estimate_usd != null ? `compute worst case $${(+r.estimate_usd).toFixed(2)}` : ""}${r.ai_cost_usd ? `${r.estimate_usd != null ? " \u00b7 " : ""}AI $${(+r.ai_cost_usd).toFixed(2)}` : ""}`);
+    if (r.provenance) kv("Inputs", `<span class="mono" title="Fingerprint of the script, software, resources and data (with content hashes) this run used${(r.provenance.sources || []).length ? ": " + esc(r.provenance.sources.map((d) => d.name + "@" + (d.manifest_hash || "").slice(0, 8)).join(", ")) : ""}">${esc(r.provenance.fingerprint)}</span>`);
+    const pilot = this.pilotRoundsHtml(r);
+    const steps = !this.isLive(r) ? this.stepsHtml(r) : "";
+    if (rows.length <= 1 && !pilot && !steps) return "";
+    return `${steps}${rows.join("")}${pilot}`;
   },
 
   metaText(r) { return esc(`job ${r.job_id}${r.node ? " \u00b7 " + r.node : ""}${r.elapsed ? " \u00b7 " + r.elapsed : ""}`); },
@@ -216,6 +312,10 @@ const LAB = {
     </div>`;
   },
 
+  // fix notes minus the "REVIEW: ..." lines (already shown as "Check before running");
+  // a note can hold decimals ("0.5%"), so a REVIEW note ends at a newline or ". " + capital
+  fixNotes(t) { return String(t || "").replace(/REVIEW: [\s\S]*?(?:\.(?=\s+[A-Z])\s*|\n|$)/g, "").trim(); },
+
   concernsHtml(p) {
     // what an AI fix did that needs a person's eyes (fallback to a reference value, changed
     // verdict tolerances, a swapped formula variable, a removed library, a big rewrite)
@@ -223,21 +323,62 @@ const LAB = {
     if (!cs.length) return "";
     return `<div class="lab-warn" role="alert" style="margin:6px 0"><b>Check before running:</b><ul>${cs.map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>`;
   },
-  smokeHtml(r) {
-    // pilot rounds on the check partition, and the plan changes the AI made to pass them
-    const sm = r.smoke;
-    const p = r.plan || {};
-    const bits = [];
-    if (sm && Array.isArray(sm.rounds) && sm.rounds.length) {
-      bits.push(`<span class="label">Pilot</span> ` + sm.rounds.map((x) => `round ${x.round}: ${x.passed ? "passed" : `<b>failed</b>${x.class && x.class !== "script" ? ` (${esc(({install: "software setup", container: "container image", "tool-crash": "program crashed", "missing-feature": "missing feature", glibc: "binary too new for the nodes", numerical: "numerical blow-up", timeout: "time limit", oom: "out of memory"})[x.class] || x.class)})` : ""}`}${x.rc != null ? ` (exit ${x.rc}${x.seconds != null ? `, ${x.seconds}s` : ""})` : ""}${(x.missing || []).length ? `, missing ${esc(x.missing.join(", "))}` : ""}${x.note ? ` <span class="dim">${esc(x.note)}</span>` : ""}`).join("; "));
+  // U2: the top of the review dialog. What will run, where, worst-case cost, the
+  // referee in one line, a red box when the success criteria changed, and Submit.
+  criteriaChange(p) {
+    const now = String(p.success_criteria || "").trim();
+    for (const [src, from] of [["the AI fix", p.plan_before_fix], ["the referee revision", p.plan_before_refine]]) {
+      const was = String((from || {}).success_criteria || "").trim();
+      if (from && was && was !== now) return { src, before: was, after: now };
     }
-    if (sm && sm.pilot) bits.push(`<span class="label">Pilot result</span> <b>${esc(String(sm.pilot.outcome || "").toUpperCase())}</b>: ${esc(sm.pilot.why || "")} The full run was not started.`);
-    if ((p.fix_concerns || []).length && r.status === "draft") bits.push(`<span class="label">Check before running</span> ${p.fix_concerns.map(esc).join("; ")}`);
-    if (p.partition_switched) bits.push(`<span class="label">Partition</span> ${esc(p.partition_switched)}`);
-    if (String(r.job_id || "").startsWith("warm:")) bits.push(`<span class="label">Ran on</span> the warm Lab node (retired)`);
-    if ((r.cluster_jobs || []).some((j) => String(j.job_id) === String(r.job_id))) bits.push(`<span class="label">Ran through</span> bifrost (cluster service), job ${esc(r.job_id)}`);
-    if (!bits.length) return "";
-    return `<div class="lab-q dim" style="font-size:11.5px">${bits.join("<br>")}</div>`;
+    const f = ((p.fix_diff || {}).fields || []).find((x) => x.key === "success_criteria");
+    if (f) {
+      const un = (v) => { try { return String(JSON.parse(v) ?? ""); } catch { return String(v || ""); } };
+      if (un(f.before).trim() !== un(f.after).trim()) return { src: "the fix of the failed run", before: un(f.before), after: un(f.after) };
+    }
+    return null;
+  },
+
+  decisionHtml(r, p, editable) {
+    const res = p.resources || {};
+    const part = res.partition || "?";
+    const pv = (this.partitions || {})[part] || {};
+    const cores = res.whole_node || pv.exclusive || ["highmem", "gpul4"].includes(part) ? `whole node${pv.cpus ? ` (${pv.cpus} cores)` : ""}` : `${res.cores || 2} core${(res.cores || 2) == 1 ? "" : "s"}`;
+    const where = `${esc(part)}, ${+res.nodes > 1 ? `${esc(res.nodes)} nodes x ` : ""}${esc(cores)}${+res.gpus ? ` + ${esc(res.gpus)} GPU` : ""}, up to ${esc(res.time_limit || "01:00:00")}`;
+    const soft = (p.software || []).map((x) => x.name).filter(Boolean).slice(0, 4).join(", ");
+    // the approach's first sentence, whole (cut only past 400 characters)
+    const what = p.approach ? clip(String(p.approach).split(/(?<=[.!?])\s+(?=[A-Z])/)[0], 400) : (p.question || "");
+    const rv = p.review;
+    const refLine = rv ? `${{ sound: "looks sound", concerns: "has concerns", flawed: "flawed" }[rv.verdict] || rv.verdict}${(rv.findings || []).length ? `, ${rv.findings.length} finding${rv.findings.length === 1 ? "" : "s"}` : ""}${r.review_stale ? " (out of date: the plan changed after it read it)" : ""}` : (p.review_error ? "did not run" : "not run yet");
+    const refTone = !rv ? "dim" : rv.verdict === "sound" && !r.review_stale ? "ok" : rv.verdict === "flawed" ? "bad" : "warn";
+    const nWarn = (p.warnings || []).length;
+    const cc = this.criteriaChange(p);
+    return `<div class="lab-decide">
+      <div class="lab-decide-q">${esc(p.question || "")}</div>
+      <dl class="lab-decide-grid">
+        <dt>What runs</dt><dd>${esc(what)}</dd>
+        ${soft ? `<dt>Software</dt><dd>${esc(soft)}</dd>` : ""}
+        <dt>Where</dt><dd>${where}</dd>
+        <dt>Worst case</dt><dd><b>${r.estimate_usd != null ? "$" + (+r.estimate_usd).toFixed(2) : "?"}</b> <span class="dim">compute; real jobs usually stop earlier${r.ai_cost_usd ? ` \u00b7 AI so far $${(+r.ai_cost_usd).toFixed(2)}` : ""}</span></dd>
+        <dt>Referee</dt><dd class="${refTone}">${esc(refLine)}</dd>
+        ${nWarn ? `<dt>Cluster check</dt><dd class="warn">${nWarn} problem${nWarn > 1 ? "s" : ""}: ${esc(clip(p.warnings[0], 160))}</dd>` : ""}
+        ${(p.fix_concerns || []).length ? `<dt>AI fix</dt><dd class="warn">${p.fix_concerns.length} thing${p.fix_concerns.length > 1 ? "s" : ""} to check before running (below)</dd>` : ""}
+      </dl>
+      ${cc ? `<div class="lab-err lab-crit" role="alert"><span class="label">Success criteria changed by ${esc(cc.src)}</span><div class="lab-crit-row"><span class="dim">Before</span><div class="del">${esc(cc.before)}</div></div><div class="lab-crit-row"><span class="dim">Now</span><div class="add">${esc(cc.after || "(none)")}</div></div></div>` : ""}
+      <div class="lab-decide-acts">
+        ${editable ? `<button class="btn primary" data-x="sumsubmit">Submit to ${esc(r.target_label || "cluster")}\u2026</button>` : ""}
+        <button class="btn ghost small" data-x="opensecs">Open all sections</button>
+        <span class="dim" style="font-size:11px">${editable ? "The full plan, the AI's changes and the script are below." : ""}</span>
+      </div>
+    </div>`;
+  },
+
+  pilotRoundsHtml(r) {
+    // pilot rounds on the check partition (Details)
+    const sm = r.smoke;
+    if (!sm || !Array.isArray(sm.rounds) || !sm.rounds.length) return "";
+    const cls = { install: "software setup", container: "container image", "tool-crash": "program crashed", "missing-feature": "missing feature", glibc: "binary too new for the nodes", numerical: "numerical blow-up", timeout: "time limit", oom: "out of memory" };
+    return `<div class="lab-kv"><span class="label">Pilot</span><span>${sm.rounds.map((x) => `round ${esc(x.round)}: ${x.passed ? "passed" : `<b>failed</b>${x.class && x.class !== "script" ? ` (${esc(cls[x.class] || x.class)})` : ""}`}${x.rc != null ? ` (exit ${esc(x.rc)}${x.seconds != null ? `, ${esc(x.seconds)}s` : ""})` : ""}${(x.missing || []).length ? `, missing ${esc(x.missing.join(", "))}` : ""}${x.note ? ` <span class="dim">${esc(x.note)}</span>` : ""}`).join("; ")}</span></div>`;
   },
   outcomeBadge(r) {
     const a = r.assessment;
@@ -275,20 +416,31 @@ const LAB = {
     const card = el.querySelector(`.lab-run[data-run="${r.id}"]`); if (!card) return;
     const act = (a) => card.querySelector(`[data-la="${a}"]`);
     act("review")?.addEventListener("click", () => this.review(el, s, r));
-    act("plan")?.addEventListener("click", () => this.review(el, s, r, true));
     act("log")?.addEventListener("click", () => this.toggleLog(card, r));
+    act("details")?.addEventListener("click", (e) => {
+      const box = card.querySelector(".lab-details"); if (!box) return;
+      box.hidden = !box.hidden; e.currentTarget.setAttribute("aria-expanded", String(!box.hidden));
+    });
+    // "..." holds every other action; each runs through the same handler as a button would
+    const menuRun = {
+      plan: () => this.review(el, s, r, true),
+      log: () => this.toggleLog(card, r),
+    };
     // Every action runs once at a time (busy() disables the button until it ends).
-    const on = (a, fn) => { const b = act(a); if (b) b.addEventListener("click", () => busy(b, fn)); };
+    const on = (a, fn) => {
+      const b = act(a); if (b) b.addEventListener("click", () => busy(b, fn));
+      menuRun[a] = () => busy(act("more"), fn); // from the menu: the "..." button shows busy
+    };
     on("rerun", async () => { const n = await api(`/api/lab/${r.id}/rerun`, { method: "POST" }); await this.refresh(el, s); this.review(el, s, n); });
     on("fixfailed", async () => {
-      const b = act("fixfailed"); b.innerHTML = '<span class="spinner"></span> Reading the log';
+      const b = act("fixfailed"); if (b) b.innerHTML = '<span class="spinner"></span> Reading the log';
       const n = await api(`/api/lab/${r.id}/fix-failed`, { method: "POST" });
       const f = n.fix || {};
       toast(`New draft #${n.id}: ${(f.changes || []).length} change(s)${(f.remaining || []).length ? `, ${f.remaining.length} warning(s)` : ""}`, (f.remaining || []).length ? "err" : "ok");
       await this.refresh(el, s); this.review(el, s, n);
     });
     on("fixblocked", async () => {
-      const b = act("fixblocked"); b.innerHTML = '<span class="spinner"></span> Working';
+      const b = act("fixblocked"); if (b) b.innerHTML = '<span class="spinner"></span> Working';
       const n = await api(`/api/lab/${r.id}/fix-blocked`, { method: "POST" });
       const lf = n.laptop_fetch;
       if (n.fix_error) toast(`New draft #${n.id} copied, but the automatic fix did not finish: ${n.fix_error}`, "err");
@@ -306,8 +458,8 @@ const LAB = {
       if (!(await confirmBox(`Delete lab run #${r.id}?`, "Removes the run and its downloaded results from this computer. Files on the cluster are kept.", "Delete"))) return;
       try { await api(`/api/lab/${r.id}`, { method: "DELETE" }); } finally { this.refresh(el, s); }
     });
-    const live = ["planning", "submitting", "smoke", "queued", "running", "fetching", "analyzing"].includes(r.status);
-    if (live) this.poll(el, s, r);
+    act("more")?.addEventListener("click", (e) => ACT.menu(e.currentTarget, this.moreItems(r), (it) => menuRun[it.id] && menuRun[it.id]()));
+    if (this.isLive(r)) this.poll(el, s, r);
   },
 
   poll(el, s, r) {
@@ -320,10 +472,16 @@ const LAB = {
       if (!card) return;
       const logOpen = !card.querySelector(".lab-log").hidden;
       if (n.status === r.status && n.stage === r.stage && (n.elapsed !== r.elapsed || n.node !== r.node)) {
-        // Only the clock or node moved: update that line, keep open log and details.
-        const meta = card.querySelector(".lab-meta");
+        // Only the clock or node moved: update the status phrase and job line, keep open
+        // log and details.
+        n.children = r.children;
+        const st = card.querySelector(".lab-status");
+        if (st) st.innerHTML = `<span class="spinner"></span>${esc(this.statusPhrase(n).text)}`;
+        const meta = card.querySelector(".lab-details .mono-job");
         if (meta) meta.innerHTML = this.metaText(n);
+        r.elapsed = n.elapsed; r.node = n.node;
       } else if (n.status !== r.status || n.stage !== r.stage) {
+        n.children = r.children;
         const tmp = document.createElement("div"); tmp.innerHTML = this.runHtml(n);
         card.replaceWith(tmp.firstElementChild);
         this.wire(el, s, n);
@@ -447,25 +605,27 @@ const LAB = {
     MODAL.open(`
       <div class="lab-review">
       <div class="modal-head"><h3>${editable ? "Review lab run" : "Lab run"} #${r.id}: ${esc(p.title || "")}</h3><button class="icon-btn modal-x" data-x="0" aria-label="Close">\u2715</button></div>
+      ${this.decisionHtml(r, p, editable)}
       <nav class="lab-toc">${["What and why", "Software and data", "Settings", "Result check", "Script"].map((t, i) => `<a href="#" data-sec="${i + 1}">${i + 1}. ${t}</a>`).join("")}</nav>
-      <div class="lab-q"><span class="label">Question</span> ${esc(p.question || "")}</div>
       ${this.refineHtml(p, editable)}
       ${this.refereeHtml(r, p, editable)}
       ${editable && (r.blocked_urls || []).length ? `<div class="lab-warn"><span class="label">Blocked from the cluster</span> <span class="dim" style="font-size:11.5px">${r.blocked_urls.length} download${r.blocked_urls.length > 1 ? "s" : ""} refused on a compute node (${esc([...new Set(r.blocked_urls.map((u) => u.status))].join(", "))}). This laptop can fetch ${r.blocked_urls.length > 1 ? "them" : "it"}, stage the files as a data source, and have the AI read them from there instead.</span><div class="lab-fix-row"><button class="btn small primary" data-x="lfetch">Fetch on this laptop</button><span class="dim" style="font-size:11px">one at a time, politely; nothing is submitted</span></div></div>` : ""}
       ${p.laptop_fetch && editable ? `<div class="lab-fixed"><span class="label">Fetched on this laptop</span> <span class="dim" style="font-size:11.5px">${(p.laptop_fetch.files || []).length} file(s) in data source <b>${esc(p.laptop_fetch.source)}</b>${(p.laptop_fetch.failed || []).length ? `; ${p.laptop_fetch.failed.length} failed: ${p.laptop_fetch.failed.map((f) => esc(f.error)).join(", ")}` : ""}</span></div>` : ""}
       ${(p.warnings || []).length ? `<div class="lab-warn"><span class="label">Checked against the cluster: ${p.warnings.length} problem${p.warnings.length > 1 ? "s" : ""}</span><ul>${p.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul><div class="lab-fix-row">${editable ? `<button class="btn" data-x="fix" title="The AI fixes only what is flagged, then the plan is checked again. Nothing is submitted.">Fix with AI</button>` : ""}<span class="dim" style="font-size:11px">${editable ? "or edit the plan (modules, partition, GPUs) yourself, or submit anyway." : ""}</span></div></div>` : ""}
-      ${!p.plan_before_fix && (p.fix_changes || []).length && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">AI fix of failed run #${esc(r.rerun_of || "")}</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "checks pass"}</span></div><ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>${this.concernsHtml(p)}${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(p.fix_notes.replace(/REVIEW: [^.]*\. ?/g, ""))}</div>` : ""}${this.diffHtml(p.fix_diff)}</div>` : ""}
-      ${p.plan_before_fix && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">Fixed by AI and re-checked</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "no warnings"}</span> <button class="btn" data-x="undofix">Undo fix</button></div>${(p.fix_changes || []).length ? `<ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}${this.concernsHtml(p)}${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(p.fix_notes.replace(/REVIEW: [^.]*\. ?/g, ""))}</div>` : ""}${this.diffHtml(p.fix_diff)}</div>` : ""}
-      <h4 class="lab-h" id="lr-sec-1">1. What and why</h4>
+      ${!p.plan_before_fix && (p.fix_changes || []).length && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">${r.rerun_of ? `AI fix of failed run #${esc(r.rerun_of)}` : "AI fix after the pilot"}</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "checks pass"}</span></div><ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>${this.concernsHtml(p)}${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(this.fixNotes(p.fix_notes))}</div>` : ""}${this.diffHtml(p.fix_diff)}</div>` : ""}
+      ${p.plan_before_fix && editable ? `<div class="lab-fixed"><div class="lab-fix-row"><span class="label">Fixed by AI and re-checked</span> <span class="dim" style="font-size:11.5px">${(p.warnings || []).length ? (p.warnings.length + " warning" + (p.warnings.length > 1 ? "s" : "") + " left") : "no warnings"}</span> <button class="btn" data-x="undofix">Undo fix</button></div>${(p.fix_changes || []).length ? `<ul>${p.fix_changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}${this.concernsHtml(p)}${p.fix_notes ? `<div class="dim" style="font-size:11.5px">${esc(this.fixNotes(p.fix_notes))}</div>` : ""}${this.diffHtml(p.fix_diff)}</div>` : ""}
+      <details class="lab-fold" id="lr-sec-1"><summary class="lab-h">1. What and why</summary>
       <div class="lab-sec"><span class="label">Approach</span><div>${esc(p.approach || "")}</div></div>
-      <h4 class="lab-h" id="lr-sec-2">2. Software and data</h4>
+      </details>
+      <details class="lab-fold" id="lr-sec-2"><summary class="lab-h">2. Software and data</summary>
       <div class="lab-grid">
         <div><span class="label">Software</span>${(p.software || []).map((x) => `<div><b>${esc(x.name)}</b> <span class="mono dim">${esc(x.source || "")}${x.version ? " " + esc(x.version) : ""}</span><div class="dim" style="font-size:11.5px">${esc(x.why || "")}</div></div>`).join("") || '<div class="dim">none</div>'}
           <div class="mono dim" style="font-size:10.5px;margin-top:4px">${[inst.modules?.length ? "modules: " + inst.modules.join(" ") : "", inst.conda?.length ? "conda: " + inst.conda.join(" ") : "", inst.pip?.length ? "pip: " + inst.pip.join(" ") : "", inst.apptainer?.length ? "containers: " + inst.apptainer.join(" ") : ""].filter(Boolean).join(" \u00b7 ")}</div></div>
         <div><span class="label">Data sources <span class="dim" style="text-transform:none;letter-spacing:0">staged read-only, read via $DS_NAME</span></span><div id="lr-ds">${(p.data_sources || []).map((n) => `<span class="filechip">${esc(n)}</span>`).join(" ") || '<div class="dim">none</div>'}</div>
           <span class="label" style="margin-top:8px;display:block">Inputs</span>${(p.inputs || []).map((x) => `<div style="font-size:12px">${esc(x)}</div>`).join("") || '<div class="dim">none</div>'}</div>
       </div>
-      <h4 class="lab-h" id="lr-sec-3">3. Settings</h4>
+      </details>
+      <details class="lab-fold" id="lr-sec-3"><summary class="lab-h">3. Settings</summary>
       <div class="lab-sec"><span class="label">Parameters</span>
         <div class="lab-params">${Object.entries(params).map(([k, v]) => { const val = typeof v === "object" ? JSON.stringify(v) : String(v); return `<label ${val.length > 22 ? 'style="grid-column:span 2"' : ""}><span class="mono">${esc(k)}</span><input data-param="${esc(k)}" value="${esc(val)}" title="${esc(val)}" ${editable ? "" : "disabled"}></label>`; }).join("") || '<span class="dim">none</span>'}</div></div>
       ${Object.keys(p.parameter_sources || {}).length ? `<div class="lab-sec"><span class="label">Where the parameters come from</span><ul class="lab-psrc">${Object.entries(p.parameter_sources).map(([k, v]) => `<li><span class="mono">${esc(k)}</span>: <span class="${/^assumed/i.test(String(v)) ? "bad" : "dim"}">${esc(String(v))}</span></li>`).join("")}</ul></div>` : (editable ? `<div class="lab-sec dim" style="font-size:11.5px">No parameter sources given: values may be unjustified.</div>` : "")}
@@ -479,21 +639,26 @@ const LAB = {
           <label title="Memory per node in GB. Blank: the share that comes with the cores."><span class="mono">mem GB</span><input id="lr-mem" type="number" min="1" placeholder="auto" value="${esc(res.mem_gb ?? "")}" ${editable ? "" : "disabled"}></label>
           <label title="Ask for the whole node (--exclusive). highmem and gpul4 always give whole nodes."><span class="mono">whole node</span><select id="lr-whole" ${editable ? "" : "disabled"}><option value="0" ${res.whole_node === true ? "" : "selected"}>no</option><option value="1" ${res.whole_node === true ? "selected" : ""}>yes</option></select></label>
         </div><div class="dim" style="font-size:11px;margin-top:4px">${esc(this.coresNote(parts, res))}</div></div>
-      <h4 class="lab-h" id="lr-sec-4">4. Result check</h4>
+      </details>
+      <details class="lab-fold" id="lr-sec-4"><summary class="lab-h">4. Result check</summary>
       <div class="lab-sec"><span class="label">Expected outputs</span> <span class="mono dim" style="font-size:11.5px">${esc((p.expected_outputs || []).join(", "))}</span></div>
       <div class="lab-sec"><span class="label">Success criteria</span><div class="dim" style="font-size:12px">${esc(p.success_criteria || "")}</div></div>
       ${p.caveats ? `<div class="lab-sec"><span class="label">Caveats</span><div class="dim" style="font-size:12px">${esc(p.caveats)}</div></div>` : ""}
-      <h4 class="lab-h" id="lr-sec-5">5. Script</h4>
+      </details>
+      <details class="lab-fold" id="lr-sec-5"><summary class="lab-h">5. Script</summary>
       <details class="lab-sec" open><summary class="label">Run script ${editable ? "(edit to change what runs)" : ""} <span class="dim">\u2014 click to fold</span></summary>
         <textarea id="lr-script" class="lab-script" spellcheck="false" ${editable ? "" : "readonly"}>${esc(p.script || "")}</textarea></details>
       <details class="lab-sec"><summary class="label">Generated Slurm batch file <span class="dim">\u2014 click to show</span></summary><pre class="lab-script">${esc(r.script || "")}</pre></details>
+      </details>
       <div class="estimate"><span>COMPUTE, WORST CASE <b id="lr-est">${r.estimate_usd != null ? "$" + (+r.estimate_usd).toFixed(2) : "?"}</b></span><span class="dim">nodes x share of node x time limit x list price; real jobs usually stop earlier</span>${r.ai_cost_usd ? `<span>AI so far <b>$${(+r.ai_cost_usd).toFixed(2)}</b></span>` : ""}</div>
       <div class="acts">
         <button class="btn" data-x="0">Close</button>
         ${editable ? `<button class="btn" data-x="save">Save draft</button><span class="grow"></span><button class="btn primary" data-x="submit">Submit to ${esc(r.target_label || "cluster")}\u2026</button>` : ""}
       </div>
       </div>`, { cls: "wide", dirty: () => editable && snapshot !== null && snapshot !== formState() });
-    $$("#modal .lab-toc a").forEach((a) => (a.onclick = (e) => { e.preventDefault(); $("#lr-sec-" + a.dataset.sec)?.scrollIntoView({ behavior: "smooth", block: "start" }); }));
+    $$("#modal .lab-toc a").forEach((a) => (a.onclick = (e) => { e.preventDefault(); const d = $("#lr-sec-" + a.dataset.sec); if (!d) return; d.open = true; d.scrollIntoView({ behavior: "smooth", block: "start" }); }));
+    $('#modal [data-x="sumsubmit"]')?.addEventListener("click", () => $('#modal [data-x="submit"]')?.click());
+    $('#modal [data-x="opensecs"]')?.addEventListener("click", () => $$("#modal details.lab-fold").forEach((d) => (d.open = true)));
     const close = () => MODAL.close();
     $$('#modal [data-x="0"]').forEach((b) => (b.onclick = () => MODAL.requestClose()));
     const formState = () => JSON.stringify([...document.querySelectorAll("#modal input, #modal select, #modal textarea")].map((i) => i.value));
@@ -621,6 +786,7 @@ const LAB = {
     $("#runs-cluster").onclick = () => openCluster();
     const live = ["planning", "submitting", "smoke", "queued", "running", "fetching", "analyzing"];
     const draw = (runs) => {
+      LAB.withChildren(runs); // "a fix is ready" needs each run's drafts
       const f = $("#runs-filter").value;
       const shown = runs.filter((r) => !f || (f === "live" ? live.includes(r.status) : f === "failed" ? ["failed", "plan_failed"].includes(r.status) : r.status === f));
       $("#runs-count").textContent = `${shown.length} of ${runs.length}`;
@@ -630,11 +796,11 @@ const LAB = {
         const cost = r.estimate_usd != null ? "\u2264 $" + (+r.estimate_usd).toFixed(2) : "";
         return `<tr data-sid="${r.session_id}" data-rid="${r.id}">
           <td class="mono">${r.id}</td>
-          <td><span class="status-badge ${esc(badge)}">${esc(badge)}</span>${LAB.outcomeBadge(r)}</td>
+          <td>${(() => { const st = LAB.statusPhrase(r); return `<span class="lab-status ${esc(st.tone)}">${esc(st.text)}</span>`; })()}</td>
           <td><div class="runs-title">${esc(p.title || (r.scope === "selection" ? "Selected passage" : "Whole report"))}</div>${(() => {
             // the badge already says the status; only show a stage line that adds something
             const line = r.error ? clip(r.error, 140) : (r.stage || "");
-            const redundant = !r.error && (/^(ended|done|completed|cancelled|failed)\b/i.test(line) || line.toLowerCase() === badge);
+            const redundant = !r.error && (/^(ended|done|completed|cancelled|failed)\b/i.test(line) || line.toLowerCase() === badge || line.toLowerCase() === LAB.statusPhrase(r).text.toLowerCase());
             return line && !redundant ? `<div class="dim runs-stage">${esc(line)}</div>` : "";
           })()}</td>
           <td class="runs-report" title="${esc(r.session_title || "")}">#${r.session_id} ${esc(clip(oneLine(r.session_title || ""), 80))}</td>
