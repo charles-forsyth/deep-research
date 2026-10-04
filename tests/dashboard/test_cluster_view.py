@@ -154,3 +154,15 @@ def test_view_threads_do_not_pile_up():
     for t in ts:
         t.join()
     assert len(c.calls) == 1
+
+
+def test_cluster_page_lists_jobs_that_held_too_many_cores():
+    cl = (STATIC / "cluster.js").read_text()
+    assert "oversized(wd, labJobs)" in cl and "CLV.oversized(wd, labJobs)" in cl
+    i = cl.index("  oversized(wd, labJobs) {")
+    block = cl[i : cl.index("\n  },\n", i)]
+    assert 'x.kind === "low-cpu"' in block and "* 1.5" in block
+    for m in re.finditer(
+        r"\$\{([^}]*(?:x\.partition|l\.title|x\.job_id)[^}]*)\}", block
+    ):
+        assert "esc(" in m.group(1) or "clip(" in m.group(1), m.group(0)

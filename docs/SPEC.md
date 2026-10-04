@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.58.0 (package `deepresearch`) |
+| Applies to | deep-research v0.59.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -2340,6 +2340,18 @@ The SSH submit/watch/fetch path stays until R4b. Tests: the warm-node fake tests
 replaced by bifrost-pilot tests of the same behaviour (AI fix rounds, give-up, install
 failure not retried forever, resume after restart, verdict re-plan).
 
+### 20.26 Right-sized cores from history (v0.59.0)
+
+Jobs used about 27% of the CPU they held over 30 days (bifrost `my_usage`), and on shared
+partitions the cores held are what bills. `cores_from_history(db, plan)` reads
+`cluster.efficiency` (cpus x cpu_percent, recorded by bifrost for every finished job) of
+completed runs that share a software name with the plan, and suggests the most any of
+them used plus 50% headroom, rounded up, at least 1. Pre-flight warns ("Cores: similar
+past runs used at most N of the cores they held") when the plan asks for at least 4 cores
+and at least twice the suggestion. Runs with no measurement (0% or missing) are ignored.
+The Cluster page lists the biggest low-CPU jobs of the last 7 days (CPU used, cores held,
+suggested cores, wasted dollars), Lab runs named.
+
 ## 21. Data sources
 
 A data source is a named reference to data that lives somewhere else: an open dataset
@@ -3087,3 +3099,4 @@ before v0.39.0).
 | 2026-10-03 | v0.57.2 | Ursa Major moved to fewer, cheaper node types (standard/spot on e2-standard-32 in any us-central1 zone; `lab` partition removed). `suggest_partition` now puts CPU work on standard and sweeps on spot first; computehigh stays first only for MPI. Live config: default partition standard, warm worker off. |
 | 2026-10-03 | v0.57.3 | Live log of a bifrost job that has not written its log yet (queued, node booting) says "waiting for the job to start: <stage>" instead of the cluster's file error, and resumes from the top once the log exists. |
 | 2026-10-03 | v0.58.0 | R4a: the warm Lab node is retired (20.25): worker script, keeper, warm routes and UI deleted; pilots and planning checks only through bifrost on `check`. |
+| 2026-10-03 | v0.59.0 | Core advice from history (20.26): pre-flight warns when similar past runs used far fewer cores than the plan asks; Cluster page lists jobs that held more cores than they used. |

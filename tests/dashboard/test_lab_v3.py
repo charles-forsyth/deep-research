@@ -276,6 +276,41 @@ def test_time_from_history(wlab):
     assert labm.time_from_history(wlab.db_path, other) is None
 
 
+def test_cores_from_history_and_the_warning(wlab):
+    """v0.59.0: similar past runs that used 1.5 of 16 cores -> suggest 3, warn on 16."""
+    done = _draft(wlab, software=[{"name": "simpy"}])
+    wlab._update(
+        done["id"], status="completed",
+        cluster={"efficiency": {"cpus": 16, "cpu_percent": 9.4}},
+    )  # fmt: skip
+    noise = _draft(wlab, software=[{"name": "simpy"}])  # no measurement: ignored
+    wlab._update(
+        noise["id"],
+        status="completed",
+        cluster={"efficiency": {"cpus": 8, "cpu_percent": 0}},
+    )
+    plan = {**PLAN, "software": [{"name": "simpy"}]}
+    ch = labm.cores_from_history(wlab.db_path, plan)
+    assert ch == {"cores": 3, "used": 1.5, "asked": 16, "runs": 1}
+    other = {**PLAN, "software": [{"name": "zzz"}], "install": {"conda": ["zzz"]}}
+    assert labm.cores_from_history(wlab.db_path, other) is None
+
+    t = wlab.fake
+    t.partitions = {"standard": {"cpus": 16, "mem_gb": 124}}
+    big = {
+        **plan,
+        "resources": {**PLAN["resources"], "partition": "standard", "cores": 16},
+    }
+    w = [x for x in wlab.match_warnings(t, big) if x.startswith("Cores:")]
+    assert w and "resources.cores = 3" in w[0] and "used at most 1.5" in w[0]
+    # close to the suggestion, or tiny jobs: no nagging
+    for cores in (4, 2):
+        ok = {**big, "resources": {**big["resources"], "cores": cores}}
+        assert not [
+            x for x in wlab.match_warnings(t, ok) if "similar past runs used" in x
+        ]
+
+
 def test_stockout_moves_a_queued_job_to_another_partition(wlab, monkeypatch):
     t = wlab.fake
     t.partitions = {"standard": {}, "computehigh": {}}
