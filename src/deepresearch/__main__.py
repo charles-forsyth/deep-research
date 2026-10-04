@@ -123,6 +123,22 @@ def _add_research_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--output", help=OUTPUT_HELP)
     p.add_argument("--depth", type=int, default=1, help=DEPTH_HELP)
     p.add_argument("--breadth", type=int, default=3, help=BREADTH_HELP)
+    p.add_argument(
+        "--plan-id",
+        metavar="INTERACTION",
+        help=(
+            "Run as the continuation of an approved research plan (the plan "
+            "interaction id from the dashboard's Plan first)"
+        ),
+    )
+    p.add_argument(
+        "--max",
+        action="store_true",
+        help=(
+            "Use Google's Deep Research Max agent: more searches and reading, slower, "
+            "about 2-3x the cost of a standard run"
+        ),
+    )
 
 
 JSON_HELP = (
@@ -337,6 +353,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser_cluster.add_argument("--json", action="store_true", help="JSON output")
 
+    parser_nexus = subparsers.add_parser(
+        "nexus",
+        help="Sign in to Nexus (read-only) for project links",
+        description=(
+            "login: open the browser to sign in to the Nexus MCP server as "
+            "deep-research's own read-only program client (nexus-deep-research); the "
+            "token is kept in ~/.config/deepresearch/nexus-token.json (mode 600). "
+            "logout: revoke and delete it. status: who is signed in."
+        ),
+    )
+    parser_nexus.add_argument(
+        "action", choices=["login", "logout", "status"], help="Action to perform"
+    )
+    parser_nexus.add_argument("--json", action="store_true", help="JSON output")
+
     parser_estimate = subparsers.add_parser(
         "estimate",
         help="Estimate the cost of a research task (no API calls)",
@@ -348,6 +379,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser_estimate.add_argument("prompt", help="The research prompt or question")
     parser_estimate.add_argument("--depth", type=int, default=1, help=DEPTH_HELP)
     parser_estimate.add_argument("--breadth", type=int, default=3, help=BREADTH_HELP)
+    parser_estimate.add_argument(
+        "--max", action="store_true", help="Estimate a Deep Research Max run"
+    )
     parser_estimate.add_argument(
         "--upload", nargs="+", help="Files or folders you plan to upload"
     )
@@ -578,6 +612,7 @@ def main():
         "tree",
         "auth",
         "cluster",
+        "nexus",
         "estimate",
         "dashboard",
         "sources",
@@ -666,6 +701,10 @@ def _dispatch(parser: argparse.ArgumentParser, args, as_json: bool) -> None:
             handle_tree(args)
         elif args.command == "auth":
             handle_auth(args)
+        elif args.command == "nexus":
+            from deepresearch.cli.cluster import handle_nexus
+
+            sys.exit(handle_nexus(args))
         elif args.command == "cluster":
             from deepresearch.cli.cluster import handle as handle_cluster
 

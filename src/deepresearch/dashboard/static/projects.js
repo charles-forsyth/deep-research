@@ -106,7 +106,11 @@ const PROJ = {
       <div class="row">
         <div class="field"><label>Color</label><div class="pj-colors">${this.colors.map((c) => `<button type="button" class="pdot big ${c} ${c === (p.color || "cyan") ? "on" : ""}" data-c="${c}" aria-label="${c}"></button>`).join("")}</div></div>
         <div class="field"><label for="pj-level">Protection level</label><select id="pj-level">${["P1", "P2", "P3", "P4"].map((l) => `<option ${l === (p.protection_level || "P2") ? "selected" : ""}>${l}</option>`).join("")}</select></div>
-        <div class="field"><label for="pj-nexus">Nexus grant / lab id <span class="dim">(text only)</span></label><input id="pj-nexus" value="${esc(p.nexus_ref || "")}" placeholder="optional"></div>
+        <div class="field nx-field"><label for="pj-nexus-q">Nexus link <span class="dim">(lab, grant or GCP project)</span></label>
+          <input type="hidden" id="pj-nexus" value="${esc(p.nexus_ref || "")}">
+          <div class="nx-picked" id="pj-nexus-picked">${this.nexusChip(p.nexus_ref)}</div>
+          <input id="pj-nexus-q" placeholder="search Nexus, e.g. Baer, 2502990, ucr-ursa-major" autocomplete="off">
+          <div class="nx-results" id="pj-nexus-res" role="listbox"></div></div>
       </div>
       <div class="row">
         <div class="field"><label for="pj-part">Lab partition default</label><select id="pj-part"><option value="">cluster default</option>${parts.map(([k, v]) => `<option value="${esc(k)}" ${k === p.lab_partition ? "selected" : ""}>${esc(k)}${v.gpus ? " + " + v.gpus + " GPU" : ""}${v.spot ? " (spot)" : ""}</option>`).join("")}</select></div>
@@ -122,12 +126,53 @@ const PROJ = {
       lab_target: ((LAB.targetsList || [])[0] || {}).name || "",
     };
   },
+  // ---- Nexus link (v0.62.0): "kind:id" in nexus_ref; free text from before still shows
+  nexusParse(ref) {
+    const m = /^(lab|grant|gcp|project):(.+)$/.exec(String(ref || ""));
+    return m ? { kind: m[1], id: m[2] } : null;
+  },
+  nexusKind: { lab: "Lab", grant: "Grant", gcp: "GCP project", project: "Project" },
+  nexusChip(ref) {
+    if (!ref) return '<span class="dim" style="font-size:11.5px">none</span>';
+    const n = this.nexusParse(ref);
+    return `<span class="chip">${n ? `${esc(this.nexusKind[n.kind])} <b>${esc(n.id)}</b>` : `<b>${esc(ref)}</b> <span class="dim">(text)</span>`}</span> <button type="button" class="btn small ghost" data-nx="clear">Remove</button>`;
+  },
+  wireNexus() {
+    const q = $("#pj-nexus-q"), res = $("#pj-nexus-res"), hid = $("#pj-nexus"), picked = $("#pj-nexus-picked");
+    if (!q) return;
+    const setRef = (ref) => { hid.value = ref; picked.innerHTML = this.nexusChip(ref); wireClear(); };
+    const wireClear = () => { const b = picked.querySelector('[data-nx="clear"]'); if (b) b.onclick = () => setRef(""); };
+    wireClear();
+    let seq = 0;
+    const run = debounce(async () => {
+      const term = q.value.trim(); const my = ++seq;
+      if (term.length < 2) { res.innerHTML = ""; return; }
+      res.innerHTML = '<span class="spinner"></span>';
+      let r;
+      try { r = await api(`/api/nexus/search?q=${encodeURIComponent(term)}`); }
+      catch (e) { if (my === seq) res.innerHTML = `<div class="dim" style="font-size:11.5px">${esc(e.message)}</div>`; return; }
+      if (my !== seq) return;
+      res.innerHTML = r.results.length ? r.results.map((x, i) => `<button type="button" role="option" class="nx-opt" data-i="${i}"><span class="chip">${esc(this.nexusKind[x.kind] || x.kind)}</span> <b>${esc(x.name)}</b>${x.sub ? `<div class="dim">${esc(clip(x.sub, 110))}</div>` : ""}</button>`).join("") : '<div class="dim" style="font-size:11.5px">No labs, grants or projects match.</div>';
+      res.querySelectorAll(".nx-opt").forEach((b) => (b.onclick = () => { const x = r.results[+b.dataset.i]; setRef(`${x.kind}:${x.id}`); res.innerHTML = ""; q.value = ""; }));
+    }, 250);
+    q.oninput = run;
+  },
+  async loadNexusBox(v, p) {
+    const box = v.querySelector("#pj-nexus-box"), n = this.nexusParse(p.nexus_ref);
+    if (!box || !n) return;
+    try {
+      const d = await api(`/api/nexus/show?kind=${encodeURIComponent(n.kind)}&id=${encodeURIComponent(n.id)}`);
+      box.innerHTML = `<span class="label">From Nexus</span> <b>${esc(d.name)}</b> <span class="dim">${esc(this.nexusKind[d.kind] || d.kind)}</span>${(d.lines || []).length ? `<ul>${d.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}`;
+    } catch (e) {
+      box.innerHTML = `<span class="label">From Nexus</span> <span class="dim">${esc(this.nexusKind[n.kind])} ${esc(n.id)}: ${esc(e.message)}</span>`;
+    }
+  },
   wireColors() { $$("#modal .pj-colors [data-c]").forEach((b) => (b.onclick = () => $$("#modal .pj-colors [data-c]").forEach((x) => x.classList.toggle("on", x === b)))); },
   createDialog(prefill = {}) {
     return new Promise((resolve) => {
       MODAL.open(`<h3>New project</h3><div class="dim">One per grant, paper, proposal or thesis. Reports can sit in more than one project.</div>${this.settingsForm(prefill)}
         <div class="acts"><button class="btn" data-x="0">Cancel</button><button class="btn primary" data-x="1">Create project</button></div>`, { onClose: () => resolve(null) });
-      this.wireColors(); $("#pj-title").focus();
+      this.wireColors(); this.wireNexus(); $("#pj-title").focus();
       $('#modal [data-x="0"]').onclick = () => MODAL.close();
       const go = $('#modal [data-x="1"]');
       go.onclick = () => busy(go, async () => {
@@ -143,7 +188,7 @@ const PROJ = {
   editDialog(p, after) {
     MODAL.open(`<h3>Project settings</h3>${this.settingsForm(p)}
       <div class="acts"><button class="btn danger" data-x="del" style="margin-right:auto">Delete project</button><button class="btn" data-x="0">Cancel</button><button class="btn primary" data-x="1">Save</button></div>`);
-    this.wireColors();
+    this.wireColors(); this.wireNexus();
     $('#modal [data-x="0"]').onclick = () => MODAL.close();
     const go = $('#modal [data-x="1"]');
     go.onclick = () => busy(go, async () => {
@@ -200,11 +245,12 @@ const PROJ = {
         <div class="proj-title-row">
           <h2>${esc(p.title)}</h2>
           ${this.level(d.effective_level)}
-          ${p.nexus_ref ? `<span class="chip" title="Nexus reference (text only)">NEXUS <b>${esc(p.nexus_ref)}</b></span>` : ""}
+          ${p.nexus_ref && !this.nexusParse(p.nexus_ref) ? `<span class="chip" title="Nexus reference (text only)">NEXUS <b>${esc(p.nexus_ref)}</b></span>` : ""}
           <span class="grow"></span>
           <button class="btn small" data-a="settings">Settings</button>
         </div>
         ${p.description ? `<p class="dim">${esc(p.description)}</p>` : ""}
+        ${this.nexusParse(p.nexus_ref) ? '<div class="nx-box" id="pj-nexus-box"><span class="label">From Nexus</span> <span class="spinner"></span></div>' : ""}
         <div class="stat-grid proj-stats">
           <div class="stat"><div class="v">${d.reports.length}</div><div class="k">reports</div></div>
           <div class="stat"><div class="v">${d.sources.length}</div><div class="k">data sources</div></div>
@@ -285,6 +331,7 @@ const PROJ = {
     v.querySelectorAll("[data-nb]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); const n = d.notebooks.find((x) => x.id == a.dataset.nb); openNotebook(n.id, n.title); }));
     v.querySelectorAll(".note-row").forEach((el) => (el.onclick = () => { S.rtab = "notes"; S.flashAnn = +el.dataset.aid; openSession(+el.dataset.sid); }));
     v.querySelector('[data-a="settings"]').onclick = () => this.editDialog(p, reload);
+    this.loadNexusBox(v, p);
     v.querySelector('[data-a="alllab"]')?.addEventListener("click", (e) => { v.querySelectorAll(".proj-lab.more").forEach((x) => (x.hidden = false)); e.target.remove(); });
     v.querySelector('[data-a="research"]').onclick = () => openLaunch({ project_id: p.id, data_sources: d.sources.map((s) => s.name) });
     v.querySelector('[data-a="add"]').onclick = () => this.addReportsDialog(p, reload);

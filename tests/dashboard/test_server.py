@@ -232,6 +232,81 @@ def test_start_research_spawns_detached_cli(app):
     assert s["pid"] == 4242 and s["status"] == "running"
 
 
+def test_launch_with_max_passes_the_agent_to_the_cli(app):
+    """v0.61.0: the launch form's Deep Research Max choice reaches the CLI as --max,
+    and the stored estimate is the Max one; anything else is a standard run."""
+    st, r = app["call"]("POST", "/api/research", {"prompt": "x", "agent": "max"})
+    assert st == 200
+    args, _ = app["spawned"][-1]
+    assert "--max" in args
+    meta = app["api"]._run_meta(r["id"])
+    assert meta["estimate_usd"] == estimate(1, 3, agent="max")["cost_usd"]
+    for other in ("standard", "MAXIMUM", "", None):
+        app["call"]("POST", "/api/research", {"prompt": "y", "agent": other})
+        assert "--max" not in app["spawned"][-1][0]
+    st, e = app["call"]("POST", "/api/estimate", {"depth": 1, "agent": "max"})
+    assert st == 200 and e["agent"] == "max" and e["searches"] == 160
+
+
+def test_plan_first_endpoint_and_launching_the_plan(app, monkeypatch):
+    """v0.61.0: /api/research/plan asks Google for a plan (or a revision) and launches
+    nothing; launching with plan_id passes --plan-id; bad ids and depth > 1 refused."""
+    from deepresearch.core import planner
+
+    calls = []
+
+    def fake_plan(client, text, previous_id=None, **k):
+        calls.append((text, previous_id))
+        return {"id": "plan-abc12345", "plan": "(1) step", "seconds": 12}
+
+    monkeypatch.setattr(planner, "plan", fake_plan)
+    monkeypatch.setattr(app["api"].fx, "_client", lambda: object())
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    st, r = app["call"](
+        "POST", "/api/research/plan", {"prompt": "Q?", "format": "a table"}
+    )
+    assert st == 200 and r["id"] == "plan-abc12345"
+    assert calls[-1] == ("Q?\n\nFormat the output as follows: a table", None)
+    st, _ = app["call"](
+        "POST", "/api/research/plan", {"plan_id": "plan-abc12345", "change": "drop 4"}
+    )
+    assert st == 200 and calls[-1] == ("drop 4", "plan-abc12345")
+    assert app["spawned"] == []  # planning launches nothing
+    assert (
+        app["call"]("POST", "/api/research/plan", {"plan_id": "plan-abc12345"})[0]
+        == 400
+    )
+    assert (
+        app["call"](
+            "POST", "/api/research/plan", {"plan_id": "x;rm -rf", "change": "c"}
+        )[0]
+        == 400
+    )
+
+    st, r = app["call"](
+        "POST",
+        "/api/research",
+        {"prompt": "Q?", "plan_id": "plan-abc12345", "agent": "max"},
+    )
+    assert st == 200
+    args, _ = app["spawned"][-1]
+    assert args[args.index("--plan-id") + 1] == "plan-abc12345" and "--max" in args
+    n = len(app["spawned"])
+    assert (
+        app["call"]("POST", "/api/research", {"prompt": "Q?", "plan_id": "bad id!"})[0]
+        == 400
+    )
+    assert (
+        app["call"](
+            "POST",
+            "/api/research",
+            {"prompt": "Q?", "plan_id": "plan-abc12345", "depth": 2},
+        )[0]
+        == 400
+    )
+    assert len(app["spawned"]) == n  # refused before anything ran or was recorded
+
+
 def test_start_research_recursive_has_no_stream(app):
     app["call"]("POST", "/api/research", {"prompt": "x", "depth": 2, "breadth": 2})
     args, _ = app["spawned"][0]
@@ -332,6 +407,19 @@ def test_estimate_matches_cli_model():
     expected += 4 * 60_000 / 1e6 * 12
     assert e["cost_usd"] == round(expected, 2)
     assert 0.8 < estimate(1, 3)["cost_usd"] < 1.2  # ~$0.95 per agent run
+    # v0.61.0: search grounding on top, as Google's upper figure (80 x $14/1K per run)
+    assert e["searches"] == 320 and e["search_usd"] == 4.48
+    assert e["cost_high_usd"] == round(e["cost_usd"] + 4.48, 2)
+
+
+def test_max_estimate_follows_googles_figures():
+    """Google: standard "$1-3 per task", Max "$3-7 per task"."""
+    s, m = estimate(1, 3), estimate(1, 3, agent="max")
+    assert s["agent"] == "standard" and m["agent"] == "max"
+    assert 1.0 <= s["cost_high_usd"] <= 3.0
+    assert 3.0 <= m["cost_high_usd"] <= 7.0
+    assert m["input_tokens"] == 900_000 and m["searches"] == 160
+    assert m["cost_high_usd"] > 1.8 * s["cost_high_usd"]  # about 2x a standard run
 
 
 def _running(api):

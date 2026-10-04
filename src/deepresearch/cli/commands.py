@@ -131,6 +131,12 @@ def handle_research(args):
         adopt_session_id=args.adopt_session,
         depth=args.depth,
         breadth=args.breadth,
+        agent="max" if getattr(args, "max", False) is True else None,
+        previous_interaction_id=(
+            pid
+            if isinstance(pid := getattr(args, "plan_id", None), str) and pid
+            else None
+        ),
     )
     agent = DeepResearchAgent(quiet=args.quiet)
 
@@ -326,6 +332,10 @@ def handle_start(args):
 
     child_args += ["--depth", str(args.depth)]
     child_args += ["--breadth", str(args.breadth)]
+    if getattr(args, "max", False):
+        child_args.append("--max")
+    if getattr(args, "plan_id", None):
+        child_args += ["--plan-id", args.plan_id]
 
     log_file = os.path.join(_logs_dir(), f"session_{sid}.log")
     pid = detach_process(child_args, log_file)
@@ -912,44 +922,33 @@ def handle_auth(args):
 
 
 def handle_estimate(args):
-    # Per agent run, from Google's Deep Research docs: ~250k input tokens
-    # (~50-70% cached) and ~60k output. Matches measured runs ($0.37-$2.04).
-    COST_INPUT_1M = 2.00
-    COST_CACHED_1M = 0.20
-    COST_OUTPUT_1M = 12.00
-    AVG_INPUT_TOKENS = 250_000
-    CACHED_FRACTION = 0.6
-    AVG_OUTPUT_TOKENS = 60_000
+    from deepresearch.core import estimate as est_mod
 
-    file_tokens = 0
-    if args.upload:
-        for path in args.upload:
-            try:
-                if os.path.isdir(path):
-                    for root, _, files in os.walk(path):
-                        for f in files:
-                            size = os.path.getsize(os.path.join(root, f))
-                            file_tokens += size * 0.25
-                else:
-                    size = os.path.getsize(path)
-                    file_tokens += size * 0.25
-            except Exception:
-                pass
-
-    total_nodes = 0
-    for d in range(args.depth):
-        nodes_at_level = pow(args.breadth, d)
-        total_nodes += nodes_at_level
-
-    total_input = (total_nodes * AVG_INPUT_TOKENS) + (total_nodes * file_tokens)
-    total_output = total_nodes * AVG_OUTPUT_TOKENS
-
-    cached = total_nodes * AVG_INPUT_TOKENS * CACHED_FRACTION
-    cost = (
-        (total_input - cached) / 1_000_000 * COST_INPUT_1M
-        + cached / 1_000_000 * COST_CACHED_1M
-        + total_output / 1_000_000 * COST_OUTPUT_1M
+    file_bytes = 0
+    for path in args.upload or []:
+        try:
+            if os.path.isdir(path):
+                for root, _, files in os.walk(path):
+                    for f in files:
+                        file_bytes += os.path.getsize(os.path.join(root, f))
+            else:
+                file_bytes += os.path.getsize(path)
+        except Exception:
+            pass
+    e = est_mod.estimate(
+        args.depth,
+        args.breadth,
+        file_bytes,
+        "max" if getattr(args, "max", False) else None,
     )
+    total_nodes, file_tokens = e["nodes"], e["file_tokens"]
+    total_input, total_output, cost = (
+        e["input_tokens"],
+        e["output_tokens"],
+        e["cost_usd"],
+    )
+    COST_INPUT_1M, COST_CACHED_1M = est_mod.COST_INPUT_1M, est_mod.COST_CACHED_1M
+    COST_OUTPUT_1M = est_mod.COST_OUTPUT_1M
 
     if _json_flag(args):
         emit(
@@ -962,17 +961,24 @@ def handle_estimate(args):
                 "input_tokens": round(total_input),
                 "output_tokens": round(total_output),
                 "cost_usd": round(cost, 2),
+                "agent": e["agent"],
+                "searches": e["searches"],
+                "search_usd": e["search_usd"],
+                "cost_high_usd": e["cost_high_usd"],
                 "pricing": {
                     "input_per_1m": COST_INPUT_1M,
                     "cached_per_1m": COST_CACHED_1M,
                     "output_per_1m": COST_OUTPUT_1M,
+                    "search_per_1k": est_mod.COST_SEARCH_1K,
                 },
-                "note": "Rough estimate; actuals vary with search grounding.",
+                "note": "Rough estimate; tokens, plus up to cost_high_usd if the agent runs Google's full search count.",
             }
         )
         return
 
-    table = Table(title="Cost Estimate (Gemini Deep Research)")
+    table = Table(
+        title=f"Cost Estimate (Gemini Deep Research{' Max' if e['agent'] == 'max' else ''})"
+    )
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="bold yellow")
 
@@ -982,9 +988,10 @@ def handle_estimate(args):
     table.add_row("File Context", f"{file_tokens:,.0f} tokens")
     table.add_row("Est. Input Tokens", f"{total_input:,.0f}")
     table.add_row("Est. Output Tokens", f"{total_output:,.0f}")
-    table.add_row("Estimated Cost", f"${cost:.2f}")
+    table.add_row("Estimated Cost", f"${cost:.2f} to ${e['cost_high_usd']:.2f}")
 
     console.print(table)
     console.print(
-        "[dim]Pricing: $2.00/1M Input, $12.00/1M Output. Actuals may vary based on search grounding.[/]"
+        "[dim]Tokens at $2.00/1M input, $12.00/1M output; the high figure adds Google "
+        f"Search at $14/1K for up to {e['searches']} searches.[/]"
     )

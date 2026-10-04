@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.60.0 (package `deepresearch`) |
+| Applies to | deep-research v0.61.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -261,6 +261,8 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | `core/config.py` | 78 | Paths, `.env` loading, `DeepResearchConfig`, `service_env()` for background processes. |
 | `core/agent.py` | 725 | `DeepResearchAgent`: stream and poll runs, follow-up, gap analysis, synthesis, recursion; `_final_text` joins every output part. |
 | `core/session.py` | 244 | `SessionManager`: all reads and writes of the `sessions` table, liveness rules. |
+| `core/estimate.py` | 70 | The one cost estimate for CLI and dashboard (20.28, v0.61.0): standard and Max per-run token and search profiles, Gemini rates, Google Search at $14/1K; `cost_usd` (tokens) and `cost_high_usd` (plus the full search count). |
+| `core/planner.py` | 85 | Plan first (20.28): Google's collaborative planning on the standard agent; plan and revise, cancel after 180 s. |
 | `core/repair.py` | 156 | Restore reports saved with only their last part (v0.38.2): re-fetch from Google, optional re-synthesis. |
 | `core/workspace.py` | 331 | Workspaces (section 23): Main stays in the config dir, others under `workspaces/<id>/`; current workspace, create, archive, trash. |
 | `core/wscopy.py` | 488 | Copy projects and reports into another workspace (v0.42.0): read-only source, one transaction, id remapping, Lab folders. |
@@ -279,7 +281,8 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | `dashboard/claims.py` | 170 | Claims board (22.9): one claim per tested question, outcome ordering, deterministic. |
 | `dashboard/clusterview.py` | 150 | The Lab's Cluster view (20.23, v0.57.0): five bifrost read panels (`cluster_status`, `jobs_list`, `my_usage`, `waste_report`, `storage_usage`) cached per panel with a background refresh, and `lab_summary` (the workspace's Lab runs, their Slurm job ids, outcomes and spend). |
 | `dashboard/bifrost.py` | 470 | The hosted ursa-bifrost MCP server as a cluster backend (20.20, v0.53.0): `BifrostClient` (stdlib MCP over Streamable HTTP, OAuth sign-in with PKCE as the `bifrost-deep-research` program client, rotating refresh under a lock, 401 retry), and the Lab's reads: `stockouts`, `script_issues`, `explain` (rule -> Lab class), `efficiency`, `read_home`, `catalog`; and the Lab's jobs (20.21, v0.55.0): `BifrostJobs` (submit with self-confirmation inside guards, batched `states`, line-paged `log`, `fetch` through read and signed links, `cancel`, staging `upload`). |
-| `cli/cluster.py` | 80 | `deep-research cluster login | logout | status` (20.20). |
+| `cli/cluster.py` | 115 | `deep-research cluster login | logout | status` (20.20) and `nexus login | logout | status` (20.29). |
+| `dashboard/nexus.py` | 170 | Nexus project links (20.29, v0.61.0): `client()` (the bifrost MCP client as the read-only `nexus-deep-research` program client, token `nexus-token.json`), `search` (labs, grants, GCP and research projects only), `show` + `summarize` (public facts, never interaction or task text; cached 10 min). |
 | `dashboard/cluster.py` | 918 | Cluster access (v0.52.0): `SlurmSSHTarget` (SSH via gcloud IAP or a plain host, one ControlMaster connection, sbatch/squeue/sacct, run folders, warm worker and spool, file transfer, catalog cache), `ScopedTarget` (a workspace's view), `load_targets`. No model or database code. |
 | `dashboard/lab.py` | 4,808 | Lab runs (section 20): always-on keeper, planner, cluster fact checks, pre-flight, fixer, referee hook, refine rounds, laptop fetch, job harness and install ladder, pilot, watcher. Drives `cluster.py`. |
 | `dashboard/labcores.py` | 249 | Cores and memory on shared partitions (20.2b): the request per node, `#SBATCH` lines, share of the node for the estimate, pre-flight warnings, planner text. |
@@ -678,6 +681,7 @@ Shared options for `research` and `start`:
 |---|---|
 | `auth login` | Prompts (hidden) for a key, warns if it does not start with `AIza`, and sets the `GEMINI_API_KEY` line of the user `.env`; every other line is kept, the write is atomic and the file is mode 600 (K15, v0.50.3). |
 | `auth logout` | Removes the `GEMINI_API_KEY` line from the user `.env`; other settings stay. |
+| `nexus login \| logout \| status [--json]` | Signs deep-research in to the Nexus MCP server as the read-only `nexus-deep-research` program client (browser, OAuth + PKCE; token in `nexus-token.json`, mode 600), revokes and deletes it, or shows who is signed in (20.29, v0.61.0). |
 | `cluster login \| logout \| status [--json]` | Signs the Lab in to the hosted bifrost MCP server as its own program client (browser, OAuth + PKCE; token in `bifrost-token.json`, mode 600), revokes and deletes it, or shows the email, tiers and caps bifrost reports (20.20, v0.53.0). |
 | `cleanup [--force]` | Lists and deletes **all** File Search Stores on the key, with documents. Confirms unless `--force`. |
 | `repair [IDS] [--apply] [--resynthesize] [--json]` | Restores reports stored with only their last part (before v0.38.2) by re-reading every `model_output` step from Google, while Google still keeps the interaction (older ones report `gone`). Changes a row only when its stored text (before appended follow-ups) is exactly the last part; keeps follow-ups; clears the embedding. `--resynthesize` rebuilds synthesized recursive reports from the full main report and their children, deepest first (one Flash call each). Dry run unless `--apply`. |
@@ -780,6 +784,10 @@ had it earlier). Implemented in `cli/jsonout.py`.
 | Method and path | Paid | Behaviour |
 |---|---|---|
 | `GET /api/health[?check=1]` | no | `{ok, version, api_key, workspace}`; with `check=1` adds `api_key_valid` (true, false or null) from a cached key probe (REQ-DASH-4). |
+| `GET /api/nexus/status` | no | `{signed_in}` from the local Nexus token file (20.29, v0.61.0). |
+| `GET /api/nexus/search?q=` | no | Nexus labs, grants, GCP and research projects matching `q` (2+ characters): `{results: [{kind, id, name, sub}]}`. People, interactions and tasks are never returned. 409 when not signed in. |
+| `GET /api/nexus/show?kind=&id=` | no | The "From Nexus" facts for one linked entity (`lab`, `grant`, `gcp`, `project`): `{kind, id, name, lines}`; PI or lead, member count, sponsor and dates, linked grants and projects; cached 10 minutes. |
+| `POST /api/research/plan` | yes | Plan first (20.28): `{prompt, format?}` returns Google's research plan `{id, plan, seconds}`; `{plan_id, change}` revises it. Launches nothing. |
 | `GET /api/cluster/status` | no | The Lab's ursa-bifrost sign-in for Settings (v0.54.0): `{configured, signed_in}` from the local token file, plus `email`, `program`, `tiers`, `own_caps` from bifrost `/whoami` when signed in (cached 5 minutes). Never returns a token. |
 | `GET /api/stats` | no | Counts by status, total, roots, total report characters, notebook and annotation counts. Runs liveness. |
 
@@ -961,6 +969,7 @@ older keystroke is dropped.
 | `DR_DASHBOARD_ACCESS_LOG` | unset | Enable per-request access logging. |
 | `DR_TASK_TIMEOUT_MIN` | `180` | Safety limit per research task in minutes; 0 = no limit (6.4a). |
 | `DR_ALLOWED_HOSTS` | unset | Comma-separated extra host names the dashboard accepts (for example a custom DNS name for the machine). |
+| `DR_NEXUS_URL` | the UCR Nexus MCP server | Nexus MCP server for project links (20.29). |
 | `DR_LOCAL_ROOTS` | your home folder | Folders local data sources may use (path-separator list, 21.2). |
 | `DATA_GOV_API_KEY` | `DEMO_KEY` | Data.gov catalog searches in discovery (21.8). |
 | `XDG_CACHE_HOME` | `~/.cache` | Discovery catalog caches under `deepresearch/` (21.8a). |
@@ -995,6 +1004,7 @@ environment, so it follows the CLI order.
 | `dashboard.pid` | `{"pid", "host", "port", "allow_remote"}` JSON | `dashboard --start` |
 | `lab_targets.json` | cluster targets and partitions (not in the repo) | the user |
 | `catalog-<target>.json` | cached cluster catalog (20.9) | Lab |
+| `nexus-token.json` | the read-only Nexus sign-in for project links (mode 600; 20.29) | `nexus login` |
 | `bifrost-token.json` | the Lab's bifrost sign-in (access + rotating refresh token, mode 600; 20.20) | `cluster login` |
 | `lab/run_<N>/` | fetched Lab job outputs, log, plan and write-up | Lab watcher |
 | `uploads/<hex>/<name>` | files uploaded through the dashboard | `POST /api/uploads` (never cleaned up, K10) |
@@ -2372,6 +2382,44 @@ or referee revision (or a failed run's fix diff), a red "Success criteria change
 shows before and now. Sections 1-5 are folded below with their headings visible; the
 contents links open the section they point at.
 
+### 20.28 Deep Research Max and Plan first (step F, v0.61.0)
+
+**Max.** The launch form picks the agent: Deep Research (`deep-research-preview-04-2026`)
+or Deep Research Max (`deep-research-max-preview-04-2026`). CLI: `research`/`start`
+`--max`, `estimate --max`. The choice applies to the root and every recursive child.
+`core/estimate.py` is the one estimate (CLI and dashboard): per agent run, standard
+250k input / 60k output tokens and up to 80 searches, Max 900k / 80k and up to 160
+(Google's "Estimated costs"), Gemini 3.1 Pro rates and Google Search at $14 per 1,000.
+`cost_usd` is the token cost; `cost_high_usd` adds the full search count (our runs have
+used about 26 searches on average, so it is a ceiling). Standard comes to $0.95-$2.07,
+Max $1.79-$4.03, inside Google's "$1-3" and "$3-7" per task.
+
+**Plan first.** `POST /api/research/plan {prompt, format?}` asks the standard agent for
+a research plan with `collaborative_planning: true` (about 10-20 s, under a cent);
+`{plan_id, change}` revises it. Nothing is launched. The launch form shows the plan
+(steps as a list), a "What should change?" box and Drop plan; Launch becomes "Run this
+plan", which starts the run with `plan_id` -> CLI `--plan-id`, run as
+`previous_interaction_id` with collaborative planning off, on the chosen agent.
+Planning always uses the standard agent: a Max planning call was still running with no
+plan after 10 minutes (2026-10-03), while a Max run continuing a standard plan is
+accepted. Plan first runs depth 1 only; a plan id must look like a Google interaction
+id. A plan that takes over 180 s is cancelled.
+
+### 20.29 Nexus project links (v0.61.0)
+
+Reads only, through the Nexus MCP server as the pre-registered program client
+`nexus-deep-research` (max role read): `deep-research nexus login` once. A project's
+settings replace the free-text Nexus field with a picker: type a name, NetID-ish word,
+grant number or `ucr-ursa-major-...`; `nexus_search` results are filtered to labs,
+grants, GCP projects and research projects (people, interactions and tasks are dropped
+here, whatever Nexus returns). The pick is stored in `nexus_ref` as `kind:id` (`lab:<exact
+name>`, `grant:<c_number>`, `gcp:<project_id>`, `project:<name>`); older free text still
+shows as a chip. The project page shows a "From Nexus" box from the matching `*_show`
+tool: PI or lead, members, sponsor and dates, linked grants and projects. Connections are
+allow-listed by type, so interaction and task text never reaches deep-research's pages.
+Never `dossier`, `tree` or `interactions_*`. Writes are not planned until the reads have
+been used for a while (plan section 4).
+
 ## 21. Data sources
 
 A data source is a named reference to data that lives somewhere else: an open dataset
@@ -3121,3 +3169,4 @@ before v0.39.0).
 | 2026-10-03 | v0.58.0 | R4a: the warm Lab node is retired (20.25): worker script, keeper, warm routes and UI deleted; pilots and planning checks only through bifrost on `check`. |
 | 2026-10-03 | v0.59.0 | Core advice from history (20.26): pre-flight warns when similar past runs used far fewer cores than the plan asks; Cluster page lists jobs that held more cores than they used. |
 | 2026-10-03 | v0.60.0 | Calm Lab card and review decision summary (20.27, U2). |
+| 2026-10-03 | v0.61.0 | Deep Research Max and Plan first in the launcher; one shared estimate with search costs (20.28); Nexus project links, read-only (20.29). |

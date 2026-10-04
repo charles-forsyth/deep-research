@@ -7,6 +7,19 @@ releases.
 
 ## [Unreleased]
 
+## [0.61.0] - 2026-10-03
+
+### Added
+- Deep Research Max: pick it on the launch form or pass `--max` (`research`, `start`,
+  `estimate`). More searching and reading, slower, about twice the cost.
+- Plan first: Google drafts the research plan before anything runs (about 10-20 s,
+  under a cent); revise it in plain words, then "Run this plan". CLI: `--plan-id`.
+- Estimates include Google Search charges: a range from tokens alone up to the full
+  search count, for standard and Max.
+- Nexus project links (read-only): `deep-research nexus login`, then pick the project's
+  lab, grant or GCP project in its settings; the project page shows a "From Nexus" box
+  (PI, members, sponsor and dates, linked projects). Interaction text is never shown.
+
 ## [0.60.0] - 2026-10-03
 
 ### Changed

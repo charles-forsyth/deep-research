@@ -8,7 +8,7 @@ import concurrent.futures
 from datetime import datetime
 from google import genai
 
-from deepresearch.core.config import DeepResearchConfig
+from deepresearch.core.config import DeepResearchConfig, agent_id
 from deepresearch.core.session import SessionManager
 from deepresearch.storage.files import FileManager
 from deepresearch.cli.base import ResearchRequest, FollowUpRequest
@@ -170,6 +170,21 @@ class DeepResearchAgent:
                 if status in ("completed", "failed", "cancelled", "error"):
                     is_complete_ref[0] = True
 
+    @staticmethod
+    def _continue_plan(request: ResearchRequest) -> dict:
+        """v0.61.0 Plan first: run as the continuation of the approved plan, with
+        collaborative planning off (that is what approves it)."""
+        if not request.previous_interaction_id:
+            return {}
+        return {
+            "previous_interaction_id": request.previous_interaction_id,
+            "agent_config": {
+                "type": "deep-research",
+                "thinking_summaries": "auto",
+                "collaborative_planning": False,
+            },
+        }
+
     def start_research_stream(
         self, request: ResearchRequest, auto_update_status: bool = True
     ):
@@ -217,11 +232,11 @@ class DeepResearchAgent:
 
             initial_stream = self.client.interactions.create(
                 input=request.final_prompt,
-                agent=self.config.agent_name,
+                agent=agent_id(request.agent, self.config.agent_name),
                 background=True,
                 stream=True,
                 tools=request.tools_config,
-                agent_config=agent_config,
+                **{"agent_config": agent_config, **self._continue_plan(request)},
             )  # type: ignore
 
             self._process_stream(
@@ -371,9 +386,10 @@ class DeepResearchAgent:
         try:
             created = self.client.interactions.create(
                 input=request.final_prompt,
-                agent=self.config.agent_name,
+                agent=agent_id(request.agent, self.config.agent_name),
                 background=True,
                 tools=request.tools_config,  # type: ignore[arg-type]
+                **self._continue_plan(request),
             )  # type: ignore
             interaction_id_str = str(getattr(created, "id", "") or "")
             if not interaction_id_str:
@@ -613,6 +629,10 @@ class DeepResearchAgent:
             stores=original_request.stores,
             stream=(current_depth == 1),
             depth=current_depth,
+            agent=original_request.agent,
+            previous_interaction_id=(
+                original_request.previous_interaction_id if current_depth == 1 else None
+            ),
             # The root must take over the row `start`/the dashboard pre-created,
             # otherwise the report lands in a new row and that one reads "crashed".
             adopt_session_id=(

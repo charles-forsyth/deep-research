@@ -417,3 +417,70 @@ def test_stream_stuck_at_google_is_cancelled_not_resumed_forever(monkeypatch, tm
         c for c in a.client.interactions.get.call_args_list if c.kwargs.get("stream")
     ]
     assert len(resumes) == a.STALL_RECONNECTS
+
+
+def test_max_agent_is_used_for_the_run_and_every_recursive_child(mock_client):
+    """v0.61.0: ResearchRequest.agent="max" picks Deep Research Max for the root and for
+    each recursive child; no choice keeps the configured agent."""
+    from deepresearch.core.config import AGENT_MAX, agent_id
+
+    assert agent_id("max", "x") == AGENT_MAX and agent_id(None, "x") == "x"
+    assert agent_id("standard", "x") == "x"
+    config = DeepResearchConfig(api_key="test")
+    agent = DeepResearchAgent(config)
+    agent.client = mock_client
+    mock_client.interactions = MagicMock()
+    mock_client.interactions.create.return_value = []
+    agent.start_research_stream(ResearchRequest(prompt="p", agent="max"))
+    assert mock_client.interactions.create.call_args.kwargs["agent"] == AGENT_MAX
+    agent.start_research_stream(ResearchRequest(prompt="p"))
+    assert (
+        mock_client.interactions.create.call_args.kwargs["agent"] == config.agent_name
+    )
+
+    # recursion: the root and a child both carry the agent choice
+    seen = []
+    sm = MagicMock()
+    sm.get_session.return_value = {"status": "running", "result": "report", "id": 1}
+    sm.create_session.return_value = 2
+    agent.session_manager = sm
+    with (
+        patch.object(DeepResearchAgent, "start_research_stream", lambda self, req, **k: seen.append(("root", req.agent)) or "i1"),
+        patch.object(DeepResearchAgent, "start_research_poll", lambda self, req, **k: seen.append(("child", req.agent)) or "i2"),
+        patch.object(DeepResearchAgent, "analyze_gaps", lambda *a, **k: ["a gap"]),
+        patch.object(DeepResearchAgent, "synthesize_reports", lambda *a, **k: "merged", create=True),
+    ):  # fmt: skip
+        agent.start_recursive_research(
+            ResearchRequest(prompt="p", depth=2, breadth=1, agent="max")
+        )
+    assert ("root", "max") in seen and ("child", "max") in seen, seen
+
+
+def test_an_approved_plan_runs_as_its_continuation(mock_client):
+    """v0.61.0: --plan-id runs the research as the continuation of the plan
+    interaction with collaborative planning off; without it nothing changes."""
+    from deepresearch.core.config import AGENT_MAX
+
+    agent = DeepResearchAgent(DeepResearchConfig(api_key="test"))
+    agent.client = mock_client
+    mock_client.interactions = MagicMock()
+    mock_client.interactions.create.return_value = []
+    agent.start_research_stream(
+        ResearchRequest(prompt="p", agent="max", previous_interaction_id="plan-9")
+    )
+    kw = mock_client.interactions.create.call_args.kwargs
+    assert kw["previous_interaction_id"] == "plan-9" and kw["agent"] == AGENT_MAX
+    assert kw["agent_config"]["collaborative_planning"] is False
+    agent.start_research_poll(
+        ResearchRequest(prompt="p", previous_interaction_id="plan-9")
+    )
+    assert (
+        mock_client.interactions.create.call_args.kwargs["previous_interaction_id"]
+        == "plan-9"
+    )
+    agent.start_research_stream(ResearchRequest(prompt="p"))
+    kw = mock_client.interactions.create.call_args.kwargs
+    assert (
+        "previous_interaction_id" not in kw
+        and "collaborative_planning" not in kw["agent_config"]
+    )

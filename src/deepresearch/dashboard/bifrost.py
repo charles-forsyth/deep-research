@@ -78,7 +78,17 @@ class BifrostClient:
         client_id: str = CLIENT_ID,
         opener: Callable | None = None,
         timeout: float = 120.0,
+        token_file: str = TOKEN_FILE,
+        label: str = "bifrost",
     ):
+        # v0.62.0: the same client signs in to Nexus (its own id, token file, label)
+        self.token_file = token_file
+        self.label = label
+        self.signin_hint = (
+            "not signed in to Nexus: run `deep-research nexus login`"
+            if label == "nexus"
+            else "not signed in to the cluster: run `deep-research cluster login`"
+        )
         self.state_dir = Path(state_dir)
         self.url = url.rstrip("/")
         self.client_id = client_id
@@ -90,7 +100,7 @@ class BifrostClient:
     # ---- tokens --------------------------------------------------------------
     @property
     def token_path(self) -> Path:
-        return self.state_dir / TOKEN_FILE
+        return self.state_dir / self.token_file
 
     def _load(self) -> dict | None:
         try:
@@ -100,7 +110,7 @@ class BifrostClient:
 
     def _save(self, tok: dict) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix=".bifrost-token.", dir=self.state_dir)
+        fd, tmp = tempfile.mkstemp(prefix=f".{self.label}-token.", dir=self.state_dir)
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(tok, f)
@@ -126,15 +136,13 @@ class BifrostClient:
         except urllib.error.HTTPError as e:
             return e.code, dict(e.headers or {}), e.read() or b""
         except (urllib.error.URLError, TimeoutError, OSError) as e:
-            raise BifrostError(f"cannot reach bifrost: {e}") from e
+            raise BifrostError(f"cannot reach {self.label}: {e}") from e
 
     def access_token(self, force_refresh: bool = False) -> str:
         with self._lock:
             tok = self._load()
             if not tok or not tok.get("refresh_token"):
-                raise NotSignedIn(
-                    "not signed in to the cluster: run `deep-research cluster login`"
-                )
+                raise NotSignedIn(self.signin_hint)
             if not force_refresh and tok.get("_exp", 0) - _now() > 60:
                 return tok["access_token"]
             status, _, body = self._http(
@@ -189,9 +197,11 @@ class BifrostClient:
                 "cluster sign-in was refused: run `deep-research cluster login`"
             )
         if status == 429:
-            raise BifrostError("bifrost rate limit reached; try again in a minute")
+            raise BifrostError(
+                f"{self.label} rate limit reached; try again in a minute"
+            )
         if status != 200:
-            raise BifrostError(f"bifrost {method}: HTTP {status} {body[:200]!r}")
+            raise BifrostError(f"{self.label} {method}: HTTP {status} {body[:200]!r}")
         text = body.decode("utf-8", "replace")
         ctype = {k.lower(): v for k, v in headers.items()}.get("content-type", "")
         if "text/event-stream" in ctype:
@@ -202,10 +212,10 @@ class BifrostClient:
         try:
             msg = json.loads(text)
         except ValueError as e:
-            raise BifrostError(f"bifrost {method}: unreadable answer") from e
+            raise BifrostError(f"{self.label} {method}: unreadable answer") from e
         if "error" in msg:
             raise BifrostError(
-                f"bifrost {method}: {msg['error'].get('message', msg['error'])}"
+                f"{self.label} {method}: {msg['error'].get('message', msg['error'])}"
             )
         return msg.get("result") or {}
 
@@ -258,7 +268,7 @@ class BifrostClient:
             "GET", self.url + "/.well-known/oauth-authorization-server"
         )
         if meta_status != 200:
-            raise BifrostError(f"bifrost metadata: HTTP {meta_status}")
+            raise BifrostError(f"{self.label} metadata: HTTP {meta_status}")
         meta = json.loads(meta_body)
         redirect = REDIRECT.format(port=port)
         verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
@@ -292,9 +302,7 @@ class BifrostClient:
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.end_headers()
-                self.wfile.write(
-                    b"deep-research is signed in to the cluster. You can close this tab."
-                )
+                self.wfile.write(b"deep-research is signed in. You can close this tab.")
 
             def log_message(self, format, *args):  # noqa: A002
                 pass
