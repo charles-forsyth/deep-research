@@ -151,8 +151,23 @@ const CLV = {
       </tbody></table>
       ${wkinds.length ? `<div class="clv-sub-h">Avoidable spend, last 7 days <span class="dim">(${CLV.money(wd.total_est_wasted_usd)}, ${fmtN(wd.total_wasted_node_hours)} node-hours)</span></div>
         <div class="clv-waste">${wkinds.map(([k, n]) => `<span class="clv-chip" title="${esc(CLV.wasteText[k] || "")}">${esc(k.replace(/-/g, " "))} <b>${n}</b> job${n === 1 ? "" : "s"}</span>`).join("")}</div>
-        <div class="dim clv-note">${esc((wd.items || []).slice(0, 1).map((x) => `Biggest: job ${x.job_id}, ${x.detail} (${CLV.money(x.est_wasted_usd)}).`).join(""))}</div>` : ""}`;
+        <div class="dim clv-note">${esc((wd.items || []).slice(0, 1).map((x) => `Biggest: job ${x.job_id}, ${x.detail} (${CLV.money(x.est_wasted_usd)}).`).join(""))}</div>` : ""}
+      ${CLV.oversized(wd, labJobs)}`;
     CLV.wireLive(body);
+  },
+  // jobs that held far more cores than they used: the cheapest saving on shared nodes
+  oversized(wd, labJobs) {
+    const items = (wd.items || []).filter((x) => x.kind === "low-cpu" && x.job_id).slice(0, 5);
+    if (!items.length) return "";
+    const pct = (d) => { const m = /efficiency (\d+)% on (\d+) cores/.exec(String(d || "")); return m ? [+m[1], +m[2]] : null; };
+    const rows = items.map((x) => {
+      const p = pct(x.detail), l = labJobs[x.job_id];
+      const used = p ? Math.max(1, Math.ceil((p[0] / 100) * p[1] * 1.5)) : null;
+      return `<tr><td class="mono">${esc(x.job_id)}</td><td>${l ? `<span class="clv-kind">Lab run</span> ${esc(clip("#" + l.run_id + " " + l.title, 40))}` : esc(x.partition || "")}</td>
+        <td class="mono clv-num">${p ? `${p[0]}%` : "\u2014"}</td><td class="mono clv-num">${p ? p[1] : "\u2014"}</td><td class="mono clv-num">${used || "\u2014"}</td><td class="mono clv-num">${CLV.money(x.est_wasted_usd)}</td></tr>`;
+    }).join("");
+    return `<div class="clv-sub-h">Held more cores than they used <span class="dim">(ask for the suggested cores next time)</span></div>
+      <table class="clv-table"><thead><tr><th>Job</th><th>What</th><th class="clv-num">CPU used</th><th class="clv-num">Cores held</th><th class="clv-num">Suggest</th><th class="clv-num">Wasted</th></tr></thead><tbody>${rows}</tbody></table>`;
   },
   wasteText: {
     "warm-worker": "Keep-warm jobs holding a node (the old warm Lab node). Retired when bifrost runs the Lab.",

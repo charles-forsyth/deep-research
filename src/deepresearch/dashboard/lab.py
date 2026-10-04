@@ -19,6 +19,7 @@ import fnmatch
 import ast
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -1322,6 +1323,50 @@ def time_from_history(db_path: str, plan: dict, floor_min: int = 10) -> str | No
         return None
     mins = max(floor_min, -(-(worst * 3 + 300) // 300) * 5)
     return f"{mins // 60:02d}:{mins % 60:02d}:00"
+
+
+def cores_from_history(db_path: str, plan: dict, min_runs: int = 1) -> dict | None:
+    """Cores similar completed runs actually used (v0.59.0).
+
+    Similar = shares a software/package name with the plan (as time_from_history).
+    Uses `cluster.efficiency` (cpus x cpu_percent) bifrost recorded for each finished
+    job. Returns {cores, used, asked, runs} where `cores` is the suggestion: the most
+    any similar run used, plus 50% headroom, rounded up, at least 1; None when there is
+    no history with efficiency numbers."""
+    keys = set(labguard.software_keys(plan))
+    if not keys:
+        return None
+    try:
+        with sqlite3.connect(db_path, timeout=10) as conn:
+            rows = conn.execute(
+                "SELECT plan, cluster FROM lab_runs WHERE status='completed' "
+                "AND cluster IS NOT NULL ORDER BY id DESC LIMIT 300"
+            ).fetchall()
+    except sqlite3.Error:
+        return None
+    used_max, asked_max, n = 0.0, 0, 0
+    for pj, cj in rows:
+        try:
+            other, cl = json.loads(pj or "{}"), json.loads(cj or "{}")
+        except ValueError:
+            continue
+        eff = (cl or {}).get("efficiency") or {}
+        cpus, pct = _int(eff.get("cpus"), 0), eff.get("cpu_percent")
+        if cpus <= 0 or not isinstance(pct, (int, float)) or pct <= 0:
+            continue  # no measurement (or a job that never computed)
+        if not keys & set(labguard.software_keys(other)):
+            continue
+        used_max = max(used_max, cpus * float(pct) / 100)
+        asked_max = max(asked_max, cpus)
+        n += 1
+    if n < min_runs:
+        return None
+    return {
+        "cores": max(1, math.ceil(used_max * 1.5)),
+        "used": round(used_max, 1),
+        "asked": asked_max,
+        "runs": n,
+    }
 
 
 def _uses_bifrost(target) -> bool:
@@ -2752,6 +2797,17 @@ class Lab(LabVerdictMixin):
                     f"Cores: this looks like {shape} work but gets the default "
                     f"{labcores.DEFAULT_CORES} cores on shared '{part_now}'; set "
                     "resources.cores (or resources.ntasks_per_node for MPI ranks)"
+                )
+        # cores: similar past runs that held far more cores than they used (v0.59.0)
+        ch = cores_from_history(self.db_path, plan)
+        if ch and part_now in tgt.partitions:
+            asked = labcores.request(tgt, part_now, r)["cores"]
+            if asked >= 4 and asked >= 2 * ch["cores"]:
+                warns.append(
+                    f"Cores: similar past runs used at most {ch['used']:g} of the cores "
+                    f"they held ({ch['runs']} run{'s' if ch['runs'] != 1 else ''}); "
+                    f"{asked} cores asked. Consider resources.cores = {ch['cores']} "
+                    "(on shared partitions you pay for the cores you hold)"
                 )
         hist = time_from_history(self.db_path, plan)
         tl = str((plan.get("resources") or {}).get("time_limit") or "01:00:00")

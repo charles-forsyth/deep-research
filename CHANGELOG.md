@@ -7,6 +7,14 @@ releases.
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-10-03
+
+### Added
+- Core advice from history: pre-flight warns when similar past runs used far fewer cores
+  than the plan asks for, and suggests a number (what they used plus 50%).
+- The Cluster page lists jobs that held more cores than they used, with a suggested size
+  and the money wasted.
+
 ## [0.58.0] - 2026-10-03
 
 ### Removed
