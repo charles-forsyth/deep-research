@@ -3913,7 +3913,10 @@ class Lab(LabVerdictMixin):
         A one-core bifrost job on the check partition (the warm node is gone, R4)."""
         jobs = self._jobs_for(tgt)
         if jobs is None:
-            return None, "(cluster checks need the bifrost sign-in: deep-research cluster login)"
+            return (
+                None,
+                "(cluster checks need the bifrost sign-in: deep-research cluster login)",
+            )
         return self._check_exec(jobs, tgt, task, script, wait_s)
 
     CHECK_PARTITION = "check"  # the cluster's always-on test partition (2026-10-03)
@@ -4027,11 +4030,7 @@ class Lab(LabVerdictMixin):
     def _check_urls(self, run_id: int, tgt, plan: dict) -> list[dict]:
         """curl every download URL of a new plan from a compute node."""
         urls = script_urls(plan)
-        if (
-            not urls
-            or not tgt
-            or not self._jobs_for(tgt)
-        ):
+        if not urls or not tgt or not self._jobs_for(tgt):
             return []
         self._update(
             run_id,
@@ -4607,9 +4606,7 @@ class Lab(LabVerdictMixin):
                     only_if=("smoke",),
                     status="queued",
                     stage=f"Pilot passed (round {n}); "
-                    + (
-                        "queued, waiting for a node"
-                    ),
+                    + ("queued, waiting for a node"),
                     job_id=job,
                     smoke=sm,
                 )
