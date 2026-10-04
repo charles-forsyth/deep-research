@@ -32,7 +32,7 @@ CACHE_S = 600
 def client(state_dir: Path, url: str | None = None) -> bf.BifrostClient:
     return bf.BifrostClient(
         state_dir,
-        url=url or os.getenv("DR_NEXUS_URL", DEFAULT_URL),
+        url=url or os.getenv("DR_NEXUS_URL") or DEFAULT_URL,
         client_id=CLIENT_ID,
         token_file=TOKEN_FILE,
         label="nexus",
@@ -114,9 +114,13 @@ def show(c: bf.BifrostClient, kind: str, rid: str) -> dict:
 def summarize(kind: str, rid: str, d: dict) -> dict:
     """Public facts only: name, description/status, PI or lead, member count and the
     linked grants / GCP and research projects. Interaction neighbours are skipped."""
-    ent = d.get("unit") or d.get("grant") or d.get("project") or d.get("gcp_project")
-    if not isinstance(ent, dict):
-        ent = d.get("entity") if isinstance(d.get("entity"), dict) else d
+    ent: dict = {}
+    for k in ("unit", "grant", "project", "gcp_project", "entity"):
+        if isinstance(d.get(k), dict):
+            ent = d[k]
+            break
+    else:
+        ent = d
     name = str(ent.get("name") or ent.get("title") or rid)
     lines: list[str] = []
     for label, keys in (
