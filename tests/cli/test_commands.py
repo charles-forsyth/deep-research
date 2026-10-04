@@ -39,6 +39,29 @@ def test_main_research_recursive(mock_agent):
     agent_instance.start_recursive_research.assert_called_once()
 
 
+@patch(
+    "sys.argv",
+    ["deepresearch", "research", "P", "--max", "--plan-id", "plan-abc12345", "--quiet"],
+)
+def test_main_research_max_and_plan_reach_the_request(mock_agent):
+    """v0.61.0: --max and --plan-id end up on the ResearchRequest."""
+    main()
+    req = mock_agent.return_value.start_research_poll.call_args[0][0]
+    assert req.agent == "max" and req.previous_interaction_id == "plan-abc12345"
+
+
+@patch(
+    "sys.argv",
+    ["deepresearch", "start", "P", "--max", "--plan-id", "plan-abc12345"],
+)
+@patch("deepresearch.cli.commands.detach_process", return_value=1)
+def test_main_start_passes_max_and_plan_to_the_child(mock_detach, mock_session_manager):
+    mock_session_manager.return_value.create_session.return_value = 3
+    main()
+    child = mock_detach.call_args[0][0]
+    assert "--max" in child and child[child.index("--plan-id") + 1] == "plan-abc12345"
+
+
 @patch("sys.argv", ["deepresearch", "followup", "5", "Follow up prompt"])
 def test_main_followup_numeric_id(mock_session_manager, mock_agent):
     mgr_instance = mock_session_manager.return_value

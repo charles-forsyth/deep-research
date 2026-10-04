@@ -46,16 +46,6 @@ AUDIO_DIR = Path(xdg_config_home) / "deepresearch" / "audio"
 STATE_DIR = Path(xdg_config_home) / "deepresearch"
 STATIC = resources.files("deepresearch.dashboard") / "static"
 
-# Estimate constants mirror `deep-research estimate` (cli/commands.py).
-# Per agent run, from Google's Deep Research docs ("~250k input tokens (~50-70%
-# cached), ~60k output") and matching measured runs (2026-09: $0.37-$2.04).
-COST_INPUT_1M = 2.00
-COST_CACHED_1M = 0.20
-COST_OUTPUT_1M = 12.00
-AVG_INPUT_TOKENS = 250_000
-CACHED_FRACTION = 0.6
-AVG_OUTPUT_TOKENS = 60_000
-
 
 class RawResponse:
     """Binary payload (audio) instead of JSON."""
@@ -129,24 +119,12 @@ def detach(args: list[str], log_path: Path) -> int:
     return proc.pid
 
 
-def estimate(depth: int, breadth: int, file_bytes: int = 0) -> dict:
-    file_tokens = file_bytes * 0.25
-    nodes = sum(pow(breadth, d) for d in range(max(depth, 1)))
-    total_in = nodes * AVG_INPUT_TOKENS + nodes * file_tokens
-    total_out = nodes * AVG_OUTPUT_TOKENS
-    cached = nodes * AVG_INPUT_TOKENS * CACHED_FRACTION
-    cost = (
-        (total_in - cached) / 1e6 * COST_INPUT_1M
-        + cached / 1e6 * COST_CACHED_1M
-        + total_out / 1e6 * COST_OUTPUT_1M
-    )
-    return {
-        "nodes": nodes,
-        "input_tokens": int(total_in),
-        "output_tokens": int(total_out),
-        "file_tokens": int(file_tokens),
-        "cost_usd": round(cost, 2),
-    }
+def estimate(
+    depth: int, breadth: int, file_bytes: int = 0, agent: str | None = None
+) -> dict:
+    from deepresearch.core.estimate import estimate as _est
+
+    return _est(depth, breadth, file_bytes, agent)
 
 
 # Host names that only resolve on the local network or tailnet. A DNS-rebinding
@@ -300,6 +278,7 @@ class Api(ProjectApi):
         r("GET", r"/api/sessions/(\d+)/export", self.export_session)
         r("POST", r"/api/research", self.start_research)
         r("POST", r"/api/estimate", self.estimate)
+        r("POST", r"/api/research/plan", self.research_plan)
         r("POST", r"/api/uploads", self.upload)
         r("POST", r"/api/search", self.search)
         r("GET", r"/api/annotations", self.list_annotations)
@@ -346,6 +325,9 @@ class Api(ProjectApi):
         r("POST", r"/api/lab/(\d+)/fix-blocked", self.lab_fix_blocked)
         r("GET", r"/api/lab/pulse", self.lab_pulse)
         r("GET", r"/api/cluster/status", self.cluster_status)
+        r("GET", r"/api/nexus/status", self.nexus_status)
+        r("GET", r"/api/nexus/search", self.nexus_search)
+        r("GET", r"/api/nexus/show", self.nexus_show)
         r("GET", r"/api/cluster/panel/(\w+)", self.cluster_panel)
         r("GET", r"/api/cluster/lab", self.cluster_lab)
         r("POST", r"/api/lab/(\d+)/fix-failed", self.lab_fix_failed)
@@ -1074,6 +1056,12 @@ class Api(ProjectApi):
             if self.sources.get(n) is None:
                 raise ApiError(400, f"data source '{n}' does not exist")
         fmt = (body.get("format") or "").strip()
+        agent = "max" if str(body.get("agent") or "").lower() == "max" else None
+        plan_id = str(body.get("plan_id") or "").strip()
+        if plan_id and not re.fullmatch(r"[A-Za-z0-9_-]{8,200}", plan_id):
+            raise ApiError(400, "plan_id is not a Google interaction id")
+        if plan_id and depth > 1:
+            raise ApiError(400, "Plan first works with depth 1 only")
         project_id = body.get("project_id")
         if project_id and not self.projects.get(int(project_id)):
             raise ApiError(400, f"Project {project_id} not found")
@@ -1093,6 +1081,10 @@ class Api(ProjectApi):
         if fmt:
             args += ["--format", fmt]
         args += ["--depth", str(depth), "--breadth", str(breadth)]
+        if agent:
+            args.append("--max")
+        if plan_id:
+            args += ["--plan-id", plan_id]
         if depth == 1:
             args.append("--stream")  # thought summaries land in the live log
         if self.current_workspace != "main":
@@ -1109,12 +1101,36 @@ class Api(ProjectApi):
                     sid,
                     depth,
                     breadth,
-                    estimate(depth, breadth, size)["cost_usd"],
+                    estimate(depth, breadth, size, agent)["cost_usd"],
                     int(rerun_of) if rerun_of else None,
                     datetime.now().isoformat(timespec="seconds"),
                 ),
             )
         return {"id": sid, "pid": pid}
+
+    def research_plan(self, query, body):
+        """Plan first (v0.61.0): Google's research plan for a prompt, or a revision of
+        `plan_id` with `change` as the request. Nothing is launched; costs well under
+        a cent (the standard agent plans in about 10-20 s)."""
+        from deepresearch.core import planner
+
+        body = body or {}
+        prev = str(body.get("plan_id") or "").strip() or None
+        text = (body.get("change") if prev else body.get("prompt")) or ""
+        text = str(text).strip()
+        if not text:
+            raise ApiError(400, "Say what to change" if prev else "Prompt is empty")
+        if prev and not re.fullmatch(r"[A-Za-z0-9_-]{8,200}", prev):
+            raise ApiError(400, "plan_id is not a Google interaction id")
+        if not os.getenv("GEMINI_API_KEY"):
+            raise ApiError(400, "GEMINI_API_KEY is not set for the dashboard process")
+        fmt = str(body.get("format") or "").strip()
+        if fmt and not prev:
+            text += f"\n\nFormat the output as follows: {fmt}"
+        try:
+            return planner.plan(self.fx._client(), text, previous_id=prev)
+        except RuntimeError as e:
+            raise ApiError(502, str(e))
 
     def estimate(self, query, body):
         body = body or {}
@@ -1125,7 +1141,10 @@ class Api(ProjectApi):
             except OSError:
                 pass
         return estimate(
-            int(body.get("depth") or 1), int(body.get("breadth") or 3), size
+            int(body.get("depth") or 1),
+            int(body.get("breadth") or 3),
+            size,
+            "max" if str(body.get("agent") or "").lower() == "max" else None,
         )
 
     def upload(self, query, body):
@@ -2008,6 +2027,51 @@ class Api(ProjectApi):
             info = {"error": str(e)[:200]}
         self._whoami_cache = (time.time(), info)
         return {**out, **info}
+
+    # ---- Nexus project links (v0.62.0), read-only ------------------------------
+    def _nexus(self):
+        from deepresearch.dashboard import nexus as nx
+
+        c = getattr(self, "_nexus_client", None)
+        if c is None:
+            c = self._nexus_client = nx.client(STATE_DIR)
+        if not c.signed_in():
+            raise ApiError(
+                409, "Not signed in to Nexus: run `deep-research nexus login`"
+            )
+        return c
+
+    def nexus_status(self, query, body):
+        from deepresearch.dashboard import nexus as nx
+
+        c = getattr(self, "_nexus_client", None) or nx.client(STATE_DIR)
+        self._nexus_client = c
+        return {"signed_in": c.signed_in()}
+
+    def nexus_search(self, query, body):
+        from deepresearch.dashboard import bifrost as bf
+        from deepresearch.dashboard import nexus as nx
+
+        q = (query.get("q") or [""])[0].strip()
+        if len(q) < 2:
+            return {"results": []}
+        try:
+            return {"results": nx.search(self._nexus(), q[:100])}
+        except bf.BifrostError as e:
+            raise ApiError(502, str(e)[:200])
+
+    def nexus_show(self, query, body):
+        from deepresearch.dashboard import bifrost as bf
+        from deepresearch.dashboard import nexus as nx
+
+        kind = (query.get("kind") or [""])[0]
+        rid = (query.get("id") or [""])[0].strip()
+        if kind not in nx.KINDS or not rid or len(rid) > 200:
+            raise ApiError(400, "kind must be lab, grant, gcp or project, with an id")
+        try:
+            return nx.show(self._nexus(), kind, rid)
+        except bf.BifrostError as e:
+            raise ApiError(502, str(e)[:200])
 
     def cluster_panel(self, name, query, body):
         """One Cluster view panel through bifrost, cached (clusterview, v0.57.0)."""

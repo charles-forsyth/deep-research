@@ -184,7 +184,9 @@ class ProjectStore:
                         f"protection level must be one of {', '.join(LEVELS)}"
                     )
             elif k == "nexus_ref":
-                v = str(v).strip()[:120]
+                # v0.62.0: "kind:id" from the Nexus picker (lab, grant, gcp, project);
+                # older free text is kept as it was
+                v = str(v).strip()[:240]
             elif k in ("lab_target", "lab_partition"):
                 v = str(v).strip()
                 if v and not re.fullmatch(r"[\w.-]{1,64}", v):

@@ -1216,6 +1216,11 @@ function renderLaunch(v) {
       <div class="field"><label for="l-breadth">Breadth (sub-tasks per level)</label>
         <div class="range-wrap"><input type="range" id="l-breadth" min="1" max="6" value="3"><output id="o-breadth">3</output></div></div>
     </div>
+    <div class="field"><label>Research agent</label>
+      <div class="agent-pick" id="l-agent" role="radiogroup" aria-label="Research agent">
+        <label><input type="radio" name="l-agent" value="standard" ${pre.agent === "max" ? "" : "checked"}> Deep Research <span class="dim">5-15 min</span></label>
+        <label><input type="radio" name="l-agent" value="max" ${pre.agent === "max" ? "checked" : ""}> Deep Research Max <span class="dim">more searches and reading, 20-60 min, about 2x the cost</span></label>
+      </div></div>
     <div class="field"><label for="l-project">Project</label>
       <select id="l-project"><option value="">Inbox (no project)</option>${PROJ.list.map((p) => `<option value="${p.id}" ${+pre.project_id === p.id || (!pre.project_id && typeof S.project === "number" && S.project === p.id) ? "selected" : ""}>${esc(p.title)}</option>`).join("")}</select>
       <div class="dim" id="l-project-note" style="font-size:11.5px;margin-top:4px"></div></div>
@@ -1231,7 +1236,14 @@ function renderLaunch(v) {
     <div class="field"><label for="l-stores">Existing File Search Stores (optional, space separated)</label>
       <input id="l-stores" placeholder="fileSearchStores/abc123" list="l-stores-list"><datalist id="l-stores-list"></datalist></div>
     <div class="estimate" id="l-est"></div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+    <div class="lplan" id="l-plan" hidden>
+      <div class="lplan-h"><span class="label">Research plan</span> <span class="dim" id="l-plan-meta"></span><span class="grow"></span><button class="btn small ghost" id="l-plan-drop" title="Forget this plan and launch without one">Drop plan</button></div>
+      <div class="lplan-body md" id="l-plan-body"></div>
+      <div class="lplan-edit"><input class="inline-input" id="l-plan-change" placeholder="What should change? e.g. \u201cfocus on 2024-2026, skip the history\u201d"><button class="btn small" id="l-plan-revise">Revise plan</button></div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:16px">
+      <span class="dim" id="l-plan-hint" style="font-size:11.5px;margin-right:auto">Plan first: Google drafts the research plan for you to read and change before anything runs (free, about 20 s).</span>
+      <button class="btn" id="l-planfirst" ${noKey ? "disabled" : ""}>Plan first</button>
       <button class="btn primary" id="l-go" ${noKey ? "disabled" : ""}>Launch research \u2192</button>
     </div>
   </div>`;
@@ -1260,17 +1272,19 @@ function renderLaunch(v) {
     const dl = v.querySelector("#l-stores-list");
     if (dl) dl.innerHTML = (r.stores || []).map((x) => `<option value="${esc(x.name)}">${esc(x.display_name || "")}</option>`).join("");
   }).catch(() => { /* optional */ });
+  const launchAgent = () => (v.querySelector('#l-agent input:checked') || {}).value || "standard";
   let pending = 0; // files still uploading; Launch waits for them
   const est = debounce(async () => {
     const d = +$("#l-depth").value, b = +$("#l-breadth").value;
     $("#o-depth").textContent = d; $("#o-breadth").textContent = b;
     $("#l-breadth").disabled = d === 1;
     try {
-      const e = await api("/api/estimate", { method: "POST", body: { depth: d, breadth: b, uploads: uploads.map((u) => u.path) } });
-      $("#l-est").innerHTML = `<span>AGENT RUNS <b>${e.nodes}</b></span><span>INPUT <b>${fmtN(e.input_tokens)}</b> tok</span><span>OUTPUT <b>${fmtN(e.output_tokens)}</b> tok</span><span>EST. COST <b>$${e.cost_usd.toFixed(2)}</b></span><span class="dim">rough, same model as <span class="mono">deep-research estimate</span></span>`;
+      const e = await api("/api/estimate", { method: "POST", body: { depth: d, breadth: b, agent: launchAgent(), uploads: uploads.map((u) => u.path) } });
+      $("#l-est").innerHTML = `<span>${e.agent === "max" ? "MAX " : ""}AGENT RUNS <b>${e.nodes}</b></span><span>INPUT <b>${fmtN(e.input_tokens)}</b> tok</span><span>OUTPUT <b>${fmtN(e.output_tokens)}</b> tok</span><span>EST. COST <b>$${e.cost_usd.toFixed(2)}\u2013$${e.cost_high_usd.toFixed(2)}</b></span><span class="dim" title="Tokens at Gemini rates; the high figure adds Google Search at $14 per 1,000 for up to ${e.searches} searches (our runs usually use fewer)">tokens, up to ${e.searches} searches</span>`;
     } catch (err) { $("#l-est").textContent = err.message; }
   }, 120);
   ["l-depth", "l-breadth"].forEach((id) => ($("#" + id).oninput = est));
+  $$('#l-agent input', v).forEach((i) => (i.onchange = est));
   est();
   $$(".templates button", v).forEach((b) => (b.onclick = () => { const ta = $("#l-prompt"); ta.value = TEMPLATES[b.dataset.t][1]; ta.focus(); const i = ta.value.indexOf("["); if (i >= 0) ta.setSelectionRange(i, ta.value.indexOf("]", i) + 1); }));
   const renderFiles = () => {
@@ -1307,23 +1321,65 @@ function renderLaunch(v) {
   drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
   drop.ondragleave = () => drop.classList.remove("over");
   drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); addFiles([...e.dataTransfer.files]); };
+  // Google returns "**Title:** .. **Input:** .. **Research Plan:** (1) .. (2) .." on few
+  // lines; break the steps and labels onto their own lines so it reads as a list
+  const planMd = (t) => String(t || "")
+    .replace(/\s*(\*\*(?:Title|Input|Research Plan):\*\*)/g, "\n\n$1")
+    .replace(/\s+\((\d{1,2})\)\s+/g, "\n$1. ")
+    .trim();
+  // Plan first (v0.61.0): the plan lives on the tab; Launch then runs it
+  const showPlan = () => {
+    const p = tab.plan, box = v.querySelector("#l-plan");
+    if (!box) return;
+    box.hidden = !p;
+    v.querySelector("#l-plan-hint").hidden = !!p;
+    v.querySelector("#l-planfirst").textContent = p ? "New plan" : "Plan first";
+    v.querySelector("#l-go").innerHTML = p ? "Run this plan \u2192" : "Launch research \u2192";
+    $("#l-depth").disabled = !!p;
+    if (!p) return;
+    v.querySelector("#l-plan-body").innerHTML = renderMd(planMd(p.plan));
+    v.querySelector("#l-plan-meta").textContent = `${p.rounds > 1 ? `revision ${p.rounds - 1}, ` : ""}drafted in ${p.seconds}s; the run follows it on ${launchAgent() === "max" ? "Deep Research Max" : "Deep Research"}`;
+  };
+  const askPlan = async (btn, body) => {
+    btn.innerHTML = '<span class="spinner"></span> Planning';
+    const r = await api("/api/research/plan", { method: "POST", body });
+    tab.plan = { id: r.id, plan: r.plan, seconds: r.seconds, rounds: ((tab.plan && body.plan_id) ? tab.plan.rounds : 0) + 1, prompt: $("#l-prompt").value.trim() };
+    showPlan();
+  };
+  $("#l-planfirst").onclick = () => busy($("#l-planfirst"), async () => {
+    const prompt = $("#l-prompt").value.trim();
+    if (!prompt) { $("#l-prompt").focus(); return toast("Write a research objective first", "err"); }
+    if (+$("#l-depth").value > 1) { $("#l-depth").value = 1; est(); toast("Plan first runs one research task (depth 1)", "ok"); }
+    await askPlan($("#l-planfirst"), { prompt, format: $("#l-format").value });
+  });
+  $("#l-plan-revise").onclick = () => busy($("#l-plan-revise"), async () => {
+    const change = $("#l-plan-change").value.trim();
+    if (!change) { $("#l-plan-change").focus(); return toast("Say what should change", "err"); }
+    await askPlan($("#l-plan-revise"), { plan_id: tab.plan.id, change });
+    $("#l-plan-change").value = "";
+  });
+  $("#l-plan-change").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); $("#l-plan-revise").click(); } };
+  $("#l-plan-drop").onclick = () => { tab.plan = null; showPlan(); };
+  $$('#l-agent input', v).forEach((i) => i.addEventListener("change", showPlan));
+  showPlan();
   $("#l-go").onclick = () => busy($("#l-go"), async () => {
     if (pending) return toast("Wait for the files to finish uploading", "err");
     const prompt = $("#l-prompt").value.trim();
     if (!prompt) { $("#l-prompt").focus(); return toast("Write a research objective first", "err"); }
     const d = +$("#l-depth").value;
-    if (d > 1 && !(await confirmBox("Launch recursive research?", `Depth ${d} runs ${$("#l-est").querySelector("b")?.textContent || "several"} agent tasks. Check the cost estimate.`, "Launch"))) return;
+    if (tab.plan && tab.plan.prompt !== prompt && !(await confirmBox("Run the plan?", "The research objective changed after the plan was drafted. The run follows the plan, not the new text.", "Run the plan"))) return;
+    if (d > 1 && !(await confirmBox("Launch recursive research?", `Depth ${d} runs ${$("#l-est").querySelector("b")?.textContent || "several"} agent tasks${launchAgent() === "max" ? ", each with Deep Research Max" : ""}. Check the cost estimate.`, "Launch"))) return;
     $("#l-go").innerHTML = '<span class="spinner"></span> Launching';
     {
       const r = await api("/api/research", { method: "POST", body: {
-        prompt, depth: d, breadth: +$("#l-breadth").value, format: $("#l-format").value,
+        prompt, depth: d, breadth: +$("#l-breadth").value, format: $("#l-format").value, agent: launchAgent(), plan_id: tab.plan ? tab.plan.id : null,
         uploads: uploads.map((u) => u.path), stores: $("#l-stores").value.split(/\s+/).filter(Boolean),
         data_sources: launchSources(), project_id: projSel.value ? +projSel.value : null,
       } });
       toast(`Research #${r.id} launched`, "ok");
       NOTIFY.ask();
       S.launchPrefill = null;
-      tab.uploads = []; tab.ds = null; delete VIEWSTATE.launch;
+      tab.uploads = []; tab.ds = null; tab.plan = null; delete VIEWSTATE.launch;
       closeTab("launch"); S.rtab = "log";
       await loadSessions(); loadStats(); PROJ.load().catch(() => {});
       openSession(r.id);

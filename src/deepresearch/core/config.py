@@ -29,6 +29,15 @@ def load_env_files() -> None:
 load_env_files()
 
 
+AGENT_STANDARD = "deep-research-preview-04-2026"
+AGENT_MAX = "deep-research-max-preview-04-2026"
+
+
+def agent_id(choice: str | None, default: str) -> str:
+    """The Interactions agent for a run: "max" -> Deep Research Max, else the default."""
+    return AGENT_MAX if (choice or "").lower() == "max" else default
+
+
 class DeepResearchConfig(BaseModel):
     api_key: str = Field(
         default_factory=lambda: os.getenv("GEMINI_API_KEY"), validate_default=True

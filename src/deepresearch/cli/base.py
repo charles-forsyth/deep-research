@@ -11,6 +11,11 @@ class ResearchRequest(BaseModel):
     adopt_session_id: int | None = None
     depth: int = 1
     breadth: int = 3  # Max child tasks per node
+    # v0.61.0: "max" runs Google's Deep Research Max agent (slower, more searches, about
+    # 2-3x the cost); "standard" or None uses the configured agent
+    agent: str | None = None
+    # v0.61.0: run the research as the continuation of an approved plan interaction
+    previous_interaction_id: str | None = None
 
     @property
     def final_prompt(self) -> str:

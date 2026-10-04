@@ -70,3 +70,39 @@ def handle(args, client: bf.BifrostClient | None = None) -> int:
     else:
         print("Not signed in. Run `deep-research cluster login`.")
     return 1 if out.get("error") else 0
+
+
+def handle_nexus(args, client: bf.BifrostClient | None = None) -> int:
+    """`deep-research nexus login|logout|status` (v0.62.0): read-only Nexus sign-in."""
+    from deepresearch.dashboard import nexus as nx
+
+    c = client or nx.client(_state_dir())
+    out: dict
+    try:
+        if args.action == "login":
+            print("Opening your browser to sign in to Nexus (read-only)...")
+            who = c.login(open_browser=webbrowser.open)
+            out = {"signed_in": True, **who}
+        elif args.action == "logout":
+            out = {"signed_in": False, "removed": c.logout()}
+        else:
+            out = {"signed_in": c.signed_in(), "url": c.url}
+            if out["signed_in"]:
+                out.update(c.whoami())
+    except bf.NotSignedIn as e:
+        out = {"signed_in": False, "error": str(e)}
+    except bf.BifrostError as e:
+        out = {"error": str(e)}
+    if getattr(args, "json", False):
+        print(json.dumps(out, indent=2))
+    elif out.get("error"):
+        print(f"[ERROR] {out['error']}")
+    elif args.action == "logout":
+        print("Signed out." if out.get("removed") else "Was not signed in.")
+    elif out.get("signed_in"):
+        print(
+            f"Signed in to Nexus as {out.get('email')} (role {out.get('role', 'read')})."
+        )
+    else:
+        print("Not signed in. Run `deep-research nexus login`.")
+    return 1 if out.get("error") else 0
