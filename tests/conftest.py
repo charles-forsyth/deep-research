@@ -21,3 +21,32 @@ def _no_auto_referee(monkeypatch):
     `lab.review()` directly with a stubbed `_ask`."""
     monkeypatch.setenv("DR_LAB_REVIEW", "0")
     monkeypatch.setenv("DR_LAB_REFINE", "0")
+
+
+@pytest.fixture(autouse=True)
+def _never_the_real_history_db(monkeypatch, tmp_path_factory):
+    """A test that builds a SessionManager() without a path would write to the
+    developer's real ~/.config/deepresearch/history.db (16 stray "a gap" rows did,
+    2026-10-03). Point the default DB at a throwaway file for every test."""
+    from deepresearch.core import session as session_mod
+
+    db = str(tmp_path_factory.mktemp("histdb") / "history.db")
+    real_init = session_mod.SessionManager.__init__
+
+    def init(self, db_path=None, *a, **k):
+        # a workspace chosen by the test (DR_WORKSPACE) still wins; only the
+        # fall-through to the real Main DB is redirected
+        real = os.path.realpath(
+            os.path.join(
+                os.path.expanduser("~"), ".config", "deepresearch", "history.db"
+            )
+        )
+        if (
+            db_path is None
+            and not session_mod._workspace_db()
+            and os.path.realpath(session_mod.user_db_path) == real
+        ):
+            db_path = db
+        real_init(self, db_path, *a, **k)
+
+    monkeypatch.setattr(session_mod.SessionManager, "__init__", init)

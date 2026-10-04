@@ -419,13 +419,22 @@ def test_stream_stuck_at_google_is_cancelled_not_resumed_forever(monkeypatch, tm
     assert len(resumes) == a.STALL_RECONNECTS
 
 
-def test_max_agent_is_used_for_the_run_and_every_recursive_child(mock_client):
+def test_max_agent_is_used_for_the_run_and_every_recursive_child(
+    mock_client, tmp_path, monkeypatch
+):
     """v0.61.0: ResearchRequest.agent="max" picks Deep Research Max for the root and for
     each recursive child; no choice keeps the configured agent."""
     from deepresearch.core.config import AGENT_MAX, agent_id
 
     assert agent_id("max", "x") == AGENT_MAX and agent_id(None, "x") == "x"
     assert agent_id("standard", "x") == "x"
+    # never the real history DB: children of a recursive run create session rows
+    import deepresearch.core.agent as agent_mod
+    from deepresearch.core.session import SessionManager
+
+    monkeypatch.setattr(
+        agent_mod, "SessionManager", lambda: SessionManager(str(tmp_path / "h.db"))
+    )
     config = DeepResearchConfig(api_key="test")
     agent = DeepResearchAgent(config)
     agent.client = mock_client
