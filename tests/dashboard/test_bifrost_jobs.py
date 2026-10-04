@@ -85,7 +85,7 @@ class Cluster:
                 "state": v["state"],
                 "nodes": "c3-0",
                 "elapsed_s": 75,
-                "exit_code": "0",
+                "exit_code": v.get("exit_code", "0"),
                 "restarts": v["restarts"],
             }
             for j, v in self.jobs.items()

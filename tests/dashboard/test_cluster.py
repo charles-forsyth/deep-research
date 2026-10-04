@@ -121,49 +121,6 @@ def test_status_prefers_the_live_queue_line(target, monkeypatch):
     assert st["slurm_state"] == "PENDING" and st["reason"] == "Resources"
 
 
-def test_warm_jobs_are_cancelled_on_the_spool_not_with_scancel(target, monkeypatch):
-    fake = FakeSSH()
-    monkeypatch.setattr(C.subprocess, "run", fake)
-    target.cfg["warm"] = {"partition": "computehigh"}
-    target.cancel("warm:full-5")
-    assert fake.commands and "scancel" not in fake.commands[0]
-    assert "full-5" in fake.commands[0]
-
-
-def test_warm_task_reads_where_a_task_is(target, monkeypatch):
-    out = b"where=done\nrc=0\nstarted=100\nfinished=160\nnode=c3-1\nnow=170\n"
-    monkeypatch.setattr(
-        C.subprocess, "run", FakeSSH([("for d in done running", 0, out)])
-    )
-    target.cfg["warm"] = {"partition": "computehigh"}
-    t = target.warm_task("smoke-5-1")
-    assert t == {"where": "done", "rc": 0, "started": 100, "finished": 160,
-                 "node": "c3-1", "now": 170}  # fmt: skip
-    monkeypatch.setattr(C.subprocess, "run", FakeSSH([("for d in", 0, b"")]))
-    assert target.warm_task("gone")["where"] == "missing"
-
-
-def test_warm_status_reports_the_idle_setting(target, monkeypatch):
-    """The Lab page said "stops after 20 idle minutes" whatever the setting was."""
-    monkeypatch.setattr(
-        C.subprocess, "run", FakeSSH([("::SQ::", 0, b"::SQ::\n::HB::\n::Q::\n0\n0\n")])
-    )
-    target.cfg["warm"] = {"partition": "computehigh", "idle_min": 60}
-    assert target.warm_status()["idle_min"] == 60
-    monkeypatch.setattr(
-        C.subprocess, "run", FakeSSH([("::SQ::", 0, b"::SQ::\n::HB::\n::Q::\n0\n0\n")])
-    )
-    target.cfg["warm"] = {"partition": "computehigh"}
-    assert target.warm_status()["idle_min"] == 20
-
-
-def test_warm_banner_reads_the_setting_not_a_fixed_number():
-    from pathlib import Path
-
-    js = (Path(C.__file__).parent / "static" / "lab.js").read_text()
-    assert "stops after 20 idle minutes" not in js and "w.idle_min" in js
-
-
 def _tgz(files: dict[str, bytes]) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:

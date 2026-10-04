@@ -101,183 +101,6 @@ def _draft(lb, **over):
     return lb.create(1, "document", "x", "", plan=plan)
 
 
-def test_submit_runs_smoke_first_then_full_run_on_warm_node(wlab):
-    run = _draft(wlab)
-    r = wlab.submit(run["id"])
-    assert r["status"] == "smoke"
-    assert wlab.fake.uploads and wlab.fake.uploads[0][2] is True  # fresh folder
-    task = r["smoke"]["task"]
-    sh = wlab.fake.tasks[task]["files"]["run.sh"]
-    assert "LAB_SMOKE=1" in sh and 'cd "$S"' in sh and "timeout" in sh
-    wlab.fake.finish(
-        task, 0, "[STAGE] Done\n", run=run["id"], outputs=["outputs/result.txt"]
-    )
-    wlab.poll(wlab.get(run["id"]))
-    now = wlab.get(run["id"])
-    assert now["status"] == "queued" and now["job_id"] == f"warm:full-{run['id']}"
-    full = wlab.fake.tasks[f"full-{run['id']}"]
-    assert full["exclusive"] and "bash run.sbatch" in full["files"]["run.sh"]
-    assert now["smoke"]["rounds"][0]["passed"] is True
-
-
-def test_long_or_gpu_runs_use_their_own_slurm_job(wlab):
-    run = _draft(wlab, resources={**PLAN["resources"], "time_limit": "05:00:00"})
-    wlab.submit(run["id"])
-    t = wlab.get(run["id"])["smoke"]["task"]
-    wlab.fake.finish(t, 0, "", run=run["id"], outputs=["outputs/result.txt"])
-    wlab.poll(wlab.get(run["id"]))
-    assert wlab.get(run["id"])["job_id"] == "5151"  # sbatch of the uploaded folder
-    gpu = _draft(wlab, resources={**PLAN["resources"], "gpus": 1})
-    r = wlab.submit(gpu["id"])
-    assert (
-        r["status"] == "queued" and r["job_id"] == "4242"
-    )  # no CPU smoke for GPU plans
-
-
-def test_failed_smoke_is_fixed_by_ai_and_comes_back_for_review(wlab):
-    run = _draft(wlab)
-    wlab.submit(run["id"])
-    t1 = wlab.get(run["id"])["smoke"]["task"]
-    wlab.fake.finish(
-        t1, 1, "Traceback\nFileNotFoundError: inputs/x.json\n", run=run["id"]
-    )
-    fixed = {
-        **PLAN,
-        "script": "echo fixed > outputs/result.txt",
-        "expected_outputs": ["outputs/result.txt"],
-    }
-    wlab.replies.append(
-        "```json\n"
-        + json.dumps(
-            {
-                "plan": fixed,
-                "changes": ["write result.txt instead of reading x.json"],
-                "notes": "",
-            }
-        )
-        + "\n```"
-    )
-    wlab._smoke_fix = labm.Lab._smoke_fix.__get__(
-        wlab
-    )  # run the fix inline, not a thread
-    orig_thread = labm.threading.Thread
-
-    class Inline:
-        def __init__(self, target, args, daemon):
-            self.t, self.a = target, args
-
-        def start(self):
-            self.t(*self.a)
-
-    labm.threading.Thread = Inline  # type: ignore[misc,assignment]
-    try:
-        wlab.poll(wlab.get(run["id"]))
-    finally:
-        labm.threading.Thread = orig_thread  # type: ignore[misc]
-    cur = wlab.get(run["id"])
-    assert cur["status"] == "smoke" and cur["smoke"]["round"] == 2
-    assert "smoke round 1" in cur["plan"]["fix_changes"][0]
-    assert wlab.fake.uploads[-1][2] is False  # re-upload keeps the folder
-    t2 = cur["smoke"]["task"]
-    wlab.fake.finish(t2, 0, "", run=run["id"], outputs=["outputs/result.txt"])
-    wlab.poll(wlab.get(run["id"]))
-    done = wlab.get(run["id"])
-    # the AI changed the plan: it passes, but a person approves the change first
-    assert done["status"] == "draft" and "review the changes" in done["stage"]
-    assert f"full-{run['id']}" not in wlab.fake.tasks
-
-
-def test_smoke_gives_up_after_max_rounds(wlab):
-    run = _draft(wlab)
-    wlab.submit(run["id"])
-    cur = wlab.get(run["id"])
-    sm = dict(cur["smoke"], round=wlab.SMOKE_MAX_ROUNDS)
-    wlab._update(run["id"], smoke=sm)
-    wlab.fake.finish(sm["task"], 2, "error: boom", run=run["id"])
-    wlab.poll(wlab.get(run["id"]))
-    f = wlab.get(run["id"])
-    assert f["status"] == "failed" and "full run was not started" in f["error"]
-    assert (
-        wlab.results_dir / f"run_{run['id']}" / "job.log"
-    ).read_text() == "error: boom"
-
-
-def test_cancel_during_smoke_cancels_the_task(wlab):
-    run = _draft(wlab)
-    wlab.submit(run["id"])
-    task = wlab.get(run["id"])["smoke"]["task"]
-    assert wlab.cancel(run["id"])["status"] == "cancelled"
-    assert wlab.fake.tasks[task].get("cancelled")
-
-
-def test_warm_full_run_status_maps_to_slurm_states(tmp_path):
-    tgt = labm.SlurmSSHTarget({"name": "x", "ssh_host": "h", "partitions": {}})
-    tgt.warm_task = lambda t: {
-        "where": "done",
-        "rc": 0,
-        "started": 10,
-        "finished": 75,  # type: ignore[method-assign]
-        "node": "n0",
-        "now": 80,
-    }
-    tgt.read_file = lambda rid, rel, limit=0: "Installing\nDone\n"  # type: ignore[method-assign]
-    st = tgt.status(3, "warm:full-3")
-    assert (
-        st["slurm_state"] == "COMPLETED"
-        and st["elapsed"] == "0:01:05"
-        and st["stage"] == "Done"
-    )
-    tgt.warm_task = lambda t: {
-        "where": "done",
-        "rc": 124,
-        "started": 1,
-        "finished": 2,
-        "node": "",
-        "now": 2,
-    }  # type: ignore[method-assign]
-    assert tgt.status(3, "warm:full-3")["slurm_state"] == "TIMEOUT"
-
-
-def test_warm_worker_script_runs_tasks_and_honours_exclusive(tmp_path):
-    q = tmp_path / "queue"
-    for name, excl in (("a", False), ("full", True), ("b", False)):
-        d = q / name
-        d.mkdir(parents=True)
-        (d / "run.sh").write_text(f"echo ran-{name}\nsleep 1\n")
-        (d / "need_sec").write_text("30")
-        if excl:
-            (d / "exclusive").touch()
-        subprocess.run(["sleep", "1.05"])
-    script = labm._worker_script()
-    out = subprocess.run(
-        ["bash", "-c", script],
-        env={
-            "WARM": str(tmp_path),
-            "IDLE_SEC": "2",
-            "POLL": "1",
-            "PATH": "/usr/bin:/bin",
-        },
-        capture_output=True,
-        text=True,
-        timeout=40,
-    ).stdout
-    assert all(
-        (tmp_path / "done" / n / "rc").read_text().strip() == "0"
-        for n in "a b full".split()
-    )
-    lines = [
-        ln for ln in out.splitlines() if "task full started" in ln or "finished" in ln
-    ]
-    started = out.index("task full started")
-    assert (
-        out.index("task a finished") < started
-        and out.index("task b finished") < started
-    )
-    assert "idle for 2s, exiting" in out
-    assert (tmp_path / "done" / "a" / "log").read_text().strip() == "ran-a"
-    assert lines
-
-
 def test_install_ladder_rungs_and_verification():
     t = FakeTarget()
     py = dict(
@@ -405,10 +228,11 @@ def test_planner_probes_go_into_the_plan_prompt(wlab):
         return "```json\n" + json.dumps(PLAN) + "\n```", 0.0
 
     wlab._ask = ask
-    wlab._warm_exec = lambda tgt, task, script, wait: (
+    wlab._check_run = lambda tgt, task, script, wait: (
         0,
         "=== CHECK 1\nSU2 v8.2.0 usage: SU2_CFD cfg",
     )
+    wlab._jobs_for = lambda tgt: object()  # signed in to bifrost: checks run on check
     wlab.env_notes = lambda tgt: ""
     wlab.make_plan(run["id"], "cavity")
     assert (
@@ -502,43 +326,6 @@ def test_ssh_submit_dodges_a_stocked_out_partition(wlab, monkeypatch):
     assert '"partition": "computehigh"' in sent["plan.json"]
 
 
-def test_ensure_warm_scales_out_with_the_backlog(tmp_path):
-    bin_ = tmp_path / "bin"
-    bin_.mkdir()
-    (bin_ / "squeue").write_text("#!/bin/bash\necho '226 RUNNING'\n")
-    (bin_ / "sbatch").write_text(f"#!/bin/bash\necho x >> {tmp_path}/sb.log; echo 77\n")
-    for f in bin_.iterdir():
-        f.chmod(0o755)
-    home = tmp_path / "home"
-    w = home / "deep-research-lab" / "warm"
-    (w / "workers").mkdir(parents=True)
-    (w / "workers" / "226.json").write_text('{"job": 226, "draining": false}')
-    tgt = labm.SlurmSSHTarget(
-        {
-            "name": "x",
-            "ssh_host": "h",
-            "partitions": {"computehigh": {}},
-            "warm": {"max_workers": 3},
-        }
-    )
-
-    def sh(cmd, stdin=None, timeout=0):
-        env = {"HOME": str(home), "PATH": f"{bin_}:/usr/bin:/bin"}
-        return subprocess.run(
-            ["bash", "-c", cmd], input=stdin, env=env, capture_output=True, timeout=30
-        ).stdout.decode()
-
-    tgt.sh = sh  # type: ignore[method-assign]
-    assert tgt.ensure_warm() == "running:226"  # empty queue: the one worker is enough
-    assert not (tmp_path / "sb.log").exists()
-    for k in range(5):
-        (w / "queue" / f"t{k}").mkdir(parents=True)
-    assert tgt.ensure_warm().startswith("started:")
-    assert (tmp_path / "sb.log").read_text().count(
-        "x"
-    ) == 2  # 1 + 5 // 2 = 3 workers, capped at 3
-
-
 def test_ladder_module_first_and_verify_imports_installed_in_fallbacks():
     """A python-sci plan with no pip: use the module as is; fallbacks get numba too."""
     t = FakeTarget()
@@ -626,54 +413,6 @@ def test_fix_concerns_catch_real_ai_fix_mistakes():
     assert labm.fix_concerns(t1, t2) == []
 
 
-def test_smoke_install_failure_is_not_retried_forever(wlab):
-    run = _draft(wlab)
-    wlab.submit(run["id"])
-    t1 = wlab.get(run["id"])["smoke"]["task"]
-    log = "[ERROR] no install method produced a working environment (tried: pixi)\n"
-    # round 1 fails on install: goes to the AI with a diagnosis
-    seen = {}
-
-    def ask(prompt, search):
-        seen["prompt"] = prompt
-        fixed = {
-            **PLAN,
-            "script": "echo ok > outputs/result.txt",
-            "expected_outputs": ["outputs/result.txt"],
-        }
-        return "```json\n" + json.dumps(
-            {"plan": fixed, "changes": ["x"], "notes": ""}
-        ) + "\n```", 0.0
-
-    wlab._ask = ask
-    orig_thread = labm.threading.Thread
-
-    class Inline:
-        def __init__(self, target, args, daemon):
-            self.t, self.a = target, args
-
-        def start(self):
-            self.t(*self.a)
-
-    labm.threading.Thread = Inline  # type: ignore[misc,assignment]
-    try:
-        wlab.fake.finish(t1, 4, log, run=run["id"])
-        wlab.poll(wlab.get(run["id"]))
-        assert "DIAGNOSIS: No install method" in seen["prompt"]
-        t2 = wlab.get(run["id"])["smoke"]["task"]
-        wlab.fake.finish(t2, 4, log, run=run["id"])
-        wlab.poll(wlab.get(run["id"]))
-    finally:
-        labm.threading.Thread = orig_thread  # type: ignore[misc]
-    f = wlab.get(run["id"])
-    assert (
-        f["status"] == "failed"
-        and "(install); not handed to the AI again" in f["stage"]
-    )
-    assert "software setup" in f["error"]
-    assert f["smoke"]["rounds"][-1]["class"] == "install"
-
-
 def test_local_container_is_used_in_place_not_pulled():
     t = FakeTarget()
     plan = dict(
@@ -721,28 +460,6 @@ def test_ladder_pinned_binary_conda_plan():
     assert "lammps=2023.08.02" in loose
     assert "ladder_try pip-venv" not in s
     assert "while IFS= read -r line" in s and "set +e +o pipefail" in s
-
-
-def test_smoke_fix_interrupted_by_restart_is_resumed(wlab, monkeypatch):
-    """Run #88: a dashboard restart mid-fix used to fail the run; now the fix resumes."""
-    run = _draft(wlab)
-    wlab.submit(run["id"])
-    sm = dict(wlab.get(run["id"])["smoke"], fixing=True)
-    sm["rounds"] = [{"round": 1, "rc": 1, "log_tail": "boom", "missing": []}]
-    wlab._update(run["id"], smoke=sm)  # as left by a dashboard that died mid-fix
-    labm._SMOKE_FIXING.discard(("main", run["id"]))
-    called = []
-    monkeypatch.setattr(wlab, "_smoke_fix", lambda *a: called.append(a))
-    wlab.poll(wlab.get(run["id"]))
-    import time as _t
-
-    for _ in range(50):
-        if called:
-            break
-        _t.sleep(0.02)
-    assert called and called[0][0] == run["id"] and called[0][1] == "boom"
-    assert wlab.get(run["id"])["status"] == "smoke"
-    labm._SMOKE_FIXING.discard(("main", run["id"]))
 
 
 def test_pixi_hook_runs_without_nounset():
@@ -809,40 +526,3 @@ def test_su2_max_time_warning():
         dict(PLAN, script=script.replace("TIME_ITER", "MAX_TIME= 10\nTIME_ITER")),
     )
     assert not any("MAX_TIME" in x for x in w)
-
-
-def test_only_the_first_warm_worker_is_always_on(tmp_path):
-    """Backlog workers get the burst idle limit; only one node stays on forever (v0.48.2)."""
-    bin_ = tmp_path / "bin"
-    bin_.mkdir()
-    (bin_ / "squeue").write_text("#!/bin/bash\ntrue\n")
-    (bin_ / "sbatch").write_text(
-        f'#!/bin/bash\nfor a in "$@"; do case "$a" in --export=*) echo "$a" >> {tmp_path}/sb.log;; esac; done; echo 77\n'
-    )
-    for f in bin_.iterdir():
-        f.chmod(0o755)
-    home = tmp_path / "home"
-    w = home / "deep-research-lab" / "warm"
-    for k in range(4):
-        (w / "queue" / f"t{k}").mkdir(parents=True)
-    tgt = labm.SlurmSSHTarget(
-        {
-            "name": "x",
-            "ssh_host": "h",
-            "partitions": {"computehigh": {}},
-            "warm": {"max_workers": 3, "always_on": True, "idle_min": 0},
-        }
-    )
-
-    def sh(cmd, stdin=None, timeout=0):
-        env = {"HOME": str(home), "PATH": f"{bin_}:/usr/bin:/bin"}
-        return subprocess.run(
-            ["bash", "-c", cmd], input=stdin, env=env, capture_output=True, timeout=30
-        ).stdout.decode()
-
-    tgt.sh = sh  # type: ignore[method-assign]
-    assert tgt.ensure_warm().startswith("started:")
-    exports = (tmp_path / "sb.log").read_text().splitlines()
-    assert len(exports) == 3
-    assert "IDLE_MIN=0," in exports[0]
-    assert all("IDLE_MIN=20," in e for e in exports[1:])

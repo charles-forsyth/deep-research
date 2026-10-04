@@ -13,7 +13,8 @@ import pytest
 from deepresearch.dashboard import labloop, labverdict
 from deepresearch.dashboard.store import DashboardStore
 from tests.dashboard.test_lab import PLAN, lab  # noqa: F401  (fixture)
-from tests.dashboard.test_lab_v3 import _draft, wlab  # noqa: F401, F811  (fixture)
+from tests.dashboard.test_bifrost import server  # noqa: F401  (fixture)
+from tests.dashboard.test_bifrost_pilots import PLAN as PPLAN, draft as pdraft, plab  # noqa: F401, F811
 
 RUN79 = {
     "pass": False,
@@ -273,20 +274,19 @@ def test_note_is_refreshed_not_duplicated(lab):  # noqa: F811
     assert len(anns) == 1 and "CONFIRMED again." in anns[0]["note"]
 
 
-def test_pilot_that_cannot_discriminate_stops_and_replans(wlab, monkeypatch):  # noqa: F811
+def test_pilot_that_cannot_discriminate_stops_and_replans(plab, monkeypatch):  # noqa: F811
     _sync_threads(monkeypatch)
-    run = _draft(wlab)
-    r = wlab.submit(run["id"])
-    task = r["smoke"]["task"]
-    wlab.fake.files[f"{run['id']}/smoke/outputs/verdict.json"] = json.dumps(RUN79)
-    wlab.replies.append("```json\n" + json.dumps(REPLAN) + "\n```")
-    wlab.fake.finish(
-        task, 0, "[STAGE] Done\n", run=run["id"], outputs=["outputs/result.txt"]
-    )
-    wlab.poll(wlab.get(run["id"]))
-    now = wlab.get(run["id"])
-    # the full run was never started
-    assert f"full-{run['id']}" not in wlab.fake.tasks and not wlab.fake.sbatched
+    lb, cl, fake, _ = plab
+    rid = pdraft(lb)
+    lb.submit(rid)
+    lb._ask = lambda prompt, search: ("```json\n" + json.dumps(REPLAN) + "\n```", 0.0)
+    cl.finish("500", files={"outputs/pi.txt": b"3.14\n",
+                            "outputs/verdict.json": json.dumps(RUN79).encode()},
+              log=["[STAGE] Done"])  # fmt: skip
+    lb.poll(lb.get(rid))
+    now = lb.get(rid)
+    # the full run was never started: only the pilot job went to the cluster
+    assert [j["why"] for j in now["cluster_jobs"]] == ["pilot round 1"]
     assert now["status"] == "draft"
     assert now["smoke"]["pilot"]["outcome"] == "inconclusive"
     assert now["plan"]["auto_replanned"] is True and now["plan"]["plan_before_fix"]
@@ -294,19 +294,19 @@ def test_pilot_that_cannot_discriminate_stops_and_replans(wlab, monkeypatch):  #
     assert "re-planned by AI" in now["stage"]
 
 
-def test_pilot_that_discriminates_goes_on_to_the_full_run(wlab):  # noqa: F811
-    run = _draft(wlab)
-    r = wlab.submit(run["id"])
-    wlab.fake.files[f"{run['id']}/smoke/outputs/verdict.json"] = json.dumps(RUN97)
-    wlab.fake.finish(
-        r["smoke"]["task"],
-        0,
-        "[STAGE] Done\n",
-        run=run["id"],
-        outputs=["outputs/result.txt"],
-    )
-    wlab.poll(wlab.get(run["id"]))
-    assert wlab.get(run["id"])["status"] == "queued"
+def test_pilot_that_discriminates_goes_on_to_the_full_run(plab):  # noqa: F811
+    lb, cl, fake, _ = plab
+    rid = pdraft(lb)
+    lb.submit(rid)
+    cl.finish("500", files={"outputs/pi.txt": b"3.14\n",
+                            "outputs/verdict.json": json.dumps(RUN97).encode()},
+              log=["[STAGE] Done"])  # fmt: skip
+    lb.poll(lb.get(rid))
+    run = lb.get(rid)
+    assert run["status"] == "queued" and [j["why"] for j in run["cluster_jobs"]] == [
+        "pilot round 1",
+        "full",
+    ]
 
 
 def test_findings_and_lists_carry_the_outcome(lab):  # noqa: F811

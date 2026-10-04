@@ -2,8 +2,8 @@
 
 Moved out of `lab.py` unchanged (K20): `SlurmSSHTarget` (SSH through gcloud IAP or a
 plain ssh host, one ControlMaster connection per target, sbatch/squeue/sacct, run
-folders, the warm worker and its spool, file transfer, catalog cache), `ScopedTarget`
-(a workspace's view of the shared target: its own run folders and task names) and
+folders, file transfer, catalog cache), `ScopedTarget` (a workspace's view of the shared
+target: its own run folders and job names) and
 `load_targets`. No model calls here and nothing from the Lab's database; `lab.py`
 drives it. The read-only hpc-agent MCP server is meant to build on this module.
 """
@@ -55,10 +55,6 @@ def _tar_b64(files: dict[str, str]) -> bytes:
             info.mode = 0o755 if name.endswith((".sh", ".sbatch")) else 0o644
             tar.addfile(info, io.BytesIO(data))
     return base64.b64encode(buf.getvalue())
-
-
-def _worker_script() -> str:
-    return (Path(__file__).parent / "warm_worker.sh").read_text()
 
 
 class NotSubmitted(TargetError):
@@ -258,201 +254,6 @@ class SlurmSSHTarget:
             raise TargetError(f"sbatch returned {out.strip()!r}")
         return job
 
-    # ---- warm worker -------------------------------------------------------
-    # One long-lived Slurm job ("lab-warm") runs Lab tasks from a spool folder so a
-    # burst of smoke tests, planner probes and short runs shares one booted node.
-    @property
-    def warm(self) -> dict | None:
-        """Warm worker settings, or None when disabled (`"warm": false`)."""
-        cfg = self.cfg.get("warm", {})
-        if cfg is False or (isinstance(cfg, dict) and cfg.get("enabled") is False):
-            return None
-        cfg = cfg if isinstance(cfg, dict) else {}
-        part = str(cfg.get("partition") or "computehigh")
-        if self.partitions and part not in self.partitions:
-            part = self.default_partition
-        return {
-            "partition": part,
-            "idle_min": int(cfg.get("idle_min", 20)),  # 0 = never exit when idle
-            "always_on": bool(cfg.get("always_on", False)),
-            "hours": float(cfg.get("hours", 4)),
-            "max_par": int(cfg.get("max_par", 2)),
-            "max_full_min": int(cfg.get("max_full_min", 120)),
-            "smoke_min": int(cfg.get("smoke_min", 15)),
-            "max_workers": int(cfg.get("max_workers", 3)),
-        }
-
-    @property
-    def warm_dir(self) -> str:
-        # $HOME, not ~: the path is used inside --export= and quotes, where ~ stays literal
-        root = self.remote_root
-        if root.startswith("~"):
-            root = "$HOME" + root[1:]
-        return f"{root}/warm"
-
-    def ensure_warm(self) -> str:
-        """Start a warm worker unless a usable one is running or pending.
-
-        Returns 'running:<job>', 'pending:<job>' or 'started:<job>'. The worker script
-        is re-uploaded every time, so the cluster always runs this version's copy.
-        """
-        cfg = self.warm
-        if not cfg:
-            raise TargetError("the warm worker is disabled for this target")
-        w = self.warm_dir
-        limit = int(cfg["hours"] * 3600)
-        tl = f"{limit // 3600:02d}:{(limit % 3600) // 60:02d}:00"
-        max_w = max(1, int(cfg.get("max_workers", 3)))
-        idle0 = int(cfg["idle_min"])
-        burst = idle0 if idle0 > 0 else max(1, int(cfg.get("burst_idle_min", 20)))
-        part = (
-            cfg["partition"]
-            if re.fullmatch(r"[\w.-]+", cfg["partition"])
-            else "computehigh"
-        )
-        cmd = (
-            f'set -e; W="{w}"; mkdir -p "$W/queue" "$W/running" "$W/done" "$W/workers"; '
-            f'cat > "$W/worker.sh.new"; chmod 755 "$W/worker.sh.new"; '
-            f'mv -f "$W/worker.sh.new" "$W/worker.sh"; '
-            f"live=$(squeue -h -u $USER -n lab-warm -o '%i %T' 2>/dev/null || true); ok=''; "
-            f'for j in $(echo "$live" | awk \'$2=="PENDING"||$2=="CONFIGURING"{{print $1}}\'); '
-            f"do ok=pending:$j; done; "
-            f'n=$(echo "$live" | awk \'$2=="PENDING"||$2=="CONFIGURING"\' | grep -c . || true); '
-            f'for f in "$W"/workers/*.json; do [ -e "$f" ] || continue; j=$(basename "$f" .json); '
-            f'if echo "$live" | grep -q "^$j RUNNING" && ! grep -q \'"draining": true\' "$f"; '
-            f"then ok=running:$j; n=$((n+1)); fi; done; "
-            # scale out with the backlog: one worker, plus one per 2 queued tasks, capped
-            f'q=$(ls "$W/queue" 2>/dev/null | wc -l); want=$((1 + q / 2)); '
-            f'[ "$want" -gt {max_w} ] && want={max_w}; '
-            # only the first worker may be always-on (idle_min 0); extra workers started
-            # for a backlog get the burst idle limit, or they would run forever (v0.48.2:
-            # a planning burst left a second always-on node idle)
-            f'while [ "$n" -lt "$want" ]; do idle={idle0}; [ "$n" -gt 0 ] && idle={burst}; '
-            f"ok=started:$(sbatch --parsable --job-name=lab-warm "
-            f"-p {part} -N 1 --exclusive -t {tl} --signal=B:USR1@60 "
-            f'-o "$W/worker-%j.log" '
-            f'--export=ALL,WARM="$W",IDLE_MIN=$idle,MAX_PAR={cfg["max_par"]},'
-            f'WARM_LIMIT_SEC={limit} "$W/worker.sh"); n=$((n+1)); done; echo "$ok"'
-        )
-        out = self.sh(cmd, stdin=_worker_script().encode(), timeout=120).strip()
-        state = out.splitlines()[-1] if out else ""
-        if not re.fullmatch(r"(running|pending|started):\d+(;\S+)?", state):
-            raise TargetError(f"could not start the warm worker: {out[-300:]!r}")
-        return state.split(";")[0]
-
-    def warm_status(self) -> dict:
-        """Workers (heartbeats joined with squeue) and the task counts."""
-        w = self.warm_dir
-        out = self.sh(
-            f'W="{w}"; echo "::SQ::"; squeue -h -u $USER -n lab-warm -o "%i|%T|%M|%N|%L" '
-            f'2>/dev/null; echo "::HB::"; cat "$W"/workers/*.json 2>/dev/null; '
-            f'echo "::Q::"; ls "$W/queue" 2>/dev/null | wc -l; ls "$W/running" 2>/dev/null | wc -l',
-            timeout=60,
-        )
-        sq = out.split("::SQ::", 1)[-1].split("::HB::", 1)[0]
-        hb = out.split("::HB::", 1)[-1].split("::Q::", 1)[0]
-        q = out.split("::Q::", 1)[-1].split()
-        beats = {}
-        for ln in hb.splitlines():
-            try:
-                d = json.loads(ln)
-                beats[str(d.get("job"))] = d
-            except ValueError:
-                continue
-        jobs = []
-        for ln in sq.splitlines():
-            parts = (ln.strip().split("|") + [""] * 5)[:5]
-            if not parts[0]:
-                continue
-            b = beats.get(parts[0], {})
-            jobs.append(
-                {
-                    "job": parts[0],
-                    "state": parts[1],
-                    "elapsed": parts[2],
-                    "node": parts[3] or b.get("node", ""),
-                    "left": parts[4],
-                    "busy": [t for t in str(b.get("busy") or "").split() if t],
-                    "draining": bool(b.get("draining")),
-                }
-            )
-        return {
-            "enabled": True,
-            "partition": (self.warm or {}).get("partition"),
-            "idle_min": int((self.warm or {}).get("idle_min", 20)),
-            "workers": jobs,
-            "queued": int(q[0]) if q and q[0].isdigit() else 0,
-            "running": int(q[1]) if len(q) > 1 and q[1].isdigit() else 0,
-        }
-
-    def warm_enqueue(
-        self, task: str, files: dict[str, str], need_sec: int, exclusive: bool = False
-    ) -> None:
-        if not re.fullmatch(r"[\w.-]+", task):
-            raise ValueError(f"bad task name {task!r}")
-        w = self.warm_dir
-        self.sh(
-            f'set -e; W="{w}"; mkdir -p "$W/queue"; rm -rf "$W/queue/.{task}" "$W/queue/{task}" '
-            f'"$W/done/{task}"; mkdir -p "$W/queue/.{task}"; cd "$W/queue/.{task}"; '
-            f"base64 -d | tar xzf -; echo {int(need_sec)} > need_sec; "
-            + ("touch exclusive; " if exclusive else "")
-            + f'chmod 755 run.sh; mv "$W/queue/.{task}" "$W/queue/{task}"',
-            stdin=_tar_b64(files),
-            timeout=120,
-        )
-
-    def warm_task(self, task: str) -> dict:
-        """Where a task is (queue/running/done/missing) with rc, times and node."""
-        w = self.warm_dir
-        out = self.sh(
-            # done first: a task moves queue -> running -> done by rename, so checking in
-            # that order can miss it mid-move and report it missing (run #77)
-            f'W="{w}"; for d in done running queue done; do if [ -d "$W/$d/{task}" ]; then '
-            f'echo "where=$d"; T="$W/$d/{task}"; echo "rc=$(cat $T/rc 2>/dev/null)"; '
-            f'echo "started=$(cat $T/started 2>/dev/null)"; echo "finished=$(cat $T/finished 2>/dev/null)"; '
-            f'echo "node=$(cat $T/node 2>/dev/null)"; echo "now=$(date +%s)"; break; fi; done',
-            timeout=60,
-        )
-        info: dict[str, str] = {}
-        for ln in out.splitlines():
-            k, sep, v = ln.partition("=")
-            if sep and k in ("where", "rc", "started", "finished", "node", "now"):
-                info[k] = v.strip()
-        return {
-            "where": info.get("where", "missing"),
-            "rc": int(info["rc"]) if info.get("rc", "").lstrip("-").isdigit() else None,
-            "started": int(info["started"])
-            if info.get("started", "").isdigit()
-            else None,
-            "finished": int(info["finished"])
-            if info.get("finished", "").isdigit()
-            else None,
-            "node": info.get("node", ""),
-            "now": int(info["now"]) if info.get("now", "").isdigit() else None,
-        }
-
-    def warm_task_log(self, task: str, limit: int = 60000) -> str:
-        w = self.warm_dir
-        return self.run(
-            f'W="{w}"; for d in running done queue; do [ -f "$W/$d/{task}/log" ] && '
-            f'{{ tail -c {int(limit)} "$W/$d/{task}/log"; break; }}; done',
-            timeout=60,
-        ).stdout.decode("utf-8", "replace")
-
-    def warm_cancel(self, task: str) -> None:
-        w = self.warm_dir
-        self.sh(
-            f'W="{w}"; if [ -d "$W/queue/{task}" ]; then mkdir -p "$W/done"; rm -rf "$W/done/{task}"; '
-            f'mv "$W/queue/{task}" "$W/done/{task}" && echo 130 > "$W/done/{task}/rc"; '
-            f'elif [ -d "$W/running/{task}" ]; then touch "$W/running/{task}/cancel"; fi; true',
-            timeout=60,
-        )
-
-    def warm_stop(self) -> None:
-        """Ask every warm worker to finish (running tasks are stopped)."""
-        w = self.warm_dir
-        self.sh(f'W="{w}"; mkdir -p "$W"; touch "$W/stop"; true', timeout=60)
-
     def read_file(self, run_id: int, rel: str, limit: int = 60000) -> str:
         """Tail of a text file in the run folder ('' when missing)."""
         if not re.fullmatch(r"[\w./-]+", rel) or ".." in rel:
@@ -476,8 +277,6 @@ class SlurmSSHTarget:
 
     def status(self, run_id: int, job_id: str) -> dict:
         """One round trip: Slurm state, last stage marker, log tail and size."""
-        if str(job_id).startswith("warm:"):
-            return self._warm_run_status(run_id, str(job_id)[5:])
         d = self.job_dir(run_id)
         cmd = (
             f"sacct -j {job_id} -X -n -P -o State,Elapsed,NodeList,ExitCode,Start 2>/dev/null | head -1; "
@@ -528,40 +327,7 @@ class SlurmSSHTarget:
         return body.decode("utf-8", "replace"), size
 
     def cancel(self, job_id: str) -> None:
-        if str(job_id).startswith("warm:"):
-            return self.warm_cancel(str(job_id)[5:])
         self.sh(f"scancel {job_id}", timeout=60)
-
-    def _warm_run_status(self, run_id: int, task: str) -> dict:
-        """A full run on the warm node, reported in the same shape as Slurm status."""
-        t = self.warm_task(task)
-        stage = self.read_file(run_id, "stage.txt", 2000).strip().splitlines()
-        rc = t["rc"]
-        state = {"queue": "PENDING", "running": "RUNNING"}.get(t["where"], "")
-        if t["where"] == "done":
-            state = (
-                "COMPLETED" if rc == 0
-                else "TIMEOUT" if rc == 124
-                else "CANCELLED" if rc in (130, 143)
-                else "FAILED"
-            )  # fmt: skip
-        elif t["where"] == "missing":
-            state = ""
-        end = t["finished"] or t["now"]
-        el = (end - t["started"]) if (t["started"] and end) else 0
-        return {
-            "slurm_state": state,
-            "reason": "warm node" if state == "PENDING" else "",
-            "elapsed": f"{el // 3600:d}:{(el % 3600) // 60:02d}:{el % 60:02d}"
-            if el
-            else "",
-            "node": t["node"],
-            "exit_code": f"{rc}:0" if rc is not None else "",
-            "started": "",
-            "stage": stage[-1] if stage else "",
-            "log_size": 0,
-            "node_fails": 0,
-        }
 
     def fetch(self, run_id: int, dest: Path) -> list[dict]:
         """Copy outputs/ plus the log, plan and script back. Returns the file list."""
@@ -817,17 +583,9 @@ class SlurmSSHTarget:
                     else ""
                 )
             )
-        warm = getattr(self, "warm", None) or {}
         tail = (
             f"\nUse `{self.default_partition}` unless the job needs GPUs, more memory or "
-            "many nodes"
-            + (
-                f"; single-node CPU jobs on `{warm['partition']}` run on the always-on warm "
-                "node and start in seconds"
-                if warm.get("partition") == self.default_partition
-                else ""
-            )
-            + "."
+            "fast cores for multi-node MPI."
         )
         cores = labcores.describe(self)
         return (
@@ -855,8 +613,8 @@ class SlurmSSHTarget:
 
 
 class ScopedTarget:
-    """A cluster target seen from one workspace: same SSH connection, catalog and warm
-    worker, but its Lab runs live under <remote_root>/<prefix>/run_<id> and its warm-node
+    """A cluster target seen from one workspace: same SSH connection and catalog, but
+    its Lab runs live under <remote_root>/<prefix>/run_<id> and its
     tasks and Slurm job names carry the prefix, so run #1 of a new workspace never
     touches run #1 of Main (Main keeps prefix '' and its original folders)."""
 
@@ -907,12 +665,9 @@ class ScopedTarget:
     def fetch(self, run_id, dest):
         return SlurmSSHTarget.fetch(self, run_id, dest)  # type: ignore[arg-type]
 
-    def _warm_run_status(self, run_id, task):
-        return SlurmSSHTarget._warm_run_status(self, run_id, task)  # type: ignore[arg-type]
-
 
 def task_prefix(tgt) -> str:
-    """'' for Main; '<ws>-' for other workspaces (warm-node task and job names)."""
+    """'' for Main; '<ws>-' for other workspaces (Slurm job names)."""
     p = getattr(tgt, "ws_prefix", "") or ""
     return (p.removeprefix("ws-") + "-") if p else ""
 
