@@ -55,38 +55,100 @@ TYPES = {"Lab": "lab", "Grant": "grant", "GCPProject": "gcp", "GcpProject": "gcp
          "ResearchProject": "project"}  # fmt: skip
 
 
+_lists: dict[str, tuple[float, list[dict]]] = {}
+_lists_lock = threading.Lock()
+
+
+def _catalog(c: bf.BifrostClient) -> list[dict]:
+    """Every lab, grant and GCP project as [{kind, id, name, sub, hay}], cached 10 min
+    (three list calls). Name matching against this beats nexus_search, whose semantic
+    hits rank unrelated projects above the real one (tested 2026-10-03)."""
+    with _lists_lock:
+        hit = _lists.get(c.url)
+        if hit and time.time() - hit[0] < CACHE_S:
+            return hit[1]
+    out: list[dict] = []
+    for tool, args in (
+        ("nexus_labs_list", {"type": "LAB", "limit": 2000}),
+        ("nexus_grants_list", {"limit": 2000}),
+        ("nexus_gcp_list", {"limit": 2000}),
+    ):
+        try:
+            rows = _as_obj(c.call(tool, args))
+        except bf.BifrostError:
+            continue
+        for r in rows if isinstance(rows, list) else []:
+            if not isinstance(r, dict):
+                continue
+            row = _row(r)
+            if row:
+                row["hay"] = " ".join(
+                    str(r.get(k) or "")
+                    for k in (
+                        "name",
+                        "title",
+                        "c_number",
+                        "project_id",
+                        "agency",
+                        "description",
+                    )
+                ).lower()
+                out.append(row)
+    with _lists_lock:
+        _lists[c.url] = (time.time(), out)
+    return out
+
+
+def _row(r: dict) -> dict | None:
+    kind = TYPES.get(str(r.get("_type") or ""))
+    if not kind:
+        return None
+    name = str(r.get("name") or r.get("title") or "").strip()
+    rid = str(r.get("c_number") or r.get("project_id") or name).strip()
+    if not rid:
+        return None
+    sub = r.get("description") or r.get("summary") or r.get("agency") or ""
+    if kind == "grant" and r.get("title"):
+        name = f"{r.get('title')} ({rid})"
+    if kind == "gcp" and name.lower() != rid.lower():
+        sub = f"{rid}" + (f" - {sub}" if sub else "")
+    return {"kind": kind, "id": rid, "name": name or rid, "sub": str(sub)[:160]}
+
+
 def search(c: bf.BifrostClient, q: str, limit: int = 12) -> list[dict]:
     """Labs, grants, GCP projects and research projects matching `q`:
-    [{kind, id, name, sub}]; `id` is what the matching *_show tool takes."""
-    rows = _as_obj(c.call("nexus_search", {"term": q, "limit": 25}))
+    [{kind, id, name, sub}]; `id` is what the matching *_show tool takes. Every word of
+    `q` must appear in the entity's name, number, project id, sponsor or description
+    (list catalog); nexus_search fills in only its exact name matches (research
+    projects), never its semantic guesses."""
+    words = [w for w in q.lower().split() if w]
+    seen: set[tuple[str, str]] = set()
     out: list[dict] = []
-    for r in rows if isinstance(rows, list) else []:
-        if not isinstance(r, dict):
-            continue
-        kind = TYPES.get(str(r.get("_type") or ""))
-        if not kind:
-            continue
-        name = str(r.get("name") or r.get("title") or "").strip()
-        rid = str(r.get("c_number") or r.get("project_id") or name).strip()
-        if kind == "gcp":
-            rid = str(r.get("project_id") or name).strip()
-        if not rid:
-            continue
-        sub = (
-            r.get("description")
-            or r.get("summary")
-            or r.get("title")
-            or r.get("agency")
-            or ""
+    hits = [r for r in _catalog(c) if all(w in r["hay"] for w in words)]
+    # names that start with the query first, then shorter names
+    hits.sort(
+        key=lambda r: (
+            not r["name"].lower().startswith(words[0]) if words else 0,
+            len(r["name"]),
         )
-        if kind == "grant" and r.get("title"):
-            name = f"{r.get('title')} ({rid})"
-        out.append(
-            {"kind": kind, "id": rid, "name": name or rid, "sub": str(sub)[:160]}
-        )
-        if len(out) >= limit:
-            break
-    return out
+    )
+    for r in hits:
+        key = (r["kind"], r["id"])
+        if key not in seen:
+            seen.add(key)
+            out.append({k: r[k] for k in ("kind", "id", "name", "sub")})
+    if len(out) < limit:
+        rows = _as_obj(c.call("nexus_search", {"term": q, "limit": 25}))
+        for r in rows if isinstance(rows, list) else []:
+            if not isinstance(r, dict) or not str(r.get("_reason") or "").startswith(
+                ("Name", "Exact")
+            ):
+                continue  # semantic guesses are noise for a picker
+            row = _row(r)
+            if row and (row["kind"], row["id"]) not in seen:
+                seen.add((row["kind"], row["id"]))
+                out.append(row)
+    return out[:limit]
 
 
 _cache: dict[tuple, tuple[float, dict]] = {}

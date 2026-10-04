@@ -7,6 +7,12 @@ releases.
 
 ## [Unreleased]
 
+## [0.61.2] - 2026-10-03
+
+### Fixed
+- The Nexus picker finds what you type: "godzik" now lists the Godzik labs and GCP
+  project instead of unrelated projects from Nexus's semantic search.
+
 ## [0.61.1] - 2026-10-03
 
 ### Fixed
