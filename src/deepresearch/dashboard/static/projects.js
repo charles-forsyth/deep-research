@@ -106,12 +106,11 @@ const PROJ = {
       <div class="row">
         <div class="field"><label>Color</label><div class="pj-colors">${this.colors.map((c) => `<button type="button" class="pdot big ${c} ${c === (p.color || "cyan") ? "on" : ""}" data-c="${c}" aria-label="${c}"></button>`).join("")}</div></div>
         <div class="field"><label for="pj-level">Protection level</label><select id="pj-level">${["P1", "P2", "P3", "P4"].map((l) => `<option ${l === (p.protection_level || "P2") ? "selected" : ""}>${l}</option>`).join("")}</select></div>
-        <div class="field nx-field"><label for="pj-nexus-q">Nexus link <span class="dim">(lab, grant or GCP project)</span></label>
-          <input type="hidden" id="pj-nexus" value="${esc(p.nexus_ref || "")}">
-          <div class="nx-picked" id="pj-nexus-picked">${this.nexusChip(p.nexus_ref)}</div>
-          <input id="pj-nexus-q" placeholder="search Nexus, e.g. Baer, 2502990, ucr-ursa-major" autocomplete="off">
-          <div class="nx-results" id="pj-nexus-res" role="listbox"></div></div>
       </div>
+      <div class="field nx-field"><label for="pj-nexus-q">Nexus link <span class="dim">(lab, grant or GCP project; optional)</span></label>
+        <input type="hidden" id="pj-nexus" value="${esc(p.nexus_ref || "")}">
+        <div class="nx-row"><input id="pj-nexus-q" placeholder="search Nexus, e.g. Baer, 2502990, ucr-ursa-major" autocomplete="off"><div class="nx-picked" id="pj-nexus-picked">${this.nexusChip(p.nexus_ref)}</div></div>
+        <div class="nx-results" id="pj-nexus-res" role="listbox"></div></div>
       <div class="row">
         <div class="field"><label for="pj-part">Lab partition default</label><select id="pj-part"><option value="">cluster default</option>${parts.map(([k, v]) => `<option value="${esc(k)}" ${k === p.lab_partition ? "selected" : ""}>${esc(k)}${v.gpus ? " + " + v.gpus + " GPU" : ""}${v.spot ? " (spot)" : ""}</option>`).join("")}</select></div>
         <div class="field"><label>Data sources</label><div class="dim" style="font-size:11.5px;padding-top:6px">Add them on the project page; new research, Ask and Lab runs start with them.</div></div>
@@ -133,7 +132,7 @@ const PROJ = {
   },
   nexusKind: { lab: "Lab", grant: "Grant", gcp: "GCP project", project: "Project" },
   nexusChip(ref) {
-    if (!ref) return '<span class="dim" style="font-size:11.5px">none</span>';
+    if (!ref) return "";
     const n = this.nexusParse(ref);
     return `<span class="chip">${n ? `${esc(this.nexusKind[n.kind])} <b>${esc(n.id)}</b>` : `<b>${esc(ref)}</b> <span class="dim">(text)</span>`}</span> <button type="button" class="btn small ghost" data-nx="clear">Remove</button>`;
   },
@@ -152,7 +151,7 @@ const PROJ = {
       try { r = await api(`/api/nexus/search?q=${encodeURIComponent(term)}`); }
       catch (e) { if (my === seq) res.innerHTML = `<div class="dim" style="font-size:11.5px">${esc(e.message)}</div>`; return; }
       if (my !== seq) return;
-      res.innerHTML = r.results.length ? r.results.map((x, i) => `<button type="button" role="option" class="nx-opt" data-i="${i}"><span class="chip">${esc(this.nexusKind[x.kind] || x.kind)}</span> <b>${esc(x.name)}</b>${x.sub ? `<div class="dim">${esc(clip(x.sub, 110))}</div>` : ""}</button>`).join("") : '<div class="dim" style="font-size:11.5px">No labs, grants or projects match.</div>';
+      res.innerHTML = r.results.length ? r.results.map((x, i) => `<button type="button" role="option" class="nx-opt" data-i="${i}"><span class="nx-k">${esc(this.nexusKind[x.kind] || x.kind)}</span><span class="nx-n"><b>${esc(x.name)}</b>${x.sub ? ` <span class="dim">${esc(clip(x.sub, 110))}</span>` : ""}</span></button>`).join("") : '<div class="dim" style="font-size:11.5px">No labs, grants or projects match.</div>';
       res.querySelectorAll(".nx-opt").forEach((b) => (b.onclick = () => { const x = r.results[+b.dataset.i]; setRef(`${x.kind}:${x.id}`); res.innerHTML = ""; q.value = ""; }));
     }, 250);
     q.oninput = run;
@@ -162,7 +161,8 @@ const PROJ = {
     if (!box || !n) return;
     try {
       const d = await api(`/api/nexus/show?kind=${encodeURIComponent(n.kind)}&id=${encodeURIComponent(n.id)}`);
-      box.innerHTML = `<span class="label">From Nexus</span> <b>${esc(d.name)}</b> <span class="dim">${esc(this.nexusKind[d.kind] || d.kind)}</span>${(d.lines || []).length ? `<ul>${d.lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}`;
+      const kv = (d.lines || []).map((l) => { const i = l.indexOf(": "); return i > 0 ? `<dt>${esc(l.slice(0, i))}</dt><dd>${esc(l.slice(i + 2))}</dd>` : `<dt></dt><dd>${esc(l)}</dd>`; }).join("");
+      box.innerHTML = `<div class="nx-h"><span class="label">From Nexus</span><span class="nx-k">${esc(this.nexusKind[d.kind] || d.kind)}</span><b>${esc(d.name)}</b></div>${kv ? `<dl class="nx-kv">${kv}</dl>` : ""}`;
     } catch (e) {
       box.innerHTML = `<span class="label">From Nexus</span> <span class="dim">${esc(this.nexusKind[n.kind])} ${esc(n.id)}: ${esc(e.message)}</span>`;
     }
