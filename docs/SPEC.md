@@ -4,8 +4,8 @@
 |---|---|
 | Document | Complete functional and technical specification |
 | Applies to | deep-research v0.61.2 (package `deepresearch`) |
-| Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
-| Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
+| Status | Living document. Describes the system as built. Every section re-read against the source on 2026-10-03 (v0.61.2): module map, test suite table, cost model, CLI options, Lab flow, cluster access (bifrost first, SSH fallback), open items and roadmap regenerated; the retired warm node is described as history only. `tests/test_spec_sync.py` keeps routes, settings, modules, static files, commands, the header version, section order and history order in sync. |
+| Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md). Plans outside the repo: nexus `2026-10-02_Deep_Research_Next_Plan.md` (U1/U2, F, Nexus) and `2026-10-02_Deep_Research_Bifrost_Migration_Plan.md` (R0-R4) |
 
 This document is normative for behaviour: if the code and this document
 disagree, one of them is a bug. Requirement IDs (for example `REQ-RUN-3`) are
@@ -106,7 +106,8 @@ report leaves, and no comfortable place to read, compare or reuse the output.
 
 | Term | Meaning |
 |---|---|
-| **Agent** | Google's hosted Deep Research agent (`deep-research-preview-04-2026` by default), reached through the Interactions API. |
+| **Agent** | Google's hosted Deep Research agent, reached through the Interactions API: `deep-research-preview-04-2026` (default, "Deep Research") or `deep-research-max-preview-04-2026` ("Deep Research Max", chosen per run since v0.61.0, 20.28). |
+| **Plan first** | Google's collaborative planning: the agent drafts a research plan, the user revises it, and the run continues that plan interaction (20.28). |
 | **Interaction** | One agent or model call on Google's side, identified by an interaction id (`v1_...`). Google retains it for a limited time (observed: about a day for usage data). |
 | **Session** | One row in the local `sessions` table: a single research task (a root run, or one child of a recursive run) or its record. Identified locally by an integer id. |
 | **Root / child** | In a recursive run, the root session has `parent_id NULL`; children point at their parent. |
@@ -126,7 +127,11 @@ report leaves, and no comfortable place to read, compare or reuse the output.
 | **Workspace** | A separate library (database, logs, uploads, audio, Lab results). `main` is the default and never moves (section 23). |
 | **Data source** | A named place data lives (web, GCS, S3/CephRDS, Drive, local folder), registered once and reused (section 21). |
 | **Lab run** | A computation planned from a report and run on a Slurm cluster; outcome CONFIRMED, REFUTED, INCONCLUSIVE or BROKEN (section 20). |
-| **Warm node** | A long-running Slurm job on the cluster that runs pilots, fact checks and short Lab jobs without waiting for a new node (20.11, 20.16). |
+| **Warm node** | Retired in v0.58.0 (20.25). A long-running Slurm job that ran pilots, fact checks and short Lab jobs from a spool folder over SSH; replaced by bifrost jobs on the cluster's `check` partition. |
+| **bifrost** | `ursa-bifrost`, the hosted MCP server for the Ursa Major cluster. The Lab signs in to it as its own program client (`bifrost-deep-research`) and uses it for cluster reads and Slurm jobs (20.20-20.22); SSH is the fallback. |
+| **check partition** | Ursa Major's always-on test partition (one e2-standard-4 node, more under load, 15-minute limit) where pilots and planning checks run as bifrost jobs (20.22). |
+| **Pilot** | A cut-down run of the exact plan (`LAB_SMOKE=1`) before the real run; called `smoke` in code and data (20.11, 20.22). |
+| **Nexus** | The Research Computing CRM, read through its MCP server as the read-only program client `nexus-deep-research` to link projects to labs, grants and GCP projects (20.29). |
 | **Referee** | A second model pass that asks whether a Lab plan's test could ever fail or ever pass; advice only (20.15). |
 
 ---
@@ -150,6 +155,10 @@ flowchart LR
     cli --> db
     worker --> logs[/logs/session_N.log/]
     dash -->|tails| logs
+    dash -->|MCP over HTTPS<br/>program client bifrost-deep-research| bifrost[(ursa-bifrost MCP<br/>Ursa Major cluster)]
+    dash -.->|SSH fallback<br/>gcloud IAP| slurm[(Slurm login node)]
+    bifrost --> slurm
+    dash -->|MCP over HTTPS, read-only<br/>nexus-deep-research| nexus[(Nexus MCP)]
 ```
 
 External actors:
@@ -160,7 +169,9 @@ External actors:
 | User (browser) | HTTP on `127.0.0.1:7420` by default (this machine only); single-page app | in/out |
 | Google Gemini API | HTTPS via `google-genai` SDK and one raw `urllib` health probe | out |
 | ffmpeg (optional) | subprocess, WAV to MP3 conversion | out |
-| Slurm cluster (optional) | `ssh` (through `gcloud compute ssh --tunnel-through-iap` or a plain host), `sbatch`/`squeue`/`sacct`; Lab runs (section 20) | out |
+| ursa-bifrost MCP server (optional) | MCP Streamable HTTP + OAuth (PKCE), program client `bifrost-deep-research`: catalog, cluster status, `script_check`, job submit/watch/log/results/cancel, staging uploads, cluster views (20.20-20.23) | out |
+| Slurm cluster over SSH (optional, fallback) | `ssh` (through `gcloud compute ssh --tunnel-through-iap` or a plain host), `sbatch`/`squeue`/`sacct`; used for Lab runs when bifrost is not configured or not signed in (section 20, R4b deferred) | out |
+| Nexus MCP server (optional) | MCP Streamable HTTP + OAuth, program client `nexus-deep-research` (read): project links (20.29) | out |
 | `gcloud`, `rclone` (optional) | subprocess; GCS, Drive and S3/CephRDS data sources (section 21) | out |
 | Public websites | HTTPS fetches of data-source and Lab URLs (21, 20.18) | out |
 | Local filesystem | state dir (section 12) | in/out |
@@ -184,6 +195,8 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | REQ-RUN-6 | A streamed run whose connection drops shall check the interaction's status and, if it is still running, resume from the last event id without starting a new interaction, backing off on repeated failures. | `test_stream_end_without_final_event_checks_status` |
 | REQ-RUN-7 | Uploaded files shall go into a temporary File Search Store that is deleted, with its documents, when the run ends, whether it succeeds or fails. | `test_agent_auto_upload_and_cleanup`, `test_file_manager_cleanup` |
 | REQ-RUN-8 | When `--output` ends in `.json` or `.csv`, the prompt shall ask for a fenced code block of that type, and the exporter shall extract it. Invalid JSON shall be saved raw to `<file>.raw`, not lost. | `test_request_auto_format_json`, `test_request_auto_format_csv`, `test_save_json_invalid_fallback` |
+| REQ-RUN-9 | A run launched with the Deep Research Max choice (`--max`, launch form `agent: "max"`) shall use the Max agent for the root and every recursive child; any other value shall use the configured agent. | `test_max_agent_is_used_for_the_run_and_every_recursive_child`, `test_launch_with_max_passes_the_agent_to_the_cli`, `test_main_research_max_and_plan_reach_the_request` |
+| REQ-RUN-10 | Plan first shall launch nothing: asking for or revising a plan makes one planning interaction on the standard agent; only "Run this plan" starts research, as the continuation of the plan interaction with collaborative planning off. A plan that takes longer than 180 s shall be cancelled at Google. | `test_plan_uses_the_standard_agent_with_collaborative_planning`, `test_a_plan_that_never_comes_is_cancelled`, `test_plan_first_endpoint_and_launching_the_plan`, `test_an_approved_plan_runs_as_its_continuation` |
 
 ### 4.2 Recursion (REQ-REC)
 
@@ -208,10 +221,11 @@ exists; "manual" means covered by the release checklist in section 16.4.
 
 | ID | Requirement | Verified by |
 |---|---|---|
-| REQ-COST-1 | The CLI `estimate` command and the dashboard launch form shall show a cost estimate from the same formula (section 13.3) before any research money is spent. The estimate makes no API calls. | `test_main_estimate`, `test_estimate_matches_cli_model` |
+| REQ-COST-1 | The CLI `estimate` command and the dashboard launch form shall show a cost estimate from the same code (`core/estimate.py`, section 13.3) before any research money is spent, for the chosen agent (standard or Max), as a range from token cost to token cost plus the agent's full search count. The estimate makes no API calls. | `test_main_estimate`, `test_estimate_matches_cli_model`, `test_max_estimate_follows_googles_figures` |
 | REQ-COST-2 | The dashboard shall show a run's actual cost from the Interactions API usage block when Google still has it, and say plainly when it does not. | `test_usage_cost_uses_cached_rate_and_counts_searches`, `test_usage_endpoint_caches_expired_but_retries_transient` |
 | REQ-COST-3 | Only definitive usage answers (real usage, or "interaction expired") shall be cached; transient errors shall be retried on the next request. | `test_usage_endpoint_caches_expired_but_retries_transient` |
 | REQ-COST-4 | Any paid dashboard action other than launching research (audio export, AI brief, AI compare summary) shall show its cost before it runs. | manual |
+| REQ-COST-5 | A Lab job submitted through bifrost shall be confirmed only within its guards: worst case at most `min(max_usd_per_run, max(3 x the reviewed estimate, $1))` for a full run and $1 for a check job, at most 6 submissions per run, and the script hash bifrost reports equal to the script the Lab built (20.21). | `tests/dashboard/test_bifrost_jobs.py` |
 
 ### 4.5 Dashboard (REQ-DASH)
 
@@ -236,7 +250,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | ID | Requirement |
 |---|---|
 | REQ-NF-1 | Python 3.12 and 3.13 on Linux and macOS. Runtime dependencies are limited to those in `pyproject.toml`; the dashboard uses only the standard library on the server and vanilla JavaScript on the client. |
-| REQ-NF-2 | The test suite shall make no network calls and finish in about two minutes (587 tests at v0.50.1: about 110 s). |
+| REQ-NF-2 | The test suite shall make no network calls and finish in about two minutes (756 tests at v0.61.2: about 140 s). |
 | REQ-NF-3 | All SQLite access shall tolerate concurrent writers (worker processes, the dashboard, the CLI) through WAL mode and a 10 s busy timeout. Session writes on the research path shall also retry on `OperationalError`. **Partly met:** several writes have no retry (K1). |
 | REQ-NF-4 | The dashboard shall make no Gemini calls on its own schedule; every paid model call is the direct result of a user action (the Lab referee and refine rounds follow a plan the user asked for). Unprompted outbound calls: the free key check at page load, the Lab watcher while runs are active, and, only when a target sets `warm.always_on`, the warm-node keeper every 5 minutes (it keeps a cluster node running, which costs cluster money; 20.16). |
 | REQ-NF-5 | The dashboard shall stay responsive with thousands of sessions: session lists are capped (500 default, 5,000 max) and the report reader renders one session at a time. |
@@ -251,51 +265,50 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | Module | Lines | Responsibility |
 |---|---|---|
 | `deepresearch/__init__.py` | 30 | Entry point `main`, version lookup, source-checkout venv re-exec (see K18), silences SDK warnings. |
-| `deepresearch/__main__.py` | 684 | argparse parser, bare-prompt shortcut, `known_commands`, `--workspace`, command dispatch, top-level error catch. |
-| `cli/base.py` | 43 | `ResearchRequest` and `FollowUpRequest` (Pydantic): final prompt assembly and File Search tool config. |
-| `cli/commands.py` | 927 | One handler per research CLI command; `detach_process` for `start`; the CLI cost estimator; `--source` handling; `repair`. |
+| `deepresearch/__main__.py` | 757 | argparse parser, bare-prompt shortcut, `known_commands`, `--workspace`, command dispatch, top-level error catch. |
+| `cli/base.py` | 48 | `ResearchRequest` (prompt, stores, uploads, format, output, depth, breadth, `agent` (`max` or none), `previous_interaction_id` (an approved plan)) and `FollowUpRequest` (Pydantic): final prompt assembly and File Search tool config. |
+| `cli/commands.py` | 997 | One handler per research CLI command; `detach_process` for `start` (passes `--max` and `--plan-id` to the child); `estimate` through `core/estimate.py`; `--source` handling; `repair`. |
 | `cli/jsonout.py` | 89 | `--json` output and exit codes for every command (9.6). |
 | `cli/sources.py` | 396 | `deep-research sources ...` (section 21); `guess_kind`, `local_uri` validation. |
-| `cli/projects.py` | 305 | `deep-research projects ...` (22.10): list, show, create, add, remove, export; reuses the dashboard API in-process. |
+| `cli/projects.py` | 313 | `deep-research projects ...` (22.10): list, show, create, add, remove, export; reuses the dashboard API in-process. |
 | `cli/workspaces.py` | 179 | `deep-research workspace ...` (section 23): list, create, duplicate, rename, archive, delete, copy, export, import. |
-| `core/config.py` | 78 | Paths, `.env` loading, `DeepResearchConfig`, `service_env()` for background processes. |
-| `core/agent.py` | 725 | `DeepResearchAgent`: stream and poll runs, follow-up, gap analysis, synthesis, recursion; `_final_text` joins every output part. |
+| `core/config.py` | 87 | Paths, `.env` loading, `DeepResearchConfig`, `service_env()` for background processes; `AGENT_STANDARD`, `AGENT_MAX` and `agent_id(choice, default)` (20.28). |
+| `core/agent.py` | 745 | `DeepResearchAgent`: stream and poll runs, follow-up, gap analysis, synthesis, recursion; `_final_text` joins every output part; the agent per run (`agent_id`) and `_continue_plan` (runs an approved plan as `previous_interaction_id` with collaborative planning off, 20.28). |
 | `core/session.py` | 244 | `SessionManager`: all reads and writes of the `sessions` table, liveness rules. |
-| `core/estimate.py` | 70 | The one cost estimate for CLI and dashboard (20.28, v0.61.0): standard and Max per-run token and search profiles, Gemini rates, Google Search at $14/1K; `cost_usd` (tokens) and `cost_high_usd` (plus the full search count). |
-| `core/planner.py` | 85 | Plan first (20.28): Google's collaborative planning on the standard agent; plan and revise, cancel after 180 s. |
+| `core/estimate.py` | 59 | The one cost estimate for CLI and dashboard (20.28, v0.61.0): standard and Max per-run token and search profiles, Gemini rates, Google Search at $14/1K; `cost_usd` (tokens) and `cost_high_usd` (plus the full search count). |
+| `core/planner.py` | 81 | Plan first (20.28): Google's collaborative planning on the standard agent; plan and revise, cancel after 180 s. |
 | `core/repair.py` | 156 | Restore reports saved with only their last part (v0.38.2): re-fetch from Google, optional re-synthesis. |
 | `core/workspace.py` | 331 | Workspaces (section 23): Main stays in the config dir, others under `workspaces/<id>/`; current workspace, create, archive, trash. |
 | `core/wscopy.py` | 488 | Copy projects and reports into another workspace (v0.42.0): read-only source, one transaction, id remapping, Lab folders. |
 | `core/wszip.py` | 369 | Workspace export and import as `.drws.zip` (v0.43.0): manifest, checksums, path and size validation, never overwrites. |
-| `storage/database.py` | 35 | Creates `sessions`, enables WAL, additive column migrations. |
+| `storage/database.py` | 40 | Creates `sessions`, enables WAL, additive column migrations. |
 | `storage/files.py` | 151 | `FileManager`: temporary File Search Stores, upload, cleanup rules (`is_disposable_store`). |
 | `utils/exporters.py` | 49 | Code-block extraction and `.json` / `.csv` / text export. |
 | `utils/retry.py` | 36 | `with_retry` (network) and `db_retry` (SQLite locks) tenacity decorators. |
 | `utils/logger.py` | 59 | Rich console logging with `[INFO]`/`[THOUGHT]`/`[WARN]`/`[ERROR]`/`[DB]` tags and optional timestamps. |
 | `dashboard/daemon.py` | 225 | `--start/--stop/--restart/--status`, pid file, loopback check, health probe, URL listing. |
-| `dashboard/server.py` | 2,355 | `Api` route table and handlers, workspace context per request (`X-DR-Workspace`), `ThreadingHTTPServer` plumbing, loopback-only guard, static files, Range support, streamed zip upload. |
-| `dashboard/store.py` | 289 | `DashboardStore`: notebooks, annotations, session meta (stars, tags), dashboard session queries. |
+| `dashboard/server.py` | 2,467 | `Api` route table and handlers, workspace context per request (`X-DR-Workspace`), `ThreadingHTTPServer` plumbing, loopback-only guard, static files, Range support, streamed zip upload; launch with agent and plan id, Plan first (`research_plan`), cluster sign-in status and panels, Nexus routes. |
+| `dashboard/store.py` | 364 | `DashboardStore`: notebooks, annotations, session meta (stars, tags), dashboard session queries. |
 | `dashboard/features.py` | 599 | Actual cost, research map, compare, briefs, text-to-speech audio. |
-| `dashboard/projects.py` | 1,028 | Projects: store, filing rules, citations, dossier and research package exports, summary/Ask prompts, Inbox grouping (22). |
-| `dashboard/project_api.py` | 752 | Project HTTP handlers mixed into `Api` (22.6), including the claims board in dossiers. |
+| `dashboard/projects.py` | 1,030 | Projects: store, filing rules, citations, dossier and research package exports, summary/Ask prompts, Inbox grouping (22). |
+| `dashboard/project_api.py` | 754 | Project HTTP handlers mixed into `Api` (22.6), including the claims board in dossiers. |
 | `dashboard/claims.py` | 170 | Claims board (22.9): one claim per tested question, outcome ordering, deterministic. |
-| `dashboard/clusterview.py` | 150 | The Lab's Cluster view (20.23, v0.57.0): five bifrost read panels (`cluster_status`, `jobs_list`, `my_usage`, `waste_report`, `storage_usage`) cached per panel with a background refresh, and `lab_summary` (the workspace's Lab runs, their Slurm job ids, outcomes and spend). |
-| `dashboard/bifrost.py` | 470 | The hosted ursa-bifrost MCP server as a cluster backend (20.20, v0.53.0): `BifrostClient` (stdlib MCP over Streamable HTTP, OAuth sign-in with PKCE as the `bifrost-deep-research` program client, rotating refresh under a lock, 401 retry), and the Lab's reads: `stockouts`, `script_issues`, `explain` (rule -> Lab class), `efficiency`, `read_home`, `catalog`; and the Lab's jobs (20.21, v0.55.0): `BifrostJobs` (submit with self-confirmation inside guards, batched `states`, line-paged `log`, `fetch` through read and signed links, `cancel`, staging `upload`). |
-| `cli/cluster.py` | 115 | `deep-research cluster login | logout | status` (20.20) and `nexus login | logout | status` (20.29). |
-| `dashboard/nexus.py` | 170 | Nexus project links (20.29, v0.61.0): `client()` (the bifrost MCP client as the read-only `nexus-deep-research` program client, token `nexus-token.json`), `search` (labs, grants, GCP and research projects only), `show` + `summarize` (public facts, never interaction or task text; cached 10 min). |
-| `dashboard/cluster.py` | 918 | Cluster access (v0.52.0): `SlurmSSHTarget` (SSH via gcloud IAP or a plain host, one ControlMaster connection, sbatch/squeue/sacct, run folders, warm worker and spool, file transfer, catalog cache), `ScopedTarget` (a workspace's view), `load_targets`. No model or database code. |
-| `dashboard/lab.py` | 4,808 | Lab runs (section 20): always-on keeper, planner, cluster fact checks, pre-flight, fixer, referee hook, refine rounds, laptop fetch, job harness and install ladder, pilot, watcher. Drives `cluster.py`. |
+| `dashboard/clusterview.py` | 160 | The Lab's Cluster view (20.23, v0.57.0): five bifrost read panels (`cluster_status`, `jobs_list`, `my_usage`, `waste_report`, `storage_usage`) cached per panel with a background refresh, and `lab_summary` (the workspace's Lab runs, their Slurm job ids, outcomes and spend). |
+| `dashboard/bifrost.py` | 803 | The hosted ursa-bifrost MCP server as a cluster backend (20.20, v0.53.0): `BifrostClient` (stdlib MCP over Streamable HTTP, OAuth sign-in with PKCE as a pre-registered program client, rotating refresh under a lock, 401 retry; `client_id`, `token_file` and `label` are parameters, so the same class signs in to Nexus, 20.29), and the Lab's reads: `stockouts`, `script_issues`, `explain` (rule -> Lab class), `efficiency`, `read_home`, `catalog`; and the Lab's jobs (20.21, v0.55.0): `BifrostJobs` (submit with self-confirmation inside guards, batched `states`, line-paged `log`, `fetch` through read and signed links, `cancel`, staging `upload`). |
+| `cli/cluster.py` | 108 | `deep-research cluster login | logout | status` (20.20) and `nexus login | logout | status` (20.29). |
+| `dashboard/nexus.py` | 233 | Nexus project links (20.29, v0.61.0): `client()` (the bifrost MCP client as the read-only `nexus-deep-research` program client, token `nexus-token.json`), `_catalog` (labs, grants and GCP projects from the three list tools, cached 10 min), `search` (every word must match; research projects only from `nexus_search` name matches), `show` + `summarize` (public facts, connections allow-listed by type, never interaction or task text; cached 10 min). |
+| `dashboard/cluster.py` | 686 | Cluster access over SSH (v0.52.0; the fallback since R2/R3): `SlurmSSHTarget` (SSH via gcloud IAP or a plain host, one ControlMaster connection, `run`/`sh`, `submit`/`upload`/`sbatch_uploaded`, `status` (squeue then sacct), `log`, `cancel`, `fetch`, run folders, file transfer, catalog load and cache, `describe`/`describe_full` planner text), `ScopedTarget` (a workspace's view), `load_targets`. The warm worker code was removed in v0.58.0. No model or database code. |
+| `dashboard/lab.py` | 5,353 | Lab runs (section 20): planner, cluster fact checks (`_check_run` on the check partition), pre-flight (`match_warnings`, `cores_from_history`, `time_from_history`, capacity check), fixer, referee hook, refine rounds, laptop fetch, job harness and install ladder, pilot loop, bifrost submit with guards (`_bifrost_submit`), watcher. Drives `bifrost.py` (`BifrostJobs`) when signed in, else `cluster.py`. |
 | `dashboard/labcores.py` | 249 | Cores and memory on shared partitions (20.2b): the request per node, `#SBATCH` lines, share of the node for the estimate, pre-flight warnings, planner text. |
 | `dashboard/labguard.py` | 1,004 | Lab lessons (curated and learned pitfalls), planning rules (`GENERAL_RULES`), science guards on plans. |
 | `dashboard/labverdict.py` | 230 | Outcomes CONFIRMED / REFUTED / INCONCLUSIVE / BROKEN from `verdict.json` checks (20.13). |
 | `dashboard/labloop.py` | 355 | Verdict loop (20.13): report notes, pilot gate, one automatic re-plan of an inconclusive run. |
 | `dashboard/labreview.py` | 162 | Referee (20.15): prompt, normalized findings, fixer input. |
 | `dashboard/labfetch.py` | 322 | Fetch on this laptop for cluster-blocked URLs (20.18): blocked-URL detection, safe fetch, provenance. |
-| `dashboard/warm_worker.sh` | 125 | Warm worker on the cluster: spool queue, parallel tasks, heartbeats, idle and time-limit handling (20.16). |
-| `sources/` | 3,458 | Data sources (section 21): `model`, `registry`, `adapters`, `public`, `staging`, `usage`, `index`, `discover`, `cloud_catalogs`, `provenance`, `service`, `browse`, `gdrive`. |
-| `dashboard/static/` | 5,261 | `index.html`, `app.css`, `app.js`, `actions.js`, `features.js`, `lab.js`, `cluster.js`, `sources.js`, `filebrowser.js`, `projects.js`, `workspaces.js`, vendored `marked` and `DOMPurify`. |
+| `sources/` | 3,549 | Data sources (section 21): `model`, `registry`, `adapters`, `public`, `staging`, `usage`, `index`, `discover`, `cloud_catalogs`, `provenance`, `service`, `browse`, `gdrive`. |
+| `dashboard/static/` | 6,574 | `index.html`, `app.css`, `app.js` (shell, reader, launcher with agent choice and Plan first), `actions.js`, `features.js`, `lab.js` (Lab card, review decision summary), `cluster.js` (Cluster view), `sources.js`, `filebrowser.js`, `projects.js` (Nexus picker, From Nexus box), `workspaces.js`, vendored `marked` and `DOMPurify`. |
 
-Total Python: about 21,600 lines. Total client: about 5,300 lines plus vendored libraries. Line counts as of v0.50.1.
+Total Python: about 24,500 lines. Total client: about 6,600 lines plus vendored libraries. Line counts as of v0.61.2 (2026-10-03).
 
 ### 5.2 Process model
 
@@ -303,8 +316,8 @@ Total Python: about 21,600 lines. Total client: about 5,300 lines plus vendored 
 |---|---|---|---|
 | Foreground CLI | the user | one command | a `DeepResearchAgent` when researching |
 | Research worker | `start` or `POST /api/research`, as `deep-research research ... --adopt-session N` | one research run | the agent; for recursion, one thread per child task |
-| Dashboard server | `dashboard --start` (detached) or `--foreground` | until stopped | one `Api` instance (a context per workspace), one thread per HTTP request, one thread per audio job, Lab watcher, planning and keeper threads (5.4) |
-| Cluster jobs (optional) | the Lab, over SSH | per job; the warm worker until stopped or its time limit | Slurm batch jobs and the warm worker (`warm_worker.sh`) on the cluster, never on the login node (section 20) |
+| Dashboard server | `dashboard --start` (detached) or `--foreground` | until stopped | one `Api` instance (a context per workspace), one thread per HTTP request, one thread per audio job, Lab watcher and planning threads, Cluster view refresh threads (5.4) |
+| Cluster jobs (optional) | the Lab, through bifrost (SSH fallback) | per job | Slurm batch jobs for full runs, pilots and planning checks (check partition), never on the login node (section 20). Since v0.58.0 nothing long-lived runs on the cluster for the Lab. |
 
 Workers are started with `start_new_session=True`, so each is the leader of its own
 process group and survives the terminal or the dashboard exiting. Cancel kills the
@@ -359,10 +372,15 @@ sequenceDiagram
   `_embed_lock`), the key-check cache and the lazily created Gemini clients in `Features`
   and `Lab` (one shared client each, under `_client_lock`).
 - **Lab threads**: one watcher thread per workspace while runs are active (polls every
-  15 s), planning, review and fix work on short-lived threads, and, when a target sets
-  `warm.always_on`, one keeper thread per process (`_KEEPER_LOCK`) shared by all
-  workspaces (20.16). The SSH ControlMaster connection per target is opened under the
-  target's own lock.
+  15 s; one batched bifrost `jobs_list` per round), planning, review and fix work on
+  short-lived threads (planning checks block their planning thread while their check job
+  runs). The always-on keeper thread was removed with the warm node (v0.58.0). The SSH
+  ControlMaster connection per target (fallback path) is opened under the target's own
+  lock; the bifrost client refreshes tokens under its own lock (refresh tokens rotate).
+- **Cluster view**: each panel is cached per process; a stale panel is served at once and
+  refreshed on one background thread per panel (single-flight, 20.23).
+- **Nexus**: list and show answers are cached per process for 10 minutes under a lock;
+  no background threads (20.29).
 
 ---
 
@@ -372,7 +390,20 @@ sequenceDiagram
 
 `ResearchRequest` fields: `prompt`, `stores`, `stream`, `output_format`,
 `upload_paths`, `output_file`, `adopt_session_id`, `depth` (default 1), `breadth`
-(default 3).
+(default 3), `agent` (`"max"` for Deep Research Max, else `None` = the configured agent;
+v0.61.0) and `previous_interaction_id` (an approved Plan first interaction; v0.61.0).
+
+**Which agent.** `agent_id(request.agent, config.agent_name)` in `core/config.py`
+returns `deep-research-max-preview-04-2026` for `"max"` (any case) and the configured
+`GEMINI_AGENT_NAME` (default `deep-research-preview-04-2026`) otherwise. Stream mode,
+poll mode and every recursive child use it, so a Max run is Max all the way down.
+
+**Running an approved plan.** When `previous_interaction_id` is set, `_continue_plan`
+adds `previous_interaction_id` and an `agent_config` of `{"type": "deep-research",
+"thinking_summaries": "auto", "collaborative_planning": false}` to the create call;
+turning collaborative planning off is what approves the plan (Google's documented flow).
+In a recursive run only the root continues the plan; the dashboard refuses Plan first
+with depth > 1 anyway (20.28).
 
 The prompt sent to Google (`final_prompt`) is the user prompt plus, in order:
 
@@ -418,7 +449,7 @@ root node of every recursive run.
 
 Used for depth-1 runs without `--stream` and for every child node of a recursive run.
 Same upload handling. Creates the interaction with `background=True` (no stream, no
-`agent_config`), records or adopts the row, then calls `interactions.get` every 10 s
+`agent_config` unless it continues an approved plan), records or adopts the row, then calls `interactions.get` every 10 s
 until the status is `completed` (store the report) or any other terminal status
 (`failed`, `cancelled`, `incomplete`, `budget_exceeded`: store the error; `cancelled`
 maps to `cancelled`, the rest to `failed`). A failed status check is logged and retried;
@@ -644,7 +675,7 @@ research in the foreground. `-v/--version` prints the version.
 |---|---|
 | `research PROMPT [opts]` | Run in the foreground and print the report. |
 | `start PROMPT [opts]` | Pre-create a row, spawn a detached worker, print the session id, pid and log path. |
-| `estimate PROMPT [--depth] [--breadth] [--upload ...]` | Cost estimate, no API calls (13.3). |
+| `estimate PROMPT [--depth] [--breadth] [--upload ...] [--max]` | Cost estimate, no API calls (13.3): agent runs, tokens, searches and a cost range for the standard or Max agent. |
 
 Shared options for `research` and `start`:
 
@@ -656,6 +687,8 @@ Shared options for `research` and `start`:
 | `--output FILE` | none | Export the report (6.7). |
 | `--depth N` | 1 | Recursion levels, 1-5 (the dashboard's limit; outside it the command exits 2, K7). |
 | `--breadth N` | 3 | Max child tasks per node, 1-10 (K7). |
+| `--max` | off | Use Deep Research Max (more searching and reading, slower, about twice the cost; 20.28). Applies to every node of a recursive run. |
+| `--plan-id INTERACTION` | none | Run as the continuation of an approved research plan (the plan interaction id from the dashboard's Plan first, 20.28). |
 
 `research` only: `-q/--quiet` (errors only, then the bare report on stdout),
 `--stream` (stream thoughts; ignored when depth > 1), and the hidden
@@ -812,9 +845,9 @@ had it earlier). Implemented in `cli/jsonout.py`.
 
 | Method and path | Paid | Behaviour |
 |---|---|---|
-| `POST /api/estimate` | no | Body `{depth, breadth, uploads?}`; same formula as the CLI (REQ-COST-1). |
+| `POST /api/estimate` | no | Body `{depth, breadth, uploads?, agent?}`; the same `core/estimate.py` as the CLI (REQ-COST-1). Returns `{agent, nodes, input_tokens, output_tokens, file_tokens, searches, tokens_usd, search_usd, cost_usd, cost_high_usd}`. |
 | `POST /api/uploads` | no | Body `{name, data (base64)}`; writes to a new random folder under `uploads/`; returns `{path, name, size}` (REQ-DASH-7). |
-| `POST /api/research` | yes | Body `{prompt, depth 1-5, breadth 1-10, uploads?, stores?, format?, rerun_of?}`. Validates upload paths are inside `uploads/` and exist, and that a key is set. Pre-creates the row, spawns the worker (`--stream` at depth 1), records run_meta. Returns `{id, pid}`. |
+| `POST /api/research` | yes | Body `{prompt, depth 1-5, breadth 1-10, uploads?, stores?, data_sources?, format?, project_id?, rerun_of?, agent?, plan_id?}`. Validates upload paths are inside `uploads/` and exist, data sources and project exist, `plan_id` looks like a Google interaction id (`[A-Za-z0-9_-]{8,200}`) and is used with depth 1 only, and that a key is set; all checks run before the row is created. Pre-creates the row, spawns the worker (`--stream` at depth 1, `--max` for `agent: "max"`, `--plan-id`), records run_meta (estimate for the chosen agent). Returns `{id, pid}`. |
 | `GET /api/stores` | no | Lists File Search Stores on the key. |
 
 **Search, annotations and notebooks**
@@ -877,7 +910,9 @@ had it earlier). Implemented in `cli/jsonout.py`.
 - **Action registry** (`actions.js`): every page action is declared once with an id,
   label, scope and weight (`primary`, `bar`, `share`, `more`, `danger`). Toolbars, the
   Share and "..." menus, and the command palette all draw from it, so an action can move
-  between the toolbar and a menu without being lost (REQ-DASH-13).
+  between the toolbar and a menu without being lost (REQ-DASH-13). `ACT.menu(anchor,
+  items, onPick)` is the one popup menu (keyboard: arrows, Escape returns focus); the Lab
+  card's "..." menu uses it too (20.27).
 - Progress notes (uploading, sending a follow-up) show as a short-lived pill at the
   bottom instead of a permanent status bar.
 
@@ -917,7 +952,7 @@ older keystroke is dropped.
 
 | Feature | Behaviour |
 |---|---|
-| Launch | Prompt, six templates (market scan, literature review, tech deep dive, due diligence, policy brief, compare), depth and breadth, uploads (base64 through `/api/uploads`), existing stores, format. Live estimate; the launch button is disabled when the key is missing or rejected. |
+| Launch | Prompt, six templates (market scan, literature review, tech deep dive, due diligence, policy brief, compare), depth and breadth, **research agent** (Deep Research, 5-15 min / Deep Research Max, 20-60 min, about 2x the cost; v0.61.0), project, format, uploads (base64 through `/api/uploads`), data sources, existing stores. Live estimate for the chosen agent: agent runs, input and output tokens, and a cost range (tokens to tokens plus the full search count). **Plan first** (v0.61.0): Google drafts the research plan (about 10-20 s, under a cent), shown as a numbered list with a "What should change?" box (Revise plan) and Drop plan; Launch becomes "Run this plan", depth locks to 1, and a changed objective asks before running the plan. The plan lives on the launch tab. The launch button is disabled when the key is missing or rejected. |
 | Reader | Rendered report, outline, find in page (Ctrl F: Enter / Shift+Enter step through matches, "3 of 471", Escape closes), citations grouped by domain, star, tags, re-run (estimate first), export, stop, delete (recursive when the session has children), follow-up box (disabled while running). LaTeX (`$...$`, `$$...$$`, `\(...\)`) is shown as plain Unicode (`X_r/h ≈ 6.26`, `y⁺`, `1/κ ln y⁺ + B`); money such as `$5 to $10` and code are left alone. |
 | Failed report | A failed, crashed or cancelled session shows its error in a red box with Re-run; Listen, Export, the Lab panel and the Ask box are hidden because there is no report. |
 | Citation cards | `[cite: N, M]` markers become chips; hover or tap shows the claim and the numbered source. Paragraphs of 25+ words that contain a digit or a capitalised word pair but no citation get an amber "uncited" edge. |
@@ -932,9 +967,11 @@ older keystroke is dropped.
 | Read aloud | Browser `speechSynthesis`, free, paragraph highlighting, voice and rate saved as `dr.voice` and `dr.rate`. Reads `speakable()` text (REQ-DASH-9). |
 | Audio export | Full text, or a spoken summary (2-3 minutes for a short report, up to about 5 for a long one, covering every section and the report's Lab results), in one of 8 Gemini voices (`dr.aivoice`); estimate first; plays in an inline player; listed on the report. Re-made when the report text changes. |
 | Command palette | Ctrl/Cmd K: commands, notebooks and sessions, arrow keys and Enter; the highlighted item stays in view (listbox semantics). |
-| Lab runs page | Every Lab run with status, outcome, report, partition, worst-case cost and age; rows open the report at that run's card (section 20). |
-| Lab plan review | Plan sections, "Revised by AI after the referee" (20.17), the Referee box, "Blocked from the cluster" with Fetch on this laptop (20.18), pre-flight warnings with Fix with AI and Undo, the pilot rounds, the diff of AI changes and the generated script (20.1). |
-| Projects | Projects home, project page with summary, claims board, items, Ask, briefs and exports; Inbox sort (section 22). |
+| Lab runs page | Every Lab run with its status phrase (the same words as the card: "Needs your review", "Running, 12 min", "Confirmed", "Failed: a fix is ready"), report, partition, worst-case cost and age; rows open the report at that run's card; a Cluster view button (section 20). |
+| Lab card | Title, one status phrase, at most one primary button, Details and a "..." menu; the step bar only while active; job, exit code, node, partition, cost, inputs fingerprint and pilot rounds under Details (20.27). |
+| Cluster view | Now, Our jobs (with the jobs that held more cores than they used), Spend and efficiency, Storage, through bifrost (20.23, 20.26). |
+| Lab plan review | Opens on a decision summary (question, what runs, software, where, worst case, referee in one line, cluster-check problems, AI-fix concerns, a red "Success criteria changed" box with before and now, Submit; 20.27). Below it, folded: plan sections 1-5, "Revised by AI after the referee" (20.17), the Referee box, "Blocked from the cluster" with Fetch on this laptop (20.18), pre-flight warnings with Fix with AI and Undo, the diff of AI changes and the generated script (20.1). |
+| Projects | Projects home, project page with summary, claims board, items, Ask, briefs and exports; Inbox sort (section 22). Project settings link the project to a Nexus lab, grant or GCP project with a search picker; the project page shows a "From Nexus" box (20.29). |
 | Workspaces | Switcher, Workspaces dialog (create, duplicate, rename, archive, delete to trash with typed confirmation, export and import zip), "Copy to..." on reports and projects (section 23). |
 | Data sources | Library, add form (checked before sending), source page with test, edit, index, folder browser and preview, "Find open datasets" with a per-catalog filter and an inline add form (section 21). |
 | Dialogs | One modal helper for every dialog: `role=dialog`, Escape and backdrop close, Tab stays inside, focus returns to where it was. Confirm dialogs never confirm on a document-wide Enter; destructive ones start on Cancel; a dialog replaced by another settles as cancelled. Closing the Lab plan review with unsaved edits asks first; Submit takes a second click that shows the worst-case cost. |
@@ -962,7 +999,7 @@ older keystroke is dropped.
 | Variable | Default | Used for |
 |---|---|---|
 | `GEMINI_API_KEY` | none (required) | Every Gemini call. Missing key raises a config error. |
-| `GEMINI_AGENT_NAME` | `deep-research-preview-04-2026` | The Deep Research agent. |
+| `GEMINI_AGENT_NAME` | `deep-research-preview-04-2026` | The default Deep Research agent. A run with `--max` / the launch form's Max choice uses `deep-research-max-preview-04-2026` instead (20.28); Plan first always plans on `deep-research-preview-04-2026`. |
 | `GEMINI_FOLLOWUP_MODEL` | `gemini-3.8-flash` | Follow-ups, gap analysis, synthesis, search answers. |
 | `XDG_CONFIG_HOME` | `~/.config` | Location of the state dir. |
 | `DR_LOG_TIMESTAMPS` | unset | Prefix tagged log lines with `[HH:MM:SS]`; set by the dashboard for its workers so the timeline has times. |
@@ -976,7 +1013,7 @@ older keystroke is dropped.
 | `DR_WORKSPACE` | unset (Main) | Workspace for CLI commands and workers; `--workspace` / `-W` sets it (section 23). |
 | `DR_LAB_REVIEW` | `1` | `0` turns off the automatic Lab referee on new drafts (tests do; 20.15). |
 | `DR_LAB_REFINE` | `1` | `0` turns off the referee -> fixer rounds on new drafts (tests do; 20.17). |
-| `XDG_RUNTIME_DIR` | system default | Location of the Lab's SSH ControlMaster socket (20.3). |
+| `XDG_RUNTIME_DIR` | system default | Location of the Lab's SSH ControlMaster socket (20.3; SSH fallback only). |
 
 `debug` is a field on `DeepResearchConfig` with no environment variable or flag.
 
@@ -1016,8 +1053,11 @@ environment, so it follows the CLI order.
 | `workspaces/.trash/` | deleted workspaces; files are never removed (23) | workspace delete |
 
 Outside the state dir: `~/research-data/lab-fetch/fetch-<ws>-run<N>/` holds files fetched
-on this laptop for Lab runs (20.18); the cluster side lives under the target's
-`remote_root` (`run_<N>/`, `ws-<id>/run_<N>/`, `data/`, `envs/`, `warm/`).
+on this laptop for Lab runs (20.18). On the cluster: jobs submitted through bifrost run in
+bifrost's own folders (`~/bifrost-jobs/<stamp>-<name>/`, 20.21); SSH-submitted runs use the
+target's `remote_root` (`run_<N>/`, `ws-<id>/run_<N>/`); both share `data/` (staged data
+sources), `envs/` (install ladder environments) and `images/` (containers). The `warm/`
+spool folder is no longer written (v0.58.0) and can be deleted.
 
 ---
 
@@ -1027,14 +1067,16 @@ on this laptop for Lab runs (20.18); the cluster side lives under the target's
 
 | Call | SDK method | Model or agent | Triggered by |
 |---|---|---|---|
-| Research | `interactions.create/get` (stream or poll) | agent `deep-research-preview-04-2026` | research, start, dashboard launch, recursion nodes |
+| Research | `interactions.create/get` (stream or poll) | agent `deep-research-preview-04-2026`, or `deep-research-max-preview-04-2026` for Max runs | research, start, dashboard launch, recursion nodes |
+| Research plan (Plan first) | `interactions.create` with `collaborative_planning: true` (and `previous_interaction_id` for revisions), then `interactions.get` every 3 s; `interactions.cancel` after 180 s | agent `deep-research-preview-04-2026` (always; Max planning returned no plan in 10 minutes, 2026-10-03) | launch form Plan first and Revise plan (20.28) |
+| Running an approved plan | `interactions.create(previous_interaction_id=plan, agent_config.collaborative_planning=false)` | the chosen agent (standard or Max; Google accepts a Max run continuing a standard plan) | Run this plan |
 | Follow-up | `interactions.create(previous_interaction_id=...)` | `gemini-3.8-flash` | followup (CLI, dashboard) |
 | Gap analysis, synthesis | `models.generate_content` | `gemini-3.8-flash` | recursion |
 | Search answer | `models.generate_content` | `gemini-3.8-flash` | search (CLI, dashboard) |
 | Embeddings | `models.embed_content` | `gemini-embedding-001` | search backfill and query |
 | Compare summary, briefs, audio summary script | `models.generate_content` | `gemini-3.8-flash` | dashboard |
 | Lab suggestions, plan, results note | `models.generate_content` (suggestions and plan with Google Search) | `gemini-3.8-flash` | dashboard Lab runs (section 20) |
-| Lab cluster fact selection | `models.generate_content` | `gemini-3.8-flash` | planning: picks which software, version and URL facts to check on the warm node (20.11) |
+| Lab cluster fact selection | `models.generate_content` | `gemini-3.8-flash` | planning: picks which software, version and URL facts to check on the cluster (a bifrost job on the check partition, 20.11, 20.22) |
 | Lab fixer | `models.generate_content`, one retry on a bad reply | `gemini-3.8-flash` | Fix with AI, pilot repairs, Fix failed run, laptop fetch rewiring (20.11, 20.12, 20.18) |
 | Lab referee | `models.generate_content` | `gemini-3.8-flash` | every new draft (auto), Re-run (20.15) |
 | Lab refine rounds | referee + fixer calls above | `gemini-3.8-flash` | a new draft the referee calls flawed, up to 2 rounds (20.17) |
@@ -1059,32 +1101,48 @@ USD per 1M tokens, as hard-coded (checked against Google's price list on 2026-09
 | `gemini-3.8-flash-tts` | 0.50 (text) | | 9.00 (audio, 25 tokens per second) |
 | Google Search grounding | 5,000 queries a month free, then $14 per 1,000 | | |
 
+Per-run agent profiles used by the estimate (Google's "Estimated costs" in the Deep
+Research docs, fetched 2026-10-03; Google: standard "$1-3 per task", Max "$3-7 per task"):
+
+| Agent | Input tokens | Cached share | Output tokens | Searches (upper figure) |
+|---|---|---|---|---|
+| Deep Research | 250,000 | 60% | 60,000 | 80 |
+| Deep Research Max | 900,000 | 60% | 80,000 | 160 |
+
+Our own 22 runs with usage data averaged about 1.5M input tokens (recursive roots and
+long runs included) and about 26 Google searches, so the search line is a ceiling and
+the token line can be low for long runs.
+
 ### 13.3 Estimate formula (REQ-COST-1)
 
+One implementation, `core/estimate.py` (`estimate(depth, breadth, file_bytes, agent)`),
+used by `deep-research estimate`, `POST /api/estimate`, the launch form and the
+`run_meta.estimate_usd` stored at launch (until v0.61.0 the formula lived in two modules,
+K12). With the profile `P` of the chosen agent (13.2):
+
 ```
-nodes      = 1 + B + B^2 + ... + B^(D-1)
-file_tok   = total upload bytes * 0.25
-input      = nodes * 250,000 + nodes * file_tok
-cached     = nodes * 250,000 * 0.6
-output     = nodes * 60,000
-cost       = (input - cached) * 2.00/1M + cached * 0.20/1M + output * 12.00/1M
+nodes        = 1 + B + B^2 + ... + B^(D-1)
+file_tok     = total upload bytes * 0.25
+input        = nodes * P.input + nodes * file_tok
+cached       = nodes * P.input * 0.6
+output       = nodes * P.output
+tokens_usd   = (input - cached) * 2.00/1M + cached * 0.20/1M + output * 12.00/1M
+searches     = nodes * P.searches
+search_usd   = searches / 1000 * 14.00
+cost_usd     = tokens_usd                    (stored in run_meta; the low end)
+cost_high_usd= tokens_usd + search_usd       (the high end shown on the launch form)
 ```
 
-The per-node averages follow Google's published figure for a Deep Research run
-(about 250k input tokens, 50-70% cached, about 60k output) and match measured runs of
-$0.37 to $2.04. The estimate covers agent runs only: it leaves out gap analysis,
-synthesis, follow-ups and search grounding (K12).
+| Depth x breadth | Nodes | Standard | Max |
+|---|---|---|---|
+| 1 x any | 1 | $0.95 - $2.07 | $1.79 - $4.03 |
+| 2 x 2 | 3 | $2.85 - $6.21 | $5.36 - $12.08 |
+| 2 x 3 | 4 | $3.80 - $8.28 | $7.15 - $16.11 |
+| 3 x 3 | 13 | $12.35 - $26.91 | $23.24 - $52.36 |
 
-| Depth x breadth | Nodes | Estimate |
-|---|---|---|
-| 1 x any | 1 | $0.95 |
-| 2 x 2 | 3 | $2.85 |
-| 2 x 3 | 4 | $3.80 |
-| 3 x 3 | 13 | $12.35 |
-| 5 x 10 (dashboard maximum) | 11,111 | $10,555.45 |
-
-The formula is implemented twice, in `cli/commands.py` and `dashboard/server.py`, and
-a test keeps them equal (K12).
+The estimate covers agent runs only: it leaves out gap analysis, synthesis and
+follow-ups (Flash calls, cents each; K12). Plan first adds well under a cent per plan
+or revision.
 
 ### 13.4 Actual cost (REQ-COST-2)
 
@@ -1098,7 +1156,7 @@ searches  = sum of grounding_tool_count[type == google_search].count
 search_usd_if_over_free = searches / 1000 * 14.00   (shown separately, not added)
 ```
 
-Usage covers the session's own interaction only. For a recursive root it leaves out
+Searches come from `grounding_tool_count`; Max runs report more of them. Usage covers the session's own interaction only. For a recursive root it leaves out
 the children, gap analysis and synthesis, and it never includes follow-ups (K12).
 Google keeps usage for a limited time (observed: about a day); after that the dashboard
 shows "not available from Google (interaction expired)" and caches that answer.
@@ -1201,45 +1259,58 @@ mode the umask gives it (K15).
 
 ### 16.1 Suite
 
-587 tests in 43 files (v0.50.1), about 110 s, no network and no API key. Gemini,
+756 tests in 52 files (v0.61.2), about 140 s, no network and no API key. Gemini,
 the cluster and bucket tools are faked; the dashboard tests run a real HTTP server on an
 ephemeral port against a temporary database. Two autouse fixtures in `tests/conftest.py`
 turn off the automatic Lab referee and refine rounds (`DR_LAB_REVIEW=0`,
 `DR_LAB_REFINE=0`); tests that need them call the methods directly with a stubbed model.
+A third (`_never_the_real_history_db`, v0.61.1) sends any `SessionManager()` built
+without a path to a temporary database, so no test can write to the real
+`history.db` (a v0.61.0 test had written 16 stray rows into it). bifrost and Nexus are
+faked by a small HTTP server on a local port speaking the same `/mcp`, `/token` and
+`/whoami` as the hosted servers, so the real client code runs. The Lab card tests run
+the real `lab.js` in `node`.
 
 | File | Tests | Covers |
 |---|---|---|
-| `tests/cli/test_commands.py` | 13 | Command handlers, start, estimate, follow-up by id |
+| `tests/cli/test_commands.py` | 15 | Command handlers, start (with --max and --plan-id), estimate, follow-up by id |
 | `tests/cli/test_help.py` | 13 | Help text and option consistency |
-| `tests/cli/test_json_output.py` | 24 | `--json` on every command: one JSON document on stdout, exit codes |
+| `tests/cli/test_json_output.py` | 31 | `--json` on every command: one JSON document on stdout, exit codes |
 | `tests/cli/test_projects_cli.py` | 5 | `deep-research projects` against the dashboard API in-process |
-| `tests/core/test_agent.py` | 19 | Stream processing, reconnect, uploads, recursion, adoption, failures, task limit |
+| `tests/core/test_agent.py` | 21 | Stream and poll modes, recursion, Max agent for every node, running an approved plan |
 | `tests/core/test_config.py` | 12 | Key loading, `service_env` precedence |
 | `tests/core/test_full_report_text.py` | 6 | Multi-part report text, `repair`, audio completeness (v0.38.2) |
+| `tests/core/test_planner.py` | 5 | Plan first: standard agent with collaborative planning, revisions continue the plan, plan text from outputs, cancel after the time limit, errors |
 | `tests/core/test_session.py` | 9 | Session CRUD and liveness rules |
-| `tests/core/test_workspaces.py` | 12 | Workspaces: Main never moved, isolation of runs, cluster folders, task names, watchers per workspace, trash |
+| `tests/core/test_workspaces.py` | 13 | Workspaces: Main never moved, isolation of runs, cluster folders, task names, watchers per workspace, trash |
 | `tests/core/test_wscopy.py` | 6 | Copy into another workspace: id remapping, Lab folders, all-or-nothing |
 | `tests/core/test_wszip.py` | 16 | Zip export/import: round trip, privacy scrub, one test per refused archive |
-| `tests/dashboard/test_cluster.py` | 16 | Cluster layer alone with a fake ssh: connection reuse, unreachable cluster, timeouts, status parsing, warm spool, fetch caps and path safety, upload modes, workspace folders, no model or DB code |
+| `tests/dashboard/test_bifrost.py` | 20 | bifrost MCP client against a fake server on a local port: sign-in tokens, refresh and rotation, 401 retry, tool errors, whoami; the Lab's R1 reads (stockouts, script_check, job_explain, job_show, files_read) |
+| `tests/dashboard/test_bifrost_jobs.py` | 19 | R2 Lab jobs through bifrost on an in-memory cluster: submit -> guards -> confirm (cost cap, submit count, script hash), batched watcher, paged logs, fetch, cancel, data sources through staging |
+| `tests/dashboard/test_bifrost_pilots.py` | 19 | R3 pilots and planning checks as bifrost jobs on `check` (LAB_SMOKE=1, 15 min, node cores), pilot pass/fail and the AI fix loop, signed-out hints; any SSH use fails the test |
 | `tests/dashboard/test_claims.py` | 6 | Claims board ordering and grouping |
 | `tests/dashboard/test_cli.py` | 13 | Dashboard flags, loopback default, `--allow-remote`, working directory |
+| `tests/dashboard/test_cluster.py` | 14 | Cluster layer alone with a fake ssh (fallback path): connection reuse, unreachable cluster, timeouts, status parsing, fetch caps and path safety, upload modes |
+| `tests/dashboard/test_cluster_view.py` | 11 | Cluster view panels (cached, single-flight refresh), the report's cluster jobs on the Live log tab, oversized-jobs list |
 | `tests/dashboard/test_daemon.py` | 7 | Start, status, restart, stop, stale pid, loopback refusal, restart back to local |
 | `tests/dashboard/test_dashboard_review_fixes.py` | 9 | Resource parsing, partition sanitising, SVG download, temp store grace, atomic cache, child failure, source edit, notes list |
 | `tests/dashboard/test_features.py` | 16 | Usage cost, speakable text, chunks, compare, audio, Range |
 | `tests/dashboard/test_lab.py` | 73 | Script builder, estimate, plan-submit-watch-fetch-write-up loop, cancel races, catalog, pre-flight, AI fix |
-| `tests/dashboard/test_lab_fetch.py` | 16 | Laptop fetch: blocked-URL detection, address and size refusals, staging and fixer wiring |
+| `tests/dashboard/test_lab_card_u2.py` | 16 | U2 Lab card and review summary, running the real `lab.js` in node: status phrases, one primary button, menu items, fix drafts under their parent, decision summary, criteria-changed box |
+| `tests/dashboard/test_lab_fetch.py` | 27 | Laptop fetch: blocked-URL detection, address and size refusals, staging and fixer wiring |
 | `tests/dashboard/test_lab_races.py` | 15 | One job per submit, stuck submitting, edit/fix vs submit, Slurm forgetting a job, submit/pilot race |
 | `tests/dashboard/test_lab_referee.py` | 10 | Referee: normalized findings, staleness, retry, advice only |
-| `tests/dashboard/test_lab_refine.py` | 10 | Referee -> fixer rounds, stop rules, undo, planning rules |
+| `tests/dashboard/test_lab_refine.py` | 13 | Referee -> fixer rounds, stop rules, undo, planning rules |
 | `tests/dashboard/test_lab_selfrepair.py` | 13 | Retry on unusable replies, backslash repair, failure classes, lessons, package lists |
-| `tests/dashboard/test_lab_v3.py` | 37 | Warm node, pilot and AI fix loop, install ladder, probes, partition matching, backlog workers |
+| `tests/dashboard/test_lab_v3.py` | 30 | Pilot and AI fix loop, install ladder, probes, partition matching, core and time advice from history |
 | `tests/dashboard/test_labcores.py` | 25 | Cores on shared partitions: default 2, cap, invalid values, MPI ranks and hybrid threads, single rank, memory, whole node, whole-node partitions, catalog flag, cost share only once shared, pre-flight, prompts |
 | `tests/dashboard/test_labguard.py` | 15 | Lessons and science guards on plans |
 | `tests/dashboard/test_labverdict.py` | 17 | Outcomes, notes on the report, pilot gate, one automatic re-plan |
 | `tests/dashboard/test_mobile_layout.py` | 3 | No horizontal overflow at phone width (CSS guards) |
+| `tests/dashboard/test_nexus_links.py` | 5 | Nexus project links with real reply shapes: allow-listed kinds only (no people, interactions or tasks), name search over the lists, show summaries, nexus_ref validation, signed-out answers |
 | `tests/dashboard/test_projects.py` | 22 | Projects store rules, API, AI features with fakes, exports |
-| `tests/dashboard/test_server.py` | 40 | Routes, validation, uploads, delete, health, estimate parity, cross-site and host checks, loopback guard, sources API |
-| `tests/dashboard/test_warm_always_on.py` | 8 | computehigh default, always-on keeper, pause and resume, warm partition steering |
+| `tests/dashboard/test_server.py` | 47 | Routes, validation, uploads, delete, health, estimate parity, cross-site and host checks, loopback guard, sources API |
+| `tests/dashboard/test_ui_shell.py` | 15 | U1 shell: report titles, the cluster sign-in endpoint, the action registry |
 | `tests/dashboard/test_workspace_ui.py` | 6 | Workspace header on every request and link, switcher wiring |
 | `tests/sources/test_browse.py` | 14 | File browser and Google Drive sources (CLIs faked) |
 | `tests/sources/test_discover.py` | 6 | Catalog searches and parsing |
@@ -1251,7 +1322,7 @@ turn off the automatic Lab referee and refine rounds (`DR_LAB_REVIEW=0`,
 | `tests/sources/test_sources_review_fixes.py` | 18 | Safe paths, hidden files, filters on fetch, binary preview, name lookup, stable hashes, provenance on delete, relay re-list and cap |
 | `tests/sources/test_usage.py` | 8 | Research and Ask inclusion |
 | `tests/storage/test_files.py` | 6 | Store creation, upload, cleanup rules |
-| `tests/test_spec_sync.py` | 6 | This document lists every route, setting, module, static file and command; header version |
+| `tests/test_spec_sync.py` | 8 | This document lists every route, setting, module, static file and command; the header version matches the package; section and history order |
 | `tests/utils/test_exporters.py` | 6 | Code-block extraction, JSON and CSV export |
 | `tests/utils/test_retry.py` | 4 | Retry decorators |
 
@@ -1269,7 +1340,11 @@ CI also runs the suite on Python 3.13 and builds the wheel, failing if the dashb
 static files are missing from it. Pre-commit runs ruff, whitespace, YAML/TOML checks, a
 1 MB file-size limit and private-key detection; the local git hook also runs the full
 test suite before every commit. `tests/test_spec_sync.py` makes the suite fail when this
-document misses a route, setting, module, static file or command.
+document misses a route, setting, module, static file or command, or when the header
+version differs from `pyproject.toml`.
+
+New tests are checked by sabotage: each guarded line is broken on purpose and the new
+test must fail (done for every release since v0.53.0; the pattern is in the commit notes).
 
 ### 16.3 Test debt
 
@@ -1293,7 +1368,7 @@ Before tagging a release that touches the affected area:
 Real current behaviour, first recorded against v0.17.5 by reading the source and, where
 noted, confirmed by test; items fixed since are marked with the version. Each is a candidate
 issue. Re-checked against the source on 2026-10-01 (v0.50.1): K1, K6, K7, K9, K10, K11, K15,
-K17, K18 and K19 still hold; K4 is mostly fixed. (v0.50.3 then fixed K4, K7 and K15 and most of K10.) Feature-area gaps are listed in their own
+K17, K18 and K19 still hold; K4 is mostly fixed. (v0.50.3 then fixed K4, K7 and K15 and most of K10.) Re-checked on 2026-10-03 (v0.61.2): K12 partly fixed, K20 updated, K22 and K23 added. Feature-area gaps are listed in their own
 sections (20.8, 21.10, 22.8).
 
 | ID | Area | Gap | Effect |
@@ -1309,7 +1384,7 @@ sections (20.8, 21.10, 22.8).
 | K9 | Uploads | Folder uploads take only top-level files. After uploading to a store the code waits a fixed 5 s for ingestion rather than checking. | Nested files are silently skipped; large uploads may not be searchable when the run starts. |
 | K10 | Cleanup | **Mostly fixed in v0.50.3.** CLI `delete` now goes through the dashboard's own delete: the whole tree, annotations, meta, `run_meta`, `session_usage`, audio rows and files, project memberships and Lab runs; refused while a Lab run is on the cluster. Still: uploaded files are never removed, and audio for notebooks or projects stays until removed. | Uploads folder grows. |
 | K11 | CLI | Every command except `dashboard` exits 0, including on errors. | Scripts cannot detect failure. Fixed for `--json` output in v0.36.0 (9.6); plain output unchanged. |
-| K12 | Cost | The estimate leaves out gap analysis, synthesis, follow-ups and search grounding. Actual cost covers the session's own interaction only (a recursive root's figure leaves out its children). The estimate formula is duplicated in two modules. | Shown costs understate recursive runs. |
+| K12 | Cost | **Partly fixed in v0.61.0.** One estimate module for CLI and dashboard (`core/estimate.py`), with search grounding as the high end of a range. Still left out: gap analysis, synthesis and follow-ups. Actual cost covers the session's own interaction only (a recursive root's figure leaves out its children). The token profile (250k input per standard run) is below our own long runs (about 1.5M on average). | Shown costs understate recursive and long runs. |
 | K13 | Dashboard | No authentication (by design; 14.1). Since v0.28.0 it listens on this machine only unless `--allow-remote` is given. | With `--allow-remote`, anyone on that network can use and spend. |
 | K14 | Cost | REQ-COST-4 is only met for audio. The brief dialog says "usually under a cent" without an estimate; the compare "What changed? (AI)" button, semantic search synthesis (which sends the full text of the top matches) and follow-ups show no cost before running. | Paid actions without a figure up front. |
 | K15 | Config | **Fixed in v0.50.3.** `auth login` replaces only the `GEMINI_API_KEY` line (`set_env_value`), keeps every other line and comment, writes through a temporary file renamed into place, and leaves the file mode 600. `auth logout` removes only that line. | none |
@@ -1317,7 +1392,9 @@ sections (20.8, 21.10, 22.8).
 | K17 | Dashboard | Audio jobs live in memory: lost on restart, never pruned. | A restart mid-job loses the job's status (a finished file is still listed). |
 | K18 | Packaging | `deepresearch/__init__.py` re-executes into `<project>/.venv/bin/python` when that path exists relative to the installed package. Intended for source checkouts, surprising elsewhere. | Hard-to-debug interpreter switch. |
 | K19 | Scale | The research map is O(n^2 x d) in pure Python on every request: 144 reports took 3.3 s on the author's laptop. Liveness runs over up to 10,000 rows on every session list poll. | The dashboard slows as history grows (REQ-NF-5). |
-| K20 | Lab | **Mostly fixed in v0.52.0.** Cluster access is its own module, `dashboard/cluster.py` (908 lines, moved unchanged and checked: every moved class and function is identical), with its own tests (`test_cluster.py`, fake ssh). `lab.py` is still 4,788 lines (planning, prompts, install ladder, watcher). | Planning and the watcher are still large; the hpc-agent MCP server can now build on `cluster.py`. |
+| K20 | Lab | **Mostly fixed in v0.52.0.** Cluster access is its own module: `dashboard/cluster.py` (SSH, 686 lines since the warm worker left in v0.58.0) and `dashboard/bifrost.py` (MCP, 803 lines), each with its own tests. `lab.py` is still 5,353 lines (planning, prompts, install ladder, pilot loop, bifrost submit, watcher) and keeps both an SSH and a bifrost path for submit, status, logs, fetch and cancel until R4b. | Planning and the watcher are still large; every cluster change is made twice until the SSH path goes. |
+| K22 | Lab | Two cluster paths. With bifrost configured and signed in, all Lab cluster work goes through bifrost; signed out, full runs fall back to SSH with no pilot, and planning checks answer with a sign-in hint instead of running (neither has an SSH path since v0.58.0). Removing the SSH path (R4b) waits for a week of bifrost-only use and the user's go-ahead (decided 2026-10-03: keep SSH as the fallback). | Signed out, a run gets no pilot and no planning checks, so mistakes surface in the full run. |
+| K23 | Nexus | The Nexus picker searches the full lab, grant and GCP project lists (about 520 rows, cached 10 min), because `nexus_search` ranks loose semantic matches above real name matches. Research projects are found only by `nexus_search` name matches; people's names find nothing. | A brand-new Nexus entry can take up to 10 minutes to appear; projects with unusual names may need their exact name. |
 | K21 | Lab | **Mostly fixed in v0.51.0.** Any open dashboard tab announces a finished Lab run (toast, browser notification when hidden; 20.19). Still needs a tab open: no phone push. | Results seen late when no tab is open. |
 
 ---
@@ -1392,15 +1469,19 @@ on an HPC cluster and attaches the results to that report.
 
 ### 20.1 Flow
 
+Since v0.56.0 (R3) all Lab cluster work goes through the ursa-bifrost MCP server when the
+Lab is signed in (`deep-research cluster login`, 20.20); SSH is the fallback for full runs
+when it is not. This section describes the bifrost path and notes the fallback.
+
 ```mermaid
 flowchart LR
   A[Report or highlighted passage] --> B[Plan: cluster facts + Gemini + Google Search]
   B --> P[Pre-flight + referee] --> R{Flawed?}
   R -- yes, up to 2 rounds --> F[Fixer] --> P
-  R -- no --> C{User reviews plan and script}
+  R -- no --> C{User reviews the decision summary}
   C -- edit / Fix with AI / Fetch on this laptop --> C
-  C -- Submit --> S[Pilot on the warm node] -- fails --> X[AI repair] --> S
-  S -- passes --> D[Full run: warm node or sbatch]
+  C -- Submit --> S[Pilot: bifrost job on check] -- fails --> X[AI repair] --> S
+  S -- passes --> D[Full run: bifrost job on the planned partition<br/>SSH sbatch when signed out]
   D --> E[Install software] --> G[Run] --> H[Fetch outputs] --> V[Verdict + AI results note]
   V -- inconclusive, once --> B
   V -- Rerun with new parameters --> C
@@ -1411,40 +1492,59 @@ flowchart LR
    names the question, method, software and rough run time. Suggestions are cached per
    report and only generated on a click.
 2. **Plan.** From a suggestion, a text selection (selection bar: "Lab run") or the whole
-   report. First the model picks a few facts to check on the warm node (software help,
-   versions, URLs; 20.11), then `gemini-3.8-flash` with Google Search writes a JSON plan
-   (fields in 20.2a). The planner is given the cluster's own catalog (section 20.9):
-   partitions, every installed module, tested recipes, install tools, prebuilt containers
-   and site rules, plus the lessons and planning rules (20.10, 20.17). Without a catalog it
-   falls back to the target's hand-written description. Download URLs are then tried on
-   the warm node.
+   report. First the model picks a few facts to check on the cluster (software help,
+   versions, URLs; 20.11), which run as one bifrost check job on the `check` partition
+   (`_check_run`, 20.22). Then `gemini-3.8-flash` with Google Search writes a JSON plan
+   (fields in 20.2a). The planner is given the cluster's own catalog (section 20.9, read
+   from bifrost's `resource:catalog` when signed in): partitions with their time limits
+   and chip types, every installed module, tested recipes, install tools, prebuilt
+   containers and site rules, plus the lessons and planning rules (20.10, 20.17). Without
+   a catalog it falls back to the target's hand-written description. Download URLs are
+   checked in the same check job.
 3. **Check.** Pre-flight checks the plan against the catalog and past runs (warnings,
-   20.9, 20.10, 20.16); the referee reads it (20.15); a flawed draft goes through up to two
-   referee -> fixer rounds before anyone sees it (20.17).
-4. **Review (always).** The plan is a `draft` until the user presses Submit. The dialog
-   shows the plan, the referee, pre-flight warnings, blocked downloads with "Fetch on this
-   laptop" (20.18), the full generated sbatch script, the resources and the estimated
-   cluster cost. Parameters and resources are editable; edits rebuild the script and the
-   estimate. Nothing is ever submitted automatically.
-5. **Pilot.** Submit first runs a cut-down pilot (`LAB_SMOKE=1`) on the warm node; a
-   failed pilot is repaired by the AI and retried (20.11, 20.12, 20.14), and a pilot whose
-   informative checks say the test cannot discriminate stops before the full run (20.13).
-6. **Run.** The harness writes `plan.json`, `run.sbatch` and a status file into
-   `<remote_root>/run_<id>/` (per workspace: `ws-<id>/run_<id>/`) and runs the job on the
-   warm node when it fits, otherwise through `sbatch`.
-7. **Watch.** The dashboard's watcher thread polls every 15 s while any run is active
-   (`squeue`/`sacct`, the stage file and the log tail). It stops when nothing is active.
+   20.9, 20.10, 20.16): partition fit, modules, time and core advice from similar past
+   runs (`time_from_history`, `cores_from_history`, v0.59.0), live capacity (stockouts),
+   and bifrost's `script_check` on the generated script. The referee reads the plan
+   (20.15); a flawed draft goes through up to two referee -> fixer rounds before anyone
+   sees it (20.17).
+4. **Review (always).** The plan is a `draft` until the user presses Submit. The review
+   dialog opens on a decision summary (what runs, where, worst case, the referee, problems
+   and any AI change to the success criteria; 20.27); below it, folded, are the plan, the
+   referee, pre-flight warnings, blocked downloads with "Fetch on this laptop" (20.18), the
+   full generated sbatch script, the resources and the estimated cluster cost. Parameters
+   and resources are editable; edits rebuild the script and the estimate. Nothing is ever
+   submitted automatically.
+5. **Pilot.** Submit first runs a cut-down pilot (`LAB_SMOKE=1`) as a bifrost job on the
+   `check` partition (15 minutes, at most the node's cores; 20.22). A failed pilot is
+   repaired by the AI and retried (20.11, 20.12, 20.14), and a pilot whose informative
+   checks say the test cannot discriminate stops before the full run (20.13). Signed out
+   of bifrost there is no pilot (`_smoke_applies` is false; pilots have no SSH path since
+   v0.58.0) and Submit sends the full run straight to `sbatch` over SSH.
+6. **Run.** The full run is its own bifrost job: `job_submit` (prepare) returns the
+   worst case, the script hash and a confirm token; the Lab confirms only within its
+   guards (20.21) and the job runs in bifrost's folder `~/bifrost-jobs/<stamp>-<name>/`.
+   Data sources are relayed through bifrost staging uploads (20.21). On the SSH fallback
+   the harness writes `plan.json`, `run.sbatch` and a status file into
+   `<remote_root>/run_<id>/` (per workspace: `ws-<id>/run_<id>/`) and runs `sbatch`.
+7. **Watch.** The dashboard's watcher thread polls every 15 s while any run is active:
+   one batched bifrost `jobs_list` for every active job, then `job_show` and a paged log
+   read for the ones that changed (SSH fallback: `squeue`/`sacct`, the stage file and the
+   log tail). It stops when nothing is active.
 8. **Fetch.** On a terminal Slurm state the `outputs/` folder, log, script and plan are
-   copied to the workspace's `lab/run_<id>/` (limits: 200 MB total, 50 MB per file).
+   copied to the workspace's `lab/run_<id>/` (limits: 200 MB total, 50 MB per file),
+   through bifrost `files_read` / signed links (SSH fallback: scp).
 9. **Verdict and write-up.** `outputs/verdict.json` gives the outcome (CONFIRMED,
    REFUTED, INCONCLUSIVE, BROKEN; 20.13). Gemini reads the plan, checks, log tail and text
    outputs and writes a short note; the note is attached to the report as an annotation.
-   An inconclusive run is re-planned once, as a draft.
+   An inconclusive run is re-planned once, as a draft. bifrost's `job_explain` adds a
+   plain-language reason to failed jobs (exit 132 = illegal instruction, out of memory,
+   time limit, ...).
 10. **Rerun.** Copies the plan into a new draft with `rerun_of` set, back to step 4.
 
 Status values: `planning`, `plan_failed`, `draft`, `submitting`, `smoke` (pilot),
-`queued`, `running`, `fetching`, `analyzing`, `completed`, `failed`, `cancelled`. The UI
-shows them as stages Plan, Review, Pilot, Queued, Running, Fetch, Write-up, Done.
+`queued`, `running`, `fetching`, `analyzing`, `completed`, `failed`, `cancelled`. The step
+bar shows them as stages Plan, Review, Pilot, Queued, Running, Fetch, Write-up, Done; the
+card and the Lab runs page show one plain status phrase instead (20.27).
 
 ### 20.2 Job harness
 
@@ -1489,7 +1589,7 @@ The planner returns one JSON object. Fields written by the model:
 | `title`, `question` | Short name; the precise question the job answers |
 | `approach` | 2-4 sentences: method, model or dataset, what is measured (used in the write-up) |
 | `software` | `[{name, source, version?, why}]`, source one of module, conda-forge, bioconda, pip, apptainer, spack |
-| `inputs` | Data used, with URLs where downloaded (URLs are checked on the warm node, 20.18) |
+| `inputs` | Data used, with URLs where downloaded (URLs are checked in a cluster check job, 20.11, 20.18) |
 | `parameters`, `parameter_sources` | Values exported as `PARAM_<NAME>`; a citation or "assumed: why" per value (20.13) |
 | `resources` | `partition`, `nodes`, `cores`, `mem_gb`, `whole_node`, `ntasks_per_node`, `time_limit`, `gpus` (20.2b) |
 | `install` | `modules`, `conda`, `channels`, `pip`, `apptainer`, `spack`, `verify` (20.2) |
@@ -1543,10 +1643,12 @@ will hold.
 ### 20.3 Targets
 
 Targets are defined in `<config dir>/lab_targets.json`, outside the repository (host
-names and projects are private). The only type today is `slurm-ssh`: a persistent SSH
-ControlMaster built from `gcloud compute ssh --dry-run` (IAP tunnel), about 0.3 s per
-command after the first. A target implements `submit`, `status`, `log`, `fetch`, `cancel`
-and `describe`. Each partition entry lists CPUs, memory, GPUs and hourly price, used for
+names and projects are private). The only type today is `slurm-ssh`; a target with a
+`bifrost` key also gets a `BifrostJobs` backend (`dashboard/bifrost.py`), and
+`_uses_bifrost(target)` in `lab.py` picks it whenever bifrost is configured, signed in and
+`jobs` is not `false`. The SSH side is a persistent ControlMaster built from
+`gcloud compute ssh --dry-run` (IAP tunnel), about 0.3 s per command after the first.
+Both backends implement `submit`, `status`, `log`, `fetch`, `cancel` and `describe`. Each partition entry lists CPUs, memory, GPUs and hourly price, used for
 the estimate. A second target type only needs those six methods and a `type` value.
 Optional `catalog_path` (Ursa Major: `/apps/docs/catalog.json`) points at the cluster's
 catalog (20.9); when it loads, its partitions (cores, memory, GPUs, max nodes, spot,
@@ -1560,17 +1662,24 @@ Target keys (one object per entry in `targets`):
 | `type` | `slurm-ssh` | The only target type |
 | `gcloud` | none | `{instance, zone, project}`: connect through `gcloud compute ssh --tunnel-through-iap` (the login node) |
 | `ssh_host` | none | Plain `ssh` host (alias from `~/.ssh/config`) when `gcloud` is absent |
-| `remote_root` | `~/deep-research-lab` | Cluster folder for runs, data, envs and the warm spool |
+| `remote_root` | `~/deep-research-lab` | Cluster folder for SSH-submitted runs, staged data, install environments and containers |
 | `partitions` | `{}` | Hand-written partitions (CPUs, memory, GPUs, `usd_per_hour`, `use_for`, optional `exclusive`); replaced by the catalog when it loads |
 | `whole_node_partitions` | `["highmem", "gpul4"]` | Partitions that always give whole nodes, used when the catalog does not publish `exclusive` per partition (20.2b) |
-| `default_partition` | first partition | Wins over the catalog's default (v0.48.0); Ursa Major uses `computehigh` |
+| `default_partition` | first partition | Wins over the catalog's default (v0.48.0); Ursa Major uses `standard` (e2-standard-32, since v0.57.2) |
 | `modules` | `[]` | Extra module names for the planner prompt |
 | `software_notes` | `""` | Free-text site notes added to the planner prompt ("Site notes: ...") |
 | `catalog_path` | `""` | Cluster catalog file (20.9) |
 | `bifrost` | none | `{}` or `{url, jobs, max_usd_per_run, check_partition}`: use the hosted ursa-bifrost MCP server for this target once `deep-research cluster login` has run: reads (20.20, v0.53.0) and, unless `jobs` is `false`, the Lab's Slurm jobs (20.21, v0.55.0) with at most `max_usd_per_run` (default $10) worst case per confirmed job, and pilots and planning checks on `check_partition` (default `check`, 20.22, v0.56.0). Default URL is the Ursa Major server |
-| `warm` | none | Warm worker settings: `partition`, `hours` (Slurm time limit), `idle_min` (0 = never exit for idleness), `max_par` (tasks at once), `max_workers` (backlog cap), `always_on` (keeper, 20.16), `burst_idle_min` (extra workers, default 20) |
+| `warm` | ignored | Retired in v0.58.0 (20.25). Old files may still hold `"warm": false` or a settings object; it is read by nothing. |
+| `pricing_note` | none | Free text shown with partition prices (where the prices came from) |
 
 The SSH ControlMaster socket lives in `$XDG_RUNTIME_DIR` (or `/tmp`) as `dr-lab-%C`.
+
+The live Ursa Major entry (2026-10-03): name `ursa-major`, type `slurm-ssh`, `gcloud` to the
+login node through IAP, `remote_root ~/deep-research-lab`, `default_partition standard`,
+`catalog_path /apps/docs/catalog.json`, `warm: false`, and
+`bifrost: {url: <the Ursa Major bifrost server>}` (jobs on, $10 per job, check partition
+`check`).
 
 ### 20.4 API
 
@@ -1735,7 +1844,7 @@ catalog endpoints. Live checks are listed in the v0.19.0 and v0.20.0 changelogs.
 
 | ID | Gap | Effect |
 |---|---|---|
-| L1 | One target type (Slurm over SSH); no target picker in the UI yet. | Other clusters need a new target class. |
+| L1 | One cluster (Ursa Major): one target type (Slurm over SSH, with a bifrost backend when configured); no target picker in the UI yet. | Other clusters need a new target entry, and a bifrost server or SSH access. |
 | L2 | Mostly closed in v0.20.0: the planner sees the live catalog and every plan is checked against it before submit. Still possible: wrong command-line flags or a package that fails to install from conda/pip (not in the catalog). | A wasted run; fixed by editing and rerunning. |
 | L3 | No sweeps, result comparison or cluster-side caching of outputs yet. | Reruns are one at a time. |
 | L4 | Watching requires the dashboard to be running; finish notifications need a dashboard tab open (20.19, K21). | Results appear when a tab is next open. |
@@ -1743,6 +1852,8 @@ catalog endpoints. Live checks are listed in the v0.19.0 and v0.20.0 changelogs.
 | L8 | Laptop fetch covers fixed URLs. **Since v0.51.0** refusals in a job's own log are detected and offered as a new draft; a job that builds URLs is redesigned by the fixer, not fetched here. | A redesign still needs review. |
 | L5 | Outcomes of pre-v0.39.0 runs rest on inferred check kinds (names and `expected` strings). A check named like a claim but meant as validation can be misfiled. | A run may show REFUTED where BROKEN fits; the card says "check kinds inferred". |
 | L6 | The pilot gate needs the pilot to compute the informative checks (`LAB_SMOKE=1`). Plans written before v0.39.0 usually do not, so their pilots only check that the script runs. | Saturation is then caught only after the full run (and re-planned once). |
+| L9 | Pilots run on the check partition (e2, AVX2 only, 2 cores per node, 15 minutes). A plan built for AVX-512 or many cores can pass its pilot shape-wise but differ from the full run's node (bifrost's catalog now names chip types and `job_explain` flags exit 132). | A full run can still fail on a node difference the pilot could not see. |
+| L10 | A spot partition job can be preempted; Slurm requeues it and the Lab's partition switch counts it as a node failure. | A spot run can take longer than planned. |
 
 ### 20.9 Cluster catalog
 
@@ -1809,39 +1920,29 @@ Added in v0.29.0 (Lab plan v3, nexus `2026-09-29_Deep_Research_Lab_Plan_v3.md`).
   pass/fail: the stage is "Completed: CONFIRMED|REFUTED|INCONCLUSIVE|BROKEN", the write-up
   leads with the outcome, and the run view groups the checks by kind.
 
-### 20.11 Warm node, pilot (smoke test), install ladder, probes, matching
+### 20.11 Pilot (smoke test), install ladder, probes, matching
 
-Added in v0.33.0 (Lab plan v3 releases 2-5).
+Added in v0.33.0 (Lab plan v3 releases 2-5) on the warm node; since v0.56.0 (R3, 20.22)
+pilots and probes run as bifrost jobs on the `check` partition, and the warm node was
+deleted in v0.58.0 (20.25). The warm worker's design is kept in 20.16 and git history.
 
-- **Warm worker** (`dashboard/warm_worker.sh`, uploaded on every start). One Slurm job
-  named `lab-warm` on `warm.partition` (default `computehigh`), `--exclusive`, limit
-  `warm.hours` (4), `--signal=B:USR1@60`. Spool at `<remote_root>/warm/`: `queue/<task>`
-  (claimed by rename, oldest first), `running/`, `done/` (rc, log, started, finished, node),
-  `workers/<job>.json` heartbeats, `stop` file. Up to `max_par` (2) tasks at once, each in
-  its own session with a private TMPDIR; an `exclusive` task (a full run) runs alone. Workers scale out: `ensure_warm()` keeps 1 + queued/2 workers
-  (running or pending, not draining), capped at `max_workers` (3). A task
-  that can't finish before the job's limit marks the worker draining, and the dashboard starts
-  a fresh one. Exits after `idle_min` (20) idle minutes (`idle_min: 0` = never, for the
-  always-on node; extra backlog workers then use `burst_idle_min`, 20.16).
-  `SlurmSSHTarget.ensure_warm()` starts one unless a non-draining worker is running or one
-  is pending; the dashboard re-checks at most every `WARM_RECHECK_S` (120 s) while work is
-  queued, and the always-on keeper every `KEEPER_INTERVAL_S` (300 s).
 - **Pilot (smoke test; renamed in the UI in v0.39.0, still `smoke` in code and data).**
-  `submit()` on a CPU plan with a warm-capable target uploads the run folder
-  and queues `smoke-<run>-<round>` (task names carry a workspace prefix outside Main, so
-  workspaces never collide on the shared spool): `run.sbatch` copied to `run_N/smoke/` and run with
-  `LAB_SMOKE=1` under `timeout` (`smoke_min`, 15). Status `smoke`. Pass = exit 0 and every
-  `expected_outputs` pattern has a non-empty match (a clean timeout with no error lines also
-  passes). Pass with the plan unchanged: dispatch. Pass after AI fixes: back to `draft`
-  ("review the changes"). Fail: RUNFIX prompt with the smoke log, new plan re-uploaded
-  (folder kept), next round; after `SMOKE_MAX_ROUNDS` (3) the run fails with the smoke log as
-  `job.log`. `plan.smoke = false` or a GPU plan skips it. Rounds are kept in `lab_runs.smoke`.
-  A passing pilot is then gated on its own checks (20.13): if `run_N/smoke/outputs/verdict.json`
-  assesses INCONCLUSIVE, the full run is not dispatched.
-- **Dispatch.** Single-node CPU runs on the warm partition with a time limit up to
-  `max_full_min` (120) run on the warm node as exclusive task `full-<run>` (job id
-  `warm:full-<run>`; status, cancel and elapsed come from the spool). Others: `sbatch` of the
-  uploaded folder.
+  `submit()` claims the draft atomically (status `draft` -> `submitting`, so a double
+  click cannot send two jobs), builds the script, and sends `run.sbatch` as its own
+  bifrost job named `smoke-<run>-<round>` (workspace prefix outside Main) on the check
+  partition with `LAB_SMOKE=1`, a 15-minute limit and at most the check node's cores.
+  Status `smoke`. Pass = exit 0 and every `expected_outputs` pattern has a non-empty match
+  (a clean timeout with no error lines also passes). Pass with the plan unchanged: the
+  full run is submitted. Pass after AI fixes: back to `draft` ("review the changes").
+  Fail: RUNFIX prompt with the pilot log, next round; after `SMOKE_MAX_ROUNDS` (3) the run
+  fails with the pilot log as `job.log`. `plan.smoke = false` or a GPU plan skips it.
+  Rounds are kept in `lab_runs.smoke` (job id, rc, seconds, log tail, fixes). A passing
+  pilot is then gated on its own checks (20.13): if its `outputs/verdict.json` assesses
+  INCONCLUSIVE, the full run is not submitted. Signed out of bifrost, `_smoke_applies`
+  is false: no pilot, and the full run goes straight to the SSH fallback.
+- **Dispatch.** The full run is a bifrost job on the plan's partition (prepare, guards,
+  confirm; 20.21). SSH fallback (signed out, or `bifrost.jobs: false`): `sbatch` of the
+  uploaded run folder. There is no "short run on a warm node" path any more.
 - **Install ladder** (`install_ladder()` in `build_sbatch`). A module-only Python plan (no pip)
   tries the module itself first (`module` rung). Modules imported by `install.verify` are
   added to the isolated-venv and Pixi rungs (`verify_imports()`); verify is part of the env key.
@@ -1852,15 +1953,19 @@ Added in v0.33.0 (Lab plan v3 releases 2-5).
   `LADDER_MOD_FALLBACK` and are installed from conda-forge/bioconda. `install.spack` builds in
   `~/deep-research-lab/spack` with `/apps/spack` as upstream.
 - **Probes.** `PROBE_PROMPT` (no search) returns up to `PROBE_MAX` (6) checks of kinds
-  module, help, pyversion, pyhelp, url (features and conda since v0.34.0), run as one warm
-  task with a `PROBE_WAIT_S` (420 s) limit; `_probe_cmd()` accepts only read-only forms (help flags from a fixed
+  module, help, pyversion, pyhelp, url (features and conda since v0.34.0), run together
+  as one bifrost check job (`_check_run`, polled every `CHECK_POLL_S` = 3 s, limit
+  `PROBE_WAIT_S` = 420 s; typically about 10 s on the always-on check node); `_probe_cmd()` accepts only read-only forms (help flags from a fixed
   list, http(s) URLs, dotted Python names) and refuses the rest. Output (24 KB max) goes into
   the plan prompt as "FACTS CHECKED ON THE CLUSTER". After planning, `_check_urls()` fetches
-  each script/input URL from the warm node; failures become warnings (`plan.url_checks`).
+  each script/input URL in a check job on the cluster; failures become warnings (`plan.url_checks`).
 - **Matching.** `workload_shape()` (gpu, mpi, bigmem, sweep, cpu) and `suggest_partition()`
-  add a pre-flight hint (since v0.48.1 a single-node CPU plan on another partition is
-  pointed at the default partition when it has the always-on warm node); `time_from_history()` suggests 3x the longest similar completed run
-  plus 5 minutes. When a queued job reaches `NODE_FAIL_WARN` node failures and `sinfo -R`
+  add a pre-flight hint. Preference by shape (v0.57.2): cpu -> standard, computehigh;
+  sweep -> spot, standard, computehigh; mpi -> computehigh, standard; bigmem -> highmem;
+  gpu -> gpul4. `time_from_history()` suggests 3x the longest similar completed run plus 5
+  minutes; `cores_from_history()` (v0.59.0) warns when similar past runs used far fewer
+  cores than the plan asks for (plan asks at least 4 cores and at least twice the suggestion, which is
+  1.5x the most cores any similar run actually used, from each run's `cluster.efficiency.cpu_percent`) and suggests a number. When a queued job reaches `NODE_FAIL_WARN` node failures and `sinfo -R`
   shows its partition stocked out, `_switch_partition()` cancels it and resubmits the same plan
   on the suggested partition once (`plan.partition_switched`).
 
@@ -2032,36 +2137,22 @@ pilot) so the referee does not flag them.
 
 ### 20.16 Default partition and the always-on warm node (v0.48.0; warm node retired in v0.58.0, see 20.25)
 
-- `default_partition` in `lab_targets.json` now wins over the cluster catalog's default
-  (before, the catalog's `standard` replaced it whenever the catalog loaded). Ursa Major
-  runs with `computehigh` (c3-highcpu-44) as the default: `standard` (c2d) failed to start
-  nodes repeatedly on 2026-09-29/30 (GCP capacity), and computehigh is also the warm
-  node's partition, so short single-node runs go straight to the warm node.
-- `"warm": {"always_on": true, "idle_min": 0}` keeps one warm worker running at all
-  times. `idle_min: 0` makes `warm_worker.sh` never exit for idleness (it still drains
-  and is replaced near its Slurm time limit, `hours`). A keeper thread in the dashboard
-  (`Lab.start_warm_keeper`, started with the watchers; one per process, shared by all
-  workspaces) calls `ensure_warm` every 5 minutes, also when no Lab runs exist, and
-  survives an unreachable cluster. The warm Stop button (`POST /api/lab/warm/stop`,
-  `{target?}`) asks the workers to exit and pauses the keeper until Start
-  (`POST /api/lab/warm/start`, `{target?}`, starts a worker and resumes the keeper);
-  `GET /api/lab/warm` reports workers, queue counts, `idle_min`, `always_on` and `keeper_paused`;
-  the Lab runs page states the stop rule from `idle_min` (it said 20 minutes whatever the
-  setting was until v0.52.2).
-- v0.48.1: the planner prompt names the default partition and says single-node CPU work
-  on it runs on the always-on warm node; the catalog's "Default." wording for another
-  partition is dropped. Pre-flight suggests the default partition for single-node CPU
-  plans that picked another one (multi-node and GPU plans keep theirs). The two Python
-  package checks ("already provides" / "nothing installs") now share one list, which
-  includes requests and certifi for python-sci (they had disagreed, run #42).
-- v0.48.2: only the first worker gets `idle_min` 0. Workers added for a backlog (one
-  per 2 queued tasks, up to `max_workers`) get `burst_idle_min` (default 20), so they
-  exit when the burst is over. Before this, a planning burst started a second worker
-  that also never exited.
-- Cost: one computehigh node around the clock (~$1.87/hour list, about $45/day,
-  before credits).
-- Tests: `tests/dashboard/test_warm_always_on.py` (catalog vs config default, keeper,
-  pause/resume, unreachable cluster, worker with idle 0 keeps running, with a limit exits).
+Kept as history; only the first bullet still applies.
+
+- `default_partition` in `lab_targets.json` wins over the cluster catalog's default
+  (before v0.48.0 the catalog's `standard` replaced it whenever the catalog loaded). Ursa
+  Major ran `computehigh` as the default from 2026-09-30 (c2d `standard` nodes kept failing
+  to start), and `standard` again since v0.57.2 (2026-10-03), when standard and spot moved
+  to e2-standard-32 in any us-central1 zone.
+- Retired: `"warm": {"always_on": true, "idle_min": 0}` kept one warm worker running at
+  all times, with a keeper thread calling `ensure_warm` every 5 minutes, Stop/Start
+  routes (`/api/lab/warm`, `/start`, `/stop`), burst workers for backlogs (v0.48.2) and a
+  planner prompt steering single-node CPU work to the warm partition (v0.48.1). Cost was
+  one computehigh node around the clock (about $1.87/hour list, $45/day before credits),
+  which is why it was switched off on 2026-10-01 (D1) and then replaced by the
+  always-on `check` partition (one e2-standard-4, about $0.13/hour; 20.22).
+- What survived: the shared Python package list for the "already provides" / "nothing
+  installs" checks (v0.48.1, run #42).
 
 ### 20.17 Referee -> fixer rounds before the draft is shown (v0.50.0)
 
@@ -2163,7 +2254,8 @@ pilot) so the referee does not flag them.
 Step R1 of the bifrost migration (nexus `2026-10-02_Deep_Research_Bifrost_Migration_Plan.md`,
 `2026-10-02_Deep_Research_Next_Plan.md`). The Lab reads cluster facts from the hosted
 ursa-bifrost MCP server instead of shell commands over SSH. Since v0.55.0 the Lab's Slurm
-jobs go through bifrost too (20.21); the warm worker (pilots) still uses SSH until R3.
+jobs go through bifrost too (20.21), and since v0.56.0 pilots and planning checks
+(20.22).
 
 - **Opt in:** a target with a `bifrost` block in `lab_targets.json` (20.3), and a sign-in:
   `deep-research cluster login` (9.3). Without either, nothing changes.
@@ -2174,6 +2266,17 @@ jobs go through bifrost too (20.21); the warm worker (pilots) still uses SSH unt
 - **Transport:** MCP Streamable HTTP, one JSON-RPC POST per call (the server is stateless
   and answers in JSON), standard library only. Text written by users or jobs arrives in
   `untrusted` fields and is used only as data.
+- **Sign-in:** `deep-research cluster login` opens the browser for Google sign-in through
+  bifrost's OAuth (authorization code with PKCE, a one-shot listener on 127.0.0.1) and
+  writes the token file; `cluster status` shows who is signed in, the program, its tiers
+  and its caps (from `/whoami`); `cluster logout` revokes and deletes the file. The access
+  token is renewed from the refresh token before it expires (proven unattended on
+  2026-10-03), so the dashboard stays signed in for as long as the refresh token lives.
+  Settings shows the same status (`GET /api/cluster/status`).
+- **Where the server is:** bifrost runs on Cloud Run (`bifrost-mcp`, project
+  `ucr-ursa-major-hpc-cluster`, us-central1), release v0.9.10 on 2026-10-03; it reaches
+  Slurm itself. Its catalog includes partition time limits and chip types (AVX2 vs
+  AVX-512), and `job_explain` has a rule for exit 132 (illegal instruction).
 
 | Read | Before | Now |
 |---|---|---|
@@ -2184,8 +2287,8 @@ jobs go through bifrost too (20.21); the warm worker (pilots) still uses SSH unt
 | Finished Slurm jobs | nothing | `cluster.efficiency` from `job_show` (cores, CPU %, peak vs allocated memory, restarts); failed jobs also `cluster.diagnosis` from `job_explain` (rule, mapped Lab class, findings), stored next to the Lab's own class for comparison |
 
 A bifrost outage or expired sign-in never blocks planning or a run: each read falls back
-to SSH or is skipped. Warm-worker tasks (`warm:` job ids) are not Slurm jobs and get no
-cluster facts. Tests: `tests/dashboard/test_bifrost.py` (a fake bifrost over HTTP: token
+to SSH or is skipped. (Warm-worker tasks, `warm:` job ids before v0.58.0, were not
+Slurm jobs and got no cluster facts.) Tests: `tests/dashboard/test_bifrost.py` (a fake bifrost over HTTP: token
 refresh and rotation, the parallel-refresh race, the 401 retry, tool errors, logout, and
 each Lab read with SSH made to fail).
 
@@ -2275,9 +2378,11 @@ for Lab work:
 - The check partition name is `bifrost.check_partition` in lab_targets.json (default
   `check`); without it in the catalog, pilots keep the plan's partition at 15 minutes.
 - A plan whose real run names `check` gets a pre-flight warning (it is a test partition).
-- `GET /api/lab/warm` reports `{"enabled": false, "replaced_by": "check"}` and the keeper
-  never starts a worker. The warm worker code stays for targets without bifrost and as
-  the fallback when signed out.
+- v0.56.0 left the warm worker as a fallback for signed-out use; v0.58.0 deleted it
+  (20.25), so signed out there are no pilots or planning checks at all.
+- Timing on the live cluster (2026-10-03): a planning check job finishes in about 10 s on
+  the always-on check node (job queued, run, log read); a pilot takes the plan's own
+  pilot time plus a few seconds.
 
 ### 20.23 Cluster view and the report's cluster jobs (v0.57.0)
 
@@ -2405,6 +2510,23 @@ plan after 10 minutes (2026-10-03), while a Max run continuing a standard plan i
 accepted. Plan first runs depth 1 only; a plan id must look like a Google interaction
 id. A plan that takes over 180 s is cancelled.
 
+**How it is built.**
+
+| Piece | Where | What it does |
+|---|---|---|
+| Agent ids | `core/config.py` `AGENT_STANDARD`, `AGENT_MAX`, `agent_id()` | `"max"` -> Max id; anything else -> `GEMINI_AGENT_NAME` |
+| Estimate | `core/estimate.py` `estimate()`, `PROFILES` | 13.3 |
+| Planner | `core/planner.py` `plan(prompt, format?, previous?)` | create with `agent=AGENT_STANDARD`, `background=True`, `agent_config={type: deep-research, collaborative_planning: true, thinking_summaries: auto}`; poll `interactions.get` every 3 s up to `PLAN_TIMEOUT_S` (180); join the text outputs; cancel on timeout; returns `{id, plan, seconds}` |
+| Running a plan | `core/agent.py` `_continue_plan()` | 6.1 |
+| CLI | `__main__.py` `--max`, `--plan-id`; `cli/commands.py` | `start` passes both on to the detached worker; `--plan-id` must be a real string (a mock or other object is ignored) |
+| Server | `server.py` `research_plan`, `research` | 10.1 rows `POST /api/research/plan`, `POST /api/research`, `POST /api/estimate` |
+| Launch form | `static/app.js` (`launchAgent()`, the `#l-agent` radio group, plan box), `app.css` (`.agent-pick`, `.plan-box`, `.inline-input`) | 11.2 Launch row |
+
+Measured on 2026-10-03: standard plans in 8-18 s, revisions in about 11 s, well under a
+cent each. Tests: `tests/core/test_planner.py` (5), Max and plan cases in
+`tests/core/test_agent.py`, `tests/cli/test_commands.py`, `tests/dashboard/test_server.py`;
+8 sabotage checks caught.
+
 ### 20.29 Nexus project links (v0.61.0)
 
 Reads only, through the Nexus MCP server as the pre-registered program client
@@ -2422,6 +2544,24 @@ tool: PI or lead, members, sponsor and dates, linked grants and projects. Connec
 allow-listed by type, so interaction and task text never reaches deep-research's pages.
 Never `dossier`, `tree` or `interactions_*`. Writes are not planned until the reads have
 been used for a while (plan section 4).
+
+**How it is built.**
+
+| Piece | Where | What it does |
+|---|---|---|
+| Client | `dashboard/nexus.py` `client()` | `bifrost.BifrostClient` with `label="Nexus"`, `client_id="nexus-deep-research"`, token `<state dir>/nexus-token.json` (mode 600), URL `DR_NEXUS_URL` or the UCR Nexus server (Cloud Run `nexus-mcp-server`, project `ucr-research-computing`) |
+| Sign-in | `deep-research nexus login / status / logout` (`__main__.py`; `nexus` is in `known_commands`, so it is never taken as a research prompt) | same OAuth flow as `cluster login` (20.20) |
+| Search | `nexus.search(c, q)` | `_catalog()` (three list tools, 10 min cache) filtered so every word of `q` appears in the name, number, project id, sponsor or description (names starting with the query first, then shorter names); then, if there is room, `nexus_search` rows whose `_reason` starts with `Name` or `Exact`; at most 12 results `{kind, id, name, sub}` |
+| Show | `nexus.show(c, kind, id)` + `summarize()` | `nexus_labs_show` / `nexus_grants_show` / `nexus_gcp_show` / `nexus_projects_show`; keeps PI or lead (Researcher neighbours via PI_OF, LEADS, PI or OWNS; never other people's names), member count (MEMBER_OF), sponsor, dates, status, and neighbours whose type is Lab, Grant, GCPProject or ResearchProject; every other neighbour (Interaction, Task) is dropped; cached 10 minutes |
+| Routes | `server.py` | `GET /api/nexus/status`, `/api/nexus/search?q=`, `/api/nexus/show?kind=&id=` (10.1); 409 with "run deep-research nexus login" when signed out |
+| Storage | `dashboard/projects.py` | `nexus_ref` validated as `kind:id` with kind in lab, grant, gcp, project; free text from before v0.61.0 is kept as is |
+| UI | `static/projects.js` | picker in the project create and settings dialogs; "From Nexus" box (label / value lines) on the project page |
+
+Verified against live Nexus on 2026-10-03 (signed in as the program client, read
+ceiling): "godzik" finds the three Godzik labs and the godzik-lab GCP project, "2502990"
+the NSF CC* grant, "baer" Boris Baer's lab (18 members). Tests:
+`tests/dashboard/test_nexus_links.py` with real reply shapes; every allow-list was
+sabotage-checked.
 
 ## 21. Data sources
 
@@ -3025,7 +3165,7 @@ building on the zip format.
 
 ## 24. Open items and future prospects
 
-Everything still open at v0.52.0 (2026-10-01), in one place. Nothing listed here is half
+Everything still open at v0.61.2 (2026-10-03), in one place. Nothing listed here is half
 built: every shipped release is complete and live. Section 17 (K items) and 20.8 (L
 items) keep the detail; this section is the to-do list.
 
@@ -3033,9 +3173,10 @@ items) keep the detail; this section is the to-do list.
 
 | ID | Item | Recommendation |
 |---|---|---|
-| D1 | Warm node: `always_on` was switched off in `lab_targets.json` at 14:41 on 2026-10-01 (idle limit 60 min; backup `lab_targets_before_warm_idle60_20261001_144105.json`). Keep off, or turn back on? | Owner's call: off saves about $45 a day; on makes pilots start in seconds. |
+| D1 | **Closed (v0.58.0).** The warm node is gone; pilots start in seconds on the always-on `check` partition (about $0.13/hour) instead. | |
 | D2 | Dependabot PR #148 (urllib3 2.7.0 -> 2.8.0). | Merge after CI. |
-| D3 | hpc-agent design questions Q1-Q15 (nexus `2026-10-01_HPC_Agent_MCP_Spec_and_Design.md`, section 15). Blocking a first version: Q1 personal or staff scope, Q2 Go or Python, Q5 scheduler queries on the login node, Q7 submit/cancel in early versions, Q13 adopt or fork an existing Slurm MCP server. The others (accounts, cost source, Nexus, ServiceNow, privacy, audit, alerts) can wait. | Answer the five blockers, then build the read-only server (24.5). |
+| D3 | **Closed.** The hpc-agent became ursa-bifrost (Go, Cloud Run, its own repo), and the Lab uses it as its main cluster path (20.20-20.23). | |
+| D4 | R4b: remove the Lab's SSH path (submit, status, logs, fetch, cancel, staging over SSH, and about 150-200 SSH tests). Gate: one week of bifrost-only use without falling back. | Owner decided 2026-10-03 to keep SSH as the fallback for now; ask again around 2026-10-10. |
 
 ### 24.2 Demo workspace
 
@@ -3059,7 +3200,9 @@ items) keep the detail; this section is the to-do list.
 | G2 | A failed upload leaves the adopted report `running` until liveness marks it crashed, with no error text. | K6 |
 | G3 | Folder uploads take only top-level files and wait a fixed 5 s for ingestion. | K9 |
 | G4 | Deleting a report leaves its uploaded files; notebook and project audio stays until removed. | K10 |
-| G5 | `lab.py` is still 4,788 lines (planning, prompts, install ladder, watcher); split further when next touched. | K20 |
+| G5 | `lab.py` is 5,353 lines (planning, prompts, install ladder, pilot loop, bifrost submit, watcher); split further when next touched, ideally after R4b removes the SSH branches. | K20, K22 |
+| G7 | The research estimate's token profile (250k input per standard run) is below our own long runs (about 1.5M); recalibrate from `session_usage` once there are Max runs to compare. | K12 |
+| G8 | Google agent test: give the ursa-agent's Gemini access to bifrost's public tools only. Needs a bifrost client limited to the public catalog before any token leaves this machine. | migration plan |
 | G6 | Finish notifications need an open dashboard tab; no phone push (would need an opt-in service such as ntfy, owner's call). | K21, L4 |
 
 Left alone on purpose for now: K1 (retry gaps, no failures seen), K12/K14 (estimates
@@ -3072,10 +3215,10 @@ before v0.39.0).
 
 | ID | Item | Notes |
 |---|---|---|
-| F1 | Read-only hpc-agent MCP server | On top of `dashboard/cluster.py` (v0.52.0): queue, job status, logs, catalog. Waits on D3. Later: the Lab's cluster calls move onto it (Q14). |
-| F2 | Deep Research Max toggle in the launcher | |
+| F1 | **Done as ursa-bifrost.** | The hosted MCP server (v0.9.10) serves the Lab's reads (R1, v0.53.0), jobs (R2, v0.55.0), pilots and checks (R3, v0.56.0) and the Cluster view (v0.57.0). Next: R4b (D4) and a Go port of the dashboard's client side later (Q1: Python now, Go later). |
+| F2 | **Done in v0.61.0** (20.28). | |
 | F3 | Scheduled re-runs of saved questions with a "what changed" digest | Reuses the compare view. |
-| F4 | Review the agent's research plan before a run starts | |
+| F4 | **Done in v0.61.0** as Plan first (20.28). | |
 | F5 | Browse Drive and S3 places from the CLI | Dashboard-only today (21.10). |
 | F6 | S3 with credentials in the file browser | Needs an AWS profile or rclone S3 remote. |
 | F7 | Optional dashboard login (shared token) | Not wanted while use stays on the home LAN and Tailscale. |
@@ -3083,6 +3226,8 @@ before v0.39.0).
 | F9 | Citation integrity (Crossref), Zotero library grounding, BibTeX linting | ROADMAP "academic research edition". |
 | F10 | Lab: parameter sweeps and comparing results across runs | L3. |
 | F11 | Lab: more cluster types and a target picker | L1. |
+| F12 | Nexus writes (log a Lab result or report against a lab or grant) | Only after the read-only links have been used for a while (20.29). |
+| F13 | Max-aware Lab suggestions: pick the agent per suggestion by how much reading it needs | Idea; no design yet. |
 
 ## Document history
 
@@ -3175,3 +3320,4 @@ before v0.39.0).
 | 2026-10-03 | v0.61.0 | Deep Research Max and Plan first in the launcher; one shared estimate with search costs (20.28); Nexus project links, read-only (20.29). |
 | 2026-10-03 | v0.61.1 | Tests can no longer write to the real history DB (tests/conftest.py guard); the v0.61.0 recursion test had left 16 "a gap" rows in Main (removed, backup kept). |
 | 2026-10-03 | v0.61.2 | Nexus picker matches names in the lab, grant and GCP lists instead of nexus_search's semantic hits (20.29). |
+| 2026-10-03 | v0.61.2 (docs) | Full re-read against the code: glossary (Max, Plan first, bifrost, check partition, pilot, Nexus), system context and actors, module map and line counts, process model, REQ-RUN-9/10 and REQ-COST-5, request model (agent, plan), CLI and API rows, client views, settings, state dir, model calls, agent profiles and the estimate table (13.3), test suite (756 tests in 52 files), Lab flow (20.1) and targets (20.3) rewritten for bifrost first with SSH as the fallback, pilot and matching (20.11), the warm node kept as history (20.16), sign-in and server facts (20.20), build tables for 20.28 and 20.29, K12/K20 updated, K22/K23, open items D1-D4, G5-G8, roadmap F1-F13. |
