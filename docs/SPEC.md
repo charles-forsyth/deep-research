@@ -3204,6 +3204,7 @@ items) keep the detail; this section is the to-do list.
 | G7 | The research estimate's token profile (250k input per standard run) is below our own long runs (about 1.5M); recalibrate from `session_usage` once there are Max runs to compare. | K12 |
 | G8 | Google agent test: give the ursa-agent's Gemini access to bifrost's public tools only. Needs a bifrost client limited to the public catalog before any token leaves this machine. | migration plan |
 | G6 | Finish notifications need an open dashboard tab; no phone push (would need an opt-in service such as ntfy, owner's call). | K21, L4 |
+| G9 | **Planned, not built** (nexus `2026-10-04_MCP_Family_Plan.md`, P2). bifrost renames every tool to `ursa_*` with no aliases (v0.10.0); the Lab's 13 tool names (`cluster.py`, `lab.py`, tests) change in the same window, and the Lab is paused for it. Run only when the owner says go. | 20.20-20.23 |
 
 Left alone on purpose for now: K1 (retry gaps, no failures seen), K12/K14 (estimates
 miss some steps), K16 (naive local timestamps), K17 (audio jobs lost on restart), K18
