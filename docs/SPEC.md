@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.59.0 (package `deepresearch`) |
+| Applies to | deep-research v0.60.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -2352,6 +2352,26 @@ and at least twice the suggestion. Runs with no measurement (0% or missing) are 
 The Cluster page lists the biggest low-CPU jobs of the last 7 days (CPU used, cores held,
 suggested cores, wasted dollars), Lab runs named.
 
+### 20.27 Calm Lab card and review decision summary (U2, v0.60.0)
+
+**Card.** Title, one status phrase (`LAB.statusPhrase`: "Needs your review", "Waiting for
+a node", "Running, 12 min", "Confirmed", "Refuted", "Failed: a fix is ready" when a draft
+re-run of it exists), at most one primary button (`LAB.primaryAction`: Review and submit /
+Retry plan / Fix with AI / Live log / Notebook), Details and a "..." menu
+(`LAB.moreItems`: plan, log, re-run, Notebook, Stop or Delete) through the shared
+`ACT.menu`. The step bar and a "Step N of 7" line show only while the run is active.
+Job id, node, exit code, partition, cost, inputs fingerprint and pilot rounds live under
+Details. The pilot verdict that stopped a run, verdict checks, results and files stay on
+the card. The Lab runs table uses the same status phrases.
+
+**Review dialog.** Opens on a decision summary (`LAB.decisionHtml`): the question, what
+runs (the approach's first sentence), software, where (partition, cores, time limit),
+worst-case cost, the referee in one line, cluster-check problems and AI-fix concerns,
+with Submit right there. When the success criteria differ from the plan before an AI fix
+or referee revision (or a failed run's fix diff), a red "Success criteria changed" box
+shows before and now. Sections 1-5 are folded below with their headings visible; the
+contents links open the section they point at.
+
 ## 21. Data sources
 
 A data source is a named reference to data that lives somewhere else: an open dataset
@@ -3100,3 +3120,4 @@ before v0.39.0).
 | 2026-10-03 | v0.57.3 | Live log of a bifrost job that has not written its log yet (queued, node booting) says "waiting for the job to start: <stage>" instead of the cluster's file error, and resumes from the top once the log exists. |
 | 2026-10-03 | v0.58.0 | R4a: the warm Lab node is retired (20.25): worker script, keeper, warm routes and UI deleted; pilots and planning checks only through bifrost on `check`. |
 | 2026-10-03 | v0.59.0 | Core advice from history (20.26): pre-flight warns when similar past runs used far fewer cores than the plan asks; Cluster page lists jobs that held more cores than they used. |
+| 2026-10-03 | v0.60.0 | Calm Lab card and review decision summary (20.27, U2). |
