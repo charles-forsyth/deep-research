@@ -7,6 +7,13 @@ releases.
 
 ## [Unreleased]
 
+## [0.61.1] - 2026-10-03
+
+### Fixed
+- The test suite can no longer write to your real history DB: a SessionManager made
+  without a path in a test now uses a throwaway file. One v0.61.0 test had added 16
+  "a gap" rows (shown as running) to Main; they were removed.
+
 ## [0.61.0] - 2026-10-03
 
 ### Added

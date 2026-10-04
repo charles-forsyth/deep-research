@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.61.0 (package `deepresearch`) |
+| Applies to | deep-research v0.61.1 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section read against the source on 2026-10-01 (v0.50.2): reference tables regenerated, prose and numbers checked. `tests/test_spec_sync.py` keeps routes, settings, modules, commands, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md) |
 
@@ -3170,3 +3170,4 @@ before v0.39.0).
 | 2026-10-03 | v0.59.0 | Core advice from history (20.26): pre-flight warns when similar past runs used far fewer cores than the plan asks; Cluster page lists jobs that held more cores than they used. |
 | 2026-10-03 | v0.60.0 | Calm Lab card and review decision summary (20.27, U2). |
 | 2026-10-03 | v0.61.0 | Deep Research Max and Plan first in the launcher; one shared estimate with search costs (20.28); Nexus project links, read-only (20.29). |
+| 2026-10-03 | v0.61.1 | Tests can no longer write to the real history DB (tests/conftest.py guard); the v0.61.0 recursion test had left 16 "a gap" rows in Main (removed, backup kept). |
