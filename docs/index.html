@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deep Research - CLI and workstation for Gemini Deep Research</title>
+  <meta name="description" content="A command-line tool and self-hosted web workstation for Google's Gemini Deep Research agent: launch research, watch it think, read and annotate cited reports, and test claims with real computations on a Slurm cluster. Local SQLite history, MIT licensed.">
+  <meta name="theme-color" content="#0a110d">
+  <link rel="canonical" href="https://charles-forsyth.github.io/deep-research/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Deep Research - CLI and self-hosted workstation for Gemini Deep Research">
+  <meta property="og:description" content="Launch autonomous research, watch it think, then read, annotate, compare and listen to the cited reports it produces. Test a report's claims with real jobs on an HPC cluster.">
+  <meta property="og:url" content="https://charles-forsyth.github.io/deep-research/">
+  <meta property="og:image" content="https://charles-forsyth.github.io/deep-research/img/og-reader.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="923">
+  <meta property="og:image:alt" content="The Deep Research report reader with citation markers and a cited-sources sidebar">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="topbar-left">
+        <a class="brand" href="https://charles-forsyth.github.io/">Charles Forsyth</a>
+        <span class="topbar-sep" aria-hidden="true">/</span>
+        <span class="topbar-label">Projects</span>
+      </div>
+      <nav class="topbar-nav" aria-label="Page sections">
+        <a href="#features">Features</a>
+        <a href="#gallery">Screenshots</a>
+        <a href="#how">How it works</a>
+        <a href="#start">Quick start</a>
+      </nav>
+      <span class="topbar-project">deep-research</span>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="hero-grid container">
+        <div class="hero-copy">
+          <p class="kicker">&gt; deep-research v0.61.2 &middot; Python 3.12+ &middot; MIT</p>
+          <h1>Deep Research</h1>
+          <p class="tagline">A command-line tool and self-hosted web workstation for Google's Gemini Deep Research agent.</p>
+          <p class="pitch">Launch autonomous research, watch it think, then read, annotate, search, compare and listen to the cited reports it produces. Bring in your own and public data, and test a report's claims with real computations on an HPC cluster. Everything lives in a local SQLite history on your own machine.</p>
+          <div class="cta-buttons">
+            <a class="btn btn-primary" href="https://github.com/charles-forsyth/deep-research"><i class="fa-brands fa-github" aria-hidden="true"></i> View on GitHub</a>
+            <a class="btn btn-secondary" href="https://github.com/charles-forsyth/deep-research/releases/tag/v0.61.2"><i class="fa-solid fa-tag" aria-hidden="true"></i> Release v0.61.2</a>
+            <a class="btn btn-ghost" href="#start"><i class="fa-solid fa-terminal" aria-hidden="true"></i> Get started</a>
+          </div>
+        </div>
+        <div class="terminal">
+          <div class="terminal-bar" aria-hidden="true">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <span class="terminal-title">bash</span>
+          </div>
+<pre><code><span class="c"># Install the CLI globally</span>
+<span class="p">$</span> uv tool install git+https://github.com/charles-forsyth/deep-research.git
+
+<span class="c"># Save your API key (stored in ~/.config/deepresearch/.env)</span>
+<span class="p">$</span> deep-research auth login
+
+<span class="c"># Run your first research task</span>
+<span class="p">$</span> deep-research "The history of the internet" --stream
+
+<span class="c"># Open the workstation</span>
+<span class="p">$</span> deep-research dashboard --start
+<span class="c">  # then browse to http://localhost:7420</span></code></pre>
+        </div>
+      </div>
+      <figure class="hero-shot container">
+        <img src="img/reader-citations.webp" width="1300" height="1000" alt="The report reader: a cited report with numbered citation markers, an amber flag on an uncited paragraph, and a details panel listing cost, word count and cited domains">
+      </figure>
+    </section>
+
+    <section id="features" class="section-dark">
+      <div class="container">
+        <p class="section-kicker">01 / What it does</p>
+        <h2>A research engine and a workstation around it</h2>
+        <p class="section-lead">The CLI runs the Gemini Deep Research agent (<code>deep-research-preview-04-2026</code>, or the Max agent), which plans, searches, reads and writes a cited report. The dashboard turns every report you have run into a library you keep building on.</p>
+
+        <h3 class="group-label"><i class="fa-solid fa-terminal" aria-hidden="true"></i> Research engine (CLI)</h3>
+        <div class="card-grid">
+          <article class="card">
+            <i class="fa-solid fa-diagram-project card-icon" aria-hidden="true"></i>
+            <h4>Recursive research</h4>
+            <p><code>--depth</code> and <code>--breadth</code> run a gap analysis that spawns parallel sub-research, then synthesize one final report. <code>deep-research estimate</code> prices it first with no API calls.</p>
+          </article>
+          <article class="card">
+            <i class="fa-solid fa-folder-open card-icon" aria-hidden="true"></i>
+            <h4>Your own documents</h4>
+            <p>Upload files or whole folders. They go to a temporary File Search Store that the agent searches first, and are cleaned up afterwards.</p>
+          </article>
+          <article class="card">
+            <i class="fa-solid fa-moon card-icon" aria-hidden="true"></i>
+            <h4>Headless runs</h4>
+            <p><code>start</code> runs survive closing the terminal, with PID tracking and honest crash detection. Streams reconnect automatically with exponential backoff.</p>
+          </article>
+          <article class="card">
+            <i class="fa-solid fa-magnifying-glass card-icon" aria-hidden="true"></i>
+            <h4>Follow-ups and search</h4>
+            <p>Ask follow-up questions on any past session, run semantic search across your whole history, and export to Markdown, JSON, CSV or HTML. Every command takes <code>--json</code>.</p>
+          </article>
+        </div>
+
+        <h3 class="group-label"><i class="fa-solid fa-display" aria-hidden="true"></i> Research workstation (web dashboard)</h3>
+        <div class="card-grid">
+          <article class="card">
+            <i class="fa-solid fa-rocket card-icon" aria-hidden="true"></i>
+            <h4>Launch and watch</h4>
+            <p>Templates, depth and breadth sliders, a live cost estimate and drag-and-drop uploads. Then a live timeline of agent thoughts, sub-task lanes, elapsed time and actual cost.</p>
+          </article>
+          <article class="card">
+            <i class="fa-solid fa-book-open card-icon" aria-hidden="true"></i>
+            <h4>Read with citation cards</h4>
+            <p>A typeset reader with outline, find and grouped sources. Hover or tap <code>[cite: 12]</code> to see the claim and its source. Uncited paragraphs with figures are flagged.</p>
+          </article>
+          <article class="card">
+            <i class="fa-solid fa-highlighter card-icon" aria-hidden="true"></i>
+            <h4>Annotate and collect</h4>
+            <p>Highlights, notes and Markdown notebooks with cited quotes. A brief builder turns a report or notebook into an executive brief, slide outline or email.</p>
+          </article>
+          <article class="card">
+            <i class="fa-solid fa-headphones card-icon" aria-hidden="true"></i>
+            <h4>Listen</h4>
+            <p>Read any report aloud in the browser's voice, or export an MP3 in a Gemini voice: the full text or an AI-written 2-3 minute spoken summary.</p>
+          </article>
+          <article class="card">
+            <i class="fa-solid fa-flask card-icon" aria-hidden="true"></i>
+            <h4>Lab runs on a Slurm cluster</h4>
+            <p>Turn a claim in a report into a real computation. Gemini drafts a plan and job script; a referee pass checks it; you review and edit it, with a worst-case cost, before anything is submitted.</p>
+          </article>
+          <article class="card">
+            <i class="fa-solid fa-database card-icon" aria-hidden="true"></i>
+            <h4>Data sources and open data</h4>
+            <p>Register web datasets, Google Drive, GCS, S3 buckets and local folders once. "Find open datasets" searches Data.gov, Zenodo, Hugging Face, AWS Open Data and more, offering only free sources.</p>
+          </article>
+          <article class="card">
+            <i class="fa-solid fa-code-compare card-icon" aria-hidden="true"></i>
+            <h4>Re-run, compare, map</h4>
+            <p>Repeat a question later and see what changed, source by source. A research map places every report by topic similarity, clustered and clickable.</p>
+          </article>
+          <article class="card">
+            <i class="fa-solid fa-layer-group card-icon" aria-hidden="true"></i>
+            <h4>Projects and workspaces</h4>
+            <p>One project per grant, paper or thesis, with summaries, "Ask this project", briefs, exports and a claims board. Separate workspaces export to and import from a <code>.zip</code>.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="gallery" class="section-light">
+      <div class="container">
+        <p class="section-kicker">02 / Screenshots</p>
+        <h2>The workstation</h2>
+        <p class="section-lead">Three panes: archive on the left, tabbed work in the center, an inspector on the right. Shown here cropped to the work area. On phones the side panes become slide-out drawers.</p>
+
+        <div class="gallery">
+          <figure class="shot shot-wide">
+            <a href="img/lab-card.webp"><img src="img/lab-card.webp" width="1300" height="1000" loading="lazy" alt="A Lab run result attached to a report: a phylodynamics job with its step bar from plan to done, the question tested, the result and key numbers"></a>
+            <figcaption><strong>Lab run results on a report.</strong> The outcome is attached as a note; the report itself is never edited.</figcaption>
+          </figure>
+          <figure class="shot">
+            <a href="img/reader-math.webp"><img src="img/reader-math.webp" width="1300" height="1000" loading="lazy" alt="A report on fan scaling laws with formulas shown as plain readable text and numbered citations"></a>
+            <figcaption><strong>Readable math.</strong> LaTeX in reports is shown as plain text, with no math library to download.</figcaption>
+          </figure>
+          <figure class="shot">
+            <a href="img/lab-runs.webp"><img src="img/lab-runs.webp" width="1300" height="1000" loading="lazy" alt="The Lab runs table listing each run with status, what it tests, its report, where it ran, maximum cost and last update"></a>
+            <figcaption><strong>Every Lab run</strong> in one table, with its outcome and worst-case cost.</figcaption>
+          </figure>
+          <figure class="shot">
+            <a href="img/sources.webp"><img src="img/sources.webp" width="1300" height="1000" loading="lazy" alt="The Data sources page listing registered sources by name, kind, status, file count, size and location"></a>
+            <figcaption><strong>Data sources.</strong> Register once; use in research, follow-ups and Lab runs.</figcaption>
+          </figure>
+          <figure class="shot">
+            <a href="img/discover.webp"><img src="img/discover.webp" width="1300" height="1000" loading="lazy" alt="Find open datasets: a search for daily weather station data returning NOAA datasets from AWS Open Data with add-as-source buttons"></a>
+            <figcaption><strong>Find free open datasets</strong> across Data.gov, Zenodo, AWS Open Data and Earth Engine.</figcaption>
+          </figure>
+          <figure class="shot">
+            <a href="img/compare.webp"><img src="img/compare.webp" width="1300" height="1000" loading="lazy" alt="Compare view of two runs of the same question side by side, with sources only in the older run, new in the newer run, and in both"></a>
+            <figcaption><strong>Compare two runs.</strong> See what changed, source by source.</figcaption>
+          </figure>
+        </div>
+
+        <div class="gallery-pair">
+          <figure class="shot">
+            <a href="img/research-map.webp"><img src="img/research-map.webp" width="1300" height="1000" loading="lazy" alt="The research map: 149 reports drawn as colored dots linked by similarity, forming topic clusters"></a>
+            <figcaption><strong>Research map.</strong> Every report placed by topic similarity.</figcaption>
+          </figure>
+          <figure class="shot">
+            <a href="img/launch.webp"><img src="img/launch.webp" width="1300" height="1000" loading="lazy" alt="The New deep research form with templates, depth and breadth sliders, optional uploads and data sources, and a cost estimate before launch"></a>
+            <figcaption><strong>Launch with a cost estimate.</strong> Templates, depth and breadth, uploads and data sources.</figcaption>
+          </figure>
+          <figure class="shot shot-phone">
+            <a href="img/mobile.webp"><img src="img/mobile.webp" width="780" height="1688" loading="lazy" alt="The dashboard on a phone showing a report with its metadata card and an amber-flagged uncited paragraph"></a>
+            <figcaption><strong>Mobile.</strong> Works on phones and tablets.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section id="how" class="section-dark">
+      <div class="container">
+        <p class="section-kicker">03 / How it works</p>
+        <h2>Small parts, local state</h2>
+        <p class="section-lead">The dashboard adds no Python dependencies: it is a standard-library <code>ThreadingHTTPServer</code> serving vanilla JavaScript (with vendored <code>marked</code> and <code>DOMPurify</code>). Runs launched from it are ordinary background sessions: they appear in <code>deep-research list</code> and keep going if the dashboard restarts.</p>
+
+        <div class="arch" role="img" aria-label="Architecture: the CLI and the dashboard both drive the research agent; the agent calls Gemini Deep Research and File Search; both write to the local SQLite history; the dashboard also calls Gemini Flash, a Slurm cluster and data sources">
+          <div class="arch-col">
+            <div class="node node-user"><i class="fa-solid fa-terminal" aria-hidden="true"></i> deep-research CLI<span>argparse, --json</span></div>
+            <div class="node node-user"><i class="fa-solid fa-display" aria-hidden="true"></i> Dashboard<span>stdlib HTTP + vanilla JS</span></div>
+          </div>
+          <div class="arrow" aria-hidden="true"><i class="fa-solid fa-arrow-right"></i></div>
+          <div class="arch-col">
+            <div class="node node-core"><i class="fa-solid fa-gears" aria-hidden="true"></i> DeepResearchAgent<span>core/agent.py, thread pools</span></div>
+            <div class="node node-store"><i class="fa-solid fa-database" aria-hidden="true"></i> SQLite history<span>history.db, WAL mode</span></div>
+          </div>
+          <div class="arrow" aria-hidden="true"><i class="fa-solid fa-arrow-right"></i></div>
+          <div class="arch-col">
+            <div class="node"><i class="fa-solid fa-brain" aria-hidden="true"></i> Gemini Deep Research<span>Interactions API</span></div>
+            <div class="node"><i class="fa-solid fa-file-lines" aria-hidden="true"></i> File Search Store<span>temporary uploads</span></div>
+            <div class="node"><i class="fa-solid fa-bolt" aria-hidden="true"></i> Gemini Flash / TTS<span>briefs, embeddings, audio, Lab planner</span></div>
+            <div class="node"><i class="fa-solid fa-server" aria-hidden="true"></i> Slurm cluster<span>Lab runs: ssh, sbatch</span></div>
+            <div class="node"><i class="fa-solid fa-cloud" aria-hidden="true"></i> Data sources<span>web, buckets, Drive, folders</span></div>
+          </div>
+        </div>
+
+        <h3 class="sub-head">A Lab run, step by step</h3>
+        <ol class="steps">
+          <li><span class="step-n">1</span><div><strong>Plan.</strong> Gemini suggests computations and writes a plan and job script against the cluster's own catalog of modules and containers.</div></li>
+          <li><span class="step-n">2</span><div><strong>Referee.</strong> A second AI pass flags tests that could never fail or never pass. A flawed plan is revised and checked again, up to two rounds; the best version the referee saw is kept.</div></li>
+          <li><span class="step-n">3</span><div><strong>You review.</strong> Edit the plan with its worst-case cost in view. Nothing is submitted until you submit it.</div></li>
+          <li><span class="step-n">4</span><div><strong>Pilot, then run.</strong> A short pilot runs first on an always-on warm node; a failed pilot is repaired by the AI and retried.</div></li>
+          <li><span class="step-n">5</span><div><strong>Verdict.</strong> Outputs and figures are fetched and the result is judged confirmed, refuted, inconclusive or broken, from checks the job writes.</div></li>
+        </ol>
+        <p class="note">If a website blocks the cluster (403/429), "Fetch on this laptop" downloads the files locally, stages them as a data source and rewires the plan to read them.</p>
+      </div>
+    </section>
+
+    <section id="principles" class="section-light">
+      <div class="container">
+        <p class="section-kicker">04 / Design principles</p>
+        <h2>Safe by default</h2>
+        <div class="principles">
+          <div class="principle"><h4><i class="fa-solid fa-user-check" aria-hidden="true"></i> Nothing runs without review</h4><p>Lab plans are drafts until a person submits them. AI fixes and referee rounds only ever produce another draft.</p></div>
+          <div class="principle"><h4><i class="fa-solid fa-scale-balanced" aria-hidden="true"></i> Evidence over claims</h4><p>Lab outcomes come from checks the job writes, not from the write-up. Refuted and broken results are shown as such.</p></div>
+          <div class="principle"><h4><i class="fa-solid fa-box-archive" aria-hidden="true"></i> Additive storage</h4><p>Migrations only add tables and columns. Your main library's data is never moved or rewritten by new features.</p></div>
+          <div class="principle"><h4><i class="fa-solid fa-coins" aria-hidden="true"></i> Cheap models by default</h4><p>Everything except the Deep Research agent uses Gemini Flash. Free open data only: requester-pays buckets are refused.</p></div>
+          <div class="principle"><h4><i class="fa-solid fa-keyboard" aria-hidden="true"></i> Keyboard-first</h4><p><code>Ctrl+K</code> command palette, find and save shortcuts. Dialogs never confirm on a stray Enter, and Escape closes them.</p></div>
+          <div class="principle"><h4><i class="fa-solid fa-file-contract" aria-hidden="true"></i> Tests and spec move together</h4><p>A CI test fails when an API route, setting, module or command is missing from the specification.</p></div>
+        </div>
+        <div class="callout">
+          <i class="fa-solid fa-shield-halved" aria-hidden="true"></i>
+          <div>
+            <strong>Security: the dashboard has no login.</strong> Anyone who can reach the port can read your research and start runs on your API key, so it listens on <code>127.0.0.1</code> (this machine only) by default. To reach it from another machine on a network you trust, pass <code>--host 0.0.0.0 --allow-remote</code>, or use an SSH tunnel.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="start" class="section-dark">
+      <div class="container">
+        <p class="section-kicker">05 / Quick start</p>
+        <h2>Install and run</h2>
+        <p class="section-lead">Requirements: Python 3.12+, <a href="https://github.com/astral-sh/uv">uv</a>, and a <a href="https://aistudio.google.com/app/apikey">Gemini API key</a> on a paid tier (the Deep Research agent is not available on the free tier). <code>ffmpeg</code> is optional, for MP3 audio export.</p>
+
+        <div class="code-block">
+          <div class="code-head"><span>Quick start</span><button class="copy-btn" type="button" data-copy="qs" aria-label="Copy quick start commands"><i class="fa-regular fa-copy" aria-hidden="true"></i> Copy</button></div>
+<pre><code id="qs"># Install the CLI globally
+uv tool install git+https://github.com/charles-forsyth/deep-research.git
+
+# Save your API key (stored in ~/.config/deepresearch/.env)
+deep-research auth login
+
+# Run your first research task
+deep-research "The history of the internet" --stream
+
+# Open the workstation
+deep-research dashboard --start        # then browse to http://localhost:7420</code></pre>
+        </div>
+
+        <div class="two-col">
+          <div class="code-block">
+            <div class="code-head"><span>Command line</span><button class="copy-btn" type="button" data-copy="cli" aria-label="Copy command-line examples"><i class="fa-regular fa-copy" aria-hidden="true"></i> Copy</button></div>
+<pre><code id="cli">deep-research estimate "State of solid-state batteries" --depth 2 --breadth 3   # no API calls
+deep-research research "State of solid-state batteries" --depth 2 --breadth 3
+deep-research research "Summarize the key findings" --upload ./papers/ --stream
+deep-research start "Detailed analysis of quantum computing"   # background
+deep-research list                    # recent sessions
+deep-research followup 12 "Explain the error correction part simply"
+deep-research search "What did I find about error correction?"
+deep-research list --json             # any command: one JSON document on stdout</code></pre>
+          </div>
+          <div class="code-block">
+            <div class="code-head"><span>Web dashboard</span><button class="copy-btn" type="button" data-copy="dash" aria-label="Copy dashboard commands"><i class="fa-regular fa-copy" aria-hidden="true"></i> Copy</button></div>
+<pre><code id="dash">deep-research dashboard --start                       # background on 127.0.0.1:7420
+deep-research dashboard --status                      # PID and URLs
+deep-research dashboard --restart
+deep-research dashboard --stop
+deep-research dashboard --foreground --port 8080      # run in the terminal</code></pre>
+          </div>
+        </div>
+
+        <div class="costs">
+          <h3 class="sub-head"><i class="fa-solid fa-receipt" aria-hidden="true"></i> What it costs</h3>
+          <p>The Deep Research agent is billed by Google at Gemini 3.1 Pro token rates plus Google Search grounding. Google's guidance works out to about <strong>$1 per agent run</strong>; measured runs have ranged from $0.37 to $2.04. Recursive runs multiply that by the number of agents (<code>1 + breadth + breadth^2 ...</code>), so run <code>deep-research estimate</code> first. The dashboard shows the estimate before launch and the actual cost afterwards. Lab plans with two referee rounds are typically $0.25-0.35; briefs and comparisons usually cost under a cent. Prices change: check <a href="https://ai.google.dev/gemini-api/docs/pricing">Gemini API pricing</a>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="links" class="section-light">
+      <div class="container">
+        <p class="section-kicker">06 / Links</p>
+        <h2>Documentation</h2>
+        <div class="link-grid">
+          <a class="link-card" href="https://github.com/charles-forsyth/deep-research/blob/main/README.md"><i class="fa-solid fa-book" aria-hidden="true"></i><span><strong>README</strong>Features, usage, configuration</span></a>
+          <a class="link-card" href="https://github.com/charles-forsyth/deep-research/blob/main/docs/SPEC.md"><i class="fa-solid fa-file-code" aria-hidden="true"></i><span><strong>System specification</strong>Every route, setting and command</span></a>
+          <a class="link-card" href="https://github.com/charles-forsyth/deep-research/blob/main/ARCHITECTURE.md"><i class="fa-solid fa-sitemap" aria-hidden="true"></i><span><strong>Architecture</strong>Pieces, layers, principles</span></a>
+          <a class="link-card" href="https://github.com/charles-forsyth/deep-research/blob/main/docs/DASHBOARD_DESIGN.md"><i class="fa-solid fa-pen-ruler" aria-hidden="true"></i><span><strong>Dashboard design</strong>The workstation's ideas and layout</span></a>
+          <a class="link-card" href="https://github.com/charles-forsyth/deep-research/blob/main/CHANGELOG.md"><i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i><span><strong>Changelog</strong>Release notes for every version</span></a>
+          <a class="link-card" href="https://github.com/charles-forsyth/deep-research/blob/main/ROADMAP.md"><i class="fa-solid fa-map" aria-hidden="true"></i><span><strong>Roadmap</strong>Next up and longer term</span></a>
+          <a class="link-card" href="https://github.com/charles-forsyth/deep-research/blob/main/CONTRIBUTING.md"><i class="fa-solid fa-code-pull-request" aria-hidden="true"></i><span><strong>Contributing</strong>Dev setup and checks</span></a>
+          <a class="link-card" href="https://github.com/charles-forsyth/deep-research/issues"><i class="fa-solid fa-circle-dot" aria-hidden="true"></i><span><strong>Issues</strong>Bugs and ideas</span></a>
+          <a class="link-card" href="https://github.com/charles-forsyth/deep-research/blob/main/LICENSE"><i class="fa-solid fa-scale-balanced" aria-hidden="true"></i><span><strong>License</strong>MIT</span></a>
+        </div>
+        <p class="disclaimer">This is an independent project and is not affiliated with or endorsed by Google.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer-inner">
+      <p>Built by <a href="https://charles-forsyth.github.io/">Charles Forsyth</a> &middot; Released under the <a href="https://github.com/charles-forsyth/deep-research/blob/main/LICENSE">MIT License</a></p>
+      <p class="footer-links">
+        <a href="https://github.com/charles-forsyth/deep-research"><i class="fa-brands fa-github" aria-hidden="true"></i> charles-forsyth/deep-research</a>
+      </p>
+    </div>
+  </footer>
+  <script src="site.js"></script>
+</body>
+</html>
