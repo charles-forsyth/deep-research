@@ -7,6 +7,18 @@ releases.
 
 ## [Unreleased]
 
+## [0.62.0] - 2026-10-09
+
+### Added
+- `deep-research status`: what is running (with age and log path), what finished,
+  failed or crashed in the last `--since` hours (default 24), Lab runs on the cluster,
+  waiting for review and recently finished (with outcome), and dashboard health.
+  `--all-workspaces` covers every workspace. No model or cluster calls; under a second.
+- `list --status running|completed|failed|crashed|cancelled`. Dead "running" rows are
+  marked crashed first, so `--status running` never lists a dead run.
+- `search --no-answer`: the matching sessions only, about 1 s, instead of waiting
+  15-30 s for the cited answer.
+
 ## [0.61.2] - 2026-10-03
 
 ### Fixed

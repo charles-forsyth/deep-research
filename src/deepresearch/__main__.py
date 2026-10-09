@@ -209,6 +209,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=3,
         help="Number of best-matching sessions to synthesize from (default: %(default)s)",
     )
+    parser_search.add_argument(
+        "--no-answer",
+        action="store_true",
+        help="Only list the matching sessions; skip the cited answer (a model call "
+        "over the full reports that takes 15-30 s). Under a second",
+    )
 
     parser_start = subparsers.add_parser(
         "start",
@@ -263,6 +269,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser_list = subparsers.add_parser("list", help="List recent research sessions")
+    parser_status = subparsers.add_parser(
+        "status",
+        help="What is running and what finished recently (research and Lab runs)",
+        description=(
+            "One cheap look for checking back on long work: research runs in flight "
+            "(age, log), reports that finished, failed or crashed in the last --since "
+            "hours, Lab runs on the cluster or waiting for review, and whether the "
+            "dashboard is up. No model or cluster calls."
+        ),
+    )
+    parser_status.add_argument(
+        "--since",
+        type=float,
+        default=24,
+        metavar="HOURS",
+        help="How far back 'recent' reaches (default: %(default)s)",
+    )
+    parser_status.add_argument(
+        "--all-workspaces",
+        action="store_true",
+        help="Every workspace that is not archived, not only the current one",
+    )
+    parser_list.add_argument(
+        "--status",
+        choices=["running", "completed", "failed", "crashed", "cancelled"],
+        help="Only sessions in this state (dead 'running' rows are marked crashed first)",
+    )
     parser_list.add_argument(
         "--limit",
         type=int,
@@ -519,6 +552,7 @@ def build_parser() -> argparse.ArgumentParser:
         parser_start,
         parser_followup,
         parser_list,
+        parser_status,
         parser_show,
         parser_delete,
         parser_cleanup,
@@ -606,6 +640,7 @@ def main():
         "followup",
         "repair",
         "list",
+        "status",
         "show",
         "delete",
         "cleanup",
@@ -691,6 +726,10 @@ def _dispatch(parser: argparse.ArgumentParser, args, as_json: bool) -> None:
             handle_repair(args)
         elif args.command == "list":
             handle_list(args)
+        elif args.command == "status":
+            from deepresearch.cli.status import handle as handle_status
+
+            sys.exit(handle_status(args))
         elif args.command == "show":
             handle_show(args)
         elif args.command == "delete":
