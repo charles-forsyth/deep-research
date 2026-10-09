@@ -7,6 +7,16 @@ releases.
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-10-09
+
+### Added
+- `deep-research lab`: Lab runs from the command line, every subcommand with `--json`.
+  `list`, `suggestions`, `plan` (`--suggestion N`, `--request`, `--wait` until the
+  referee is done), `show` (a readable brief; `--full` for the raw run), `submit` and
+  `cancel` (ask first, or `--yes`), `log`, `status`. They go through the running
+  dashboard, which owns planning, the job watcher and the cluster sign-in.
+- `GET /api/lab/{rid}` reports `plan_busy` while planning or the referee still runs.
+
 ## [0.62.0] - 2026-10-09
 
 ### Added

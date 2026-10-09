@@ -88,6 +88,8 @@ SLURM_DONE = {
 }
 # Lab runs whose submit is running in this process right now (see poll()).
 _IN_FLIGHT: set[tuple[str, int]] = set()
+# Lab runs whose planning (plan, referee, fixer rounds) runs in this process right now
+_PLAN_BUSY: set[tuple[str, int]] = set()
 _SMOKE_FIXING: set[tuple[str, int]] = (
     set()
 )  # runs whose AI smoke fix runs in this process
@@ -2887,7 +2889,19 @@ class Lab(LabVerdictMixin):
         )
 
     def make_plan(self, run_id: int, title: str) -> None:
-        """Runs in a background thread: AI decomposes the selection into a job plan."""
+        """Runs in a background thread: AI decomposes the selection into a job plan,
+        then the referee and its fixer rounds. While all of that runs, the run's key is
+        in _PLAN_BUSY, so the API can say `plan_busy` (the CLI's `lab plan --wait`)."""
+        _PLAN_BUSY.add(self._key(run_id))
+        try:
+            self._make_plan(run_id, title)
+        finally:
+            _PLAN_BUSY.discard(self._key(run_id))
+
+    def plan_busy(self, run_id: int) -> bool:
+        return self._key(run_id) in _PLAN_BUSY
+
+    def _make_plan(self, run_id: int, title: str) -> None:
         run = self.get(run_id)
         if not run:
             return

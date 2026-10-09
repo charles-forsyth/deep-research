@@ -1744,6 +1744,8 @@ class Api(ProjectApi):
     def _lab_view(self, run: dict) -> dict:
         tgt = self.lab.target(run.get("target"))
         run["target_label"] = tgt.label if tgt else None
+        # planning, the referee or its fixer rounds still running in this process
+        run["plan_busy"] = self.lab.plan_busy(int(run["id"]))
         from deepresearch.sources.provenance import lab_provenance
 
         run["provenance"] = lab_provenance(self.db_path, run)
