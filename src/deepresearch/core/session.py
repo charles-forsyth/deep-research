@@ -157,13 +157,36 @@ class SessionManager:
         # No process recorded (runs started before pids were tracked): judge by activity.
         return self._stale(s)
 
+    def sweep_running(self, conn) -> None:
+        """Mark every 'running' row whose process is gone as 'crashed' (liveness rules).
+
+        Run before a status-filtered read, so `status=running` never lists a dead run
+        and `status=crashed` includes runs that died since the last look.
+        """
+        for s in conn.execute(
+            "SELECT * FROM sessions WHERE status = 'running'"
+        ).fetchall():
+            if self._is_dead(conn, s):
+                conn.execute(
+                    "UPDATE sessions SET status = 'crashed' WHERE id = ?", (s["id"],)
+                )
+        conn.commit()
+
     @db_retry()
-    def list_sessions(self, limit: int = 10):
+    def list_sessions(self, limit: int = 10, status: str | None = None):
         with sqlite3.connect(self.db_path, timeout=10) as conn:
             conn.row_factory = sqlite3.Row
-            sessions = conn.execute(
-                "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)
-            ).fetchall()
+            if status:
+                self.sweep_running(conn)
+                sessions = conn.execute(
+                    "SELECT * FROM sessions WHERE status = ? "
+                    "ORDER BY updated_at DESC LIMIT ?",
+                    (status, limit),
+                ).fetchall()
+            else:
+                sessions = conn.execute(
+                    "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?", (limit,)
+                ).fetchall()
 
             result = []
             for s in sessions:

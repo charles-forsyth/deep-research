@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.61.2 (package `deepresearch`) |
+| Applies to | deep-research v0.62.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section re-read against the source on 2026-10-03 (v0.61.2): module map, test suite table, cost model, CLI options, Lab flow, cluster access (bifrost first, SSH fallback), open items and roadmap regenerated; the retired warm node is described as history only. `tests/test_spec_sync.py` keeps routes, settings, modules, static files, commands, the header version, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md). Plans outside the repo: nexus `2026-10-02_Deep_Research_Next_Plan.md` (U1/U2, F, Nexus) and `2026-10-02_Deep_Research_Bifrost_Migration_Plan.md` (R0-R4) |
 
@@ -250,7 +250,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | ID | Requirement |
 |---|---|
 | REQ-NF-1 | Python 3.12 and 3.13 on Linux and macOS. Runtime dependencies are limited to those in `pyproject.toml`; the dashboard uses only the standard library on the server and vanilla JavaScript on the client. |
-| REQ-NF-2 | The test suite shall make no network calls and finish in about two minutes (756 tests at v0.61.2: about 140 s). |
+| REQ-NF-2 | The test suite shall make no network calls and finish in about two minutes (763 tests at v0.62.0: about 150 s). |
 | REQ-NF-3 | All SQLite access shall tolerate concurrent writers (worker processes, the dashboard, the CLI) through WAL mode and a 10 s busy timeout. Session writes on the research path shall also retry on `OperationalError`. **Partly met:** several writes have no retry (K1). |
 | REQ-NF-4 | The dashboard shall make no Gemini calls on its own schedule; every paid model call is the direct result of a user action (the Lab referee and refine rounds follow a plan the user asked for). Unprompted outbound calls: the free key check at page load, the Lab watcher while runs are active, and, only when a target sets `warm.always_on`, the warm-node keeper every 5 minutes (it keeps a cluster node running, which costs cluster money; 20.16). |
 | REQ-NF-5 | The dashboard shall stay responsive with thousands of sessions: session lists are capped (500 default, 5,000 max) and the report reader renders one session at a time. |
@@ -268,6 +268,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | `deepresearch/__main__.py` | 757 | argparse parser, bare-prompt shortcut, `known_commands`, `--workspace`, command dispatch, top-level error catch. |
 | `cli/base.py` | 48 | `ResearchRequest` (prompt, stores, uploads, format, output, depth, breadth, `agent` (`max` or none), `previous_interaction_id` (an approved plan)) and `FollowUpRequest` (Pydantic): final prompt assembly and File Search tool config. |
 | `cli/commands.py` | 997 | One handler per research CLI command; `detach_process` for `start` (passes `--max` and `--plan-id` to the child); `estimate` through `core/estimate.py`; `--source` handling; `repair`. |
+| `cli/status.py` | 228 | `deep-research status` (9.2, v0.62.0): running research with age and log, recent finished/failed/crashed reports, Lab runs active, waiting for review and recently finished (with outcome), dashboard health; one or all workspaces; no model or cluster calls. |
 | `cli/jsonout.py` | 89 | `--json` output and exit codes for every command (9.6). |
 | `cli/sources.py` | 396 | `deep-research sources ...` (section 21); `guess_kind`, `local_uri` validation. |
 | `cli/projects.py` | 313 | `deep-research projects ...` (22.10): list, show, create, add, remove, export; reuses the dashboard API in-process. |
@@ -551,7 +552,7 @@ Shared by `deep-research search` and `POST /api/search`:
    `updated_at` (REQ-HIS-4).
 2. Embed the query, score every embedded session by cosine similarity in pure Python.
 3. Take the top `limit` (CLI default 3; dashboard default 5, capped 1 to 20).
-4. Optionally (always in the CLI, `synthesize` flag in the dashboard) send the matching
+4. Optionally (in the CLI unless `--no-answer`, `synthesize` flag in the dashboard) send the matching
    prompts and **full** reports to the follow-up model with instructions to answer only
    from them and cite `[Session #N]` for every fact.
 
@@ -698,11 +699,12 @@ Shared options for `research` and `start`:
 
 | Command | Behaviour |
 |---|---|
-| `list [--limit 10]` | Recent sessions by `updated_at`, after applying liveness rules. |
+| `list [--limit 10] [--status S]` | Recent sessions by `updated_at`, after applying liveness rules. `--status running\|completed\|failed\|crashed\|cancelled` filters (v0.62.0); it first sweeps every dead `running` row to `crashed`, so `--status running` never lists a dead run. |
+| `status [--since 24] [--all-workspaces]` | One cheap look for checking back on long work (v0.62.0): research running (age in minutes, log path), reports finished, failed or crashed in the last `--since` hours, Lab runs on the cluster, waiting for review (`planning`, `draft`, `plan_failed`, updated in the window) and finished in the window (with outcome), and dashboard health. No model call, no cluster call; the only write is the liveness sweep. |
 | `show ID [--recursive] [--save FILE]` | Metadata panel, prompt and rendered report. `--recursive` concatenates the whole tree as Markdown. |
 | `tree [ID]` | One tree, or the 10 most recently updated roots with their children. |
 | `followup ID PROMPT` | Follow-up (6.5); the answer is printed and appended. |
-| `search QUERY [--limit 3]` | Semantic search (6.8). |
+| `search QUERY [--limit 3] [--no-answer]` | Semantic search (6.8). `--no-answer` (v0.62.0) returns the matches only and skips the cited answer: about 1 s instead of 15-30 s. |
 | `delete ID` | Deletes the report and its whole tree with everything attached (notes, meta, usage, audio, project memberships, Lab runs), as the dashboard does. No prompt. Refused while one of its Lab runs is on the cluster (K10, v0.50.3). |
 
 `ID` is a local integer id or an interaction id in every command that takes one
@@ -766,7 +768,13 @@ had it earlier). Implemented in `cli/jsonout.py`.
   `{session_id, pid, log, status}`; the detached worker is not given `--json`.
 - `followup --json`: `{session_id, interaction_id, prompt, sources, answer}`.
 - `search --json`: `{query, matches: [{session_id, score, prompt}], answer, model,
-  embedded}`.
+  embedded}`; with `--no-answer`, `answer` and `model` are `null`.
+- `status --json`: `{generated_at, since_hours, workspaces: [{workspace, name,
+  research: {running, recent, counts}, lab: {active, waiting, recent, counts}}],
+  dashboard: {running, healthy, pid, host, port}}`. Session entries carry
+  `result_chars`, never the report; running ones add `age_min` and `log`. Lab entries
+  carry `id, session_id, report, title, status, stage, job_id, slurm_state,
+  estimate_usd, updated_at, finished_at, outcome`.
 - `estimate --json`: nodes, token counts, `cost_usd` and the pricing used.
 - `cleanup --json` never prompts: without `--force` it is a dry run
   (`would_delete`, `kept`); with `--force` it reports `deleted`, `failed`, `kept`
@@ -1259,7 +1267,7 @@ mode the umask gives it (K15).
 
 ### 16.1 Suite
 
-756 tests in 52 files (v0.61.2), about 140 s, no network and no API key. Gemini,
+763 tests in 53 files (v0.62.0), about 150 s, no network and no API key. Gemini,
 the cluster and bucket tools are faked; the dashboard tests run a real HTTP server on an
 ephemeral port against a temporary database. Two autouse fixtures in `tests/conftest.py`
 turn off the automatic Lab referee and refine rounds (`DR_LAB_REVIEW=0`,
@@ -1276,6 +1284,7 @@ the real `lab.js` in `node`.
 | `tests/cli/test_commands.py` | 15 | Command handlers, start (with --max and --plan-id), estimate, follow-up by id |
 | `tests/cli/test_help.py` | 13 | Help text and option consistency |
 | `tests/cli/test_json_output.py` | 31 | `--json` on every command: one JSON document on stdout, exit codes |
+| `tests/cli/test_status.py` | 7 | `status` (groups, window, all workspaces, text, no model call), `list --status` with the liveness sweep, `search --no-answer` skips the model call |
 | `tests/cli/test_projects_cli.py` | 5 | `deep-research projects` against the dashboard API in-process |
 | `tests/core/test_agent.py` | 21 | Stream and poll modes, recursion, Max agent for every node, running an approved plan |
 | `tests/core/test_config.py` | 12 | Key loading, `service_env` precedence |
@@ -3322,3 +3331,4 @@ before v0.39.0).
 | 2026-10-03 | v0.61.1 | Tests can no longer write to the real history DB (tests/conftest.py guard); the v0.61.0 recursion test had left 16 "a gap" rows in Main (removed, backup kept). |
 | 2026-10-03 | v0.61.2 | Nexus picker matches names in the lab, grant and GCP lists instead of nexus_search's semantic hits (20.29). |
 | 2026-10-03 | v0.61.2 (docs) | Full re-read against the code: glossary (Max, Plan first, bifrost, check partition, pilot, Nexus), system context and actors, module map and line counts, process model, REQ-RUN-9/10 and REQ-COST-5, request model (agent, plan), CLI and API rows, client views, settings, state dir, model calls, agent profiles and the estimate table (13.3), test suite (756 tests in 52 files), Lab flow (20.1) and targets (20.3) rewritten for bifrost first with SSH as the fallback, pilot and matching (20.11), the warm node kept as history (20.16), sign-in and server facts (20.20), build tables for 20.28 and 20.29, K12/K20 updated, K22/K23, open items D1-D4, G5-G8, roadmap F1-F13. |
+| 2026-10-09 | v0.62.0 | `status` command, `list --status`, `search --no-answer` for checking back on long work from a terminal or an agent harness (9.2, 9.6, 6.8). |

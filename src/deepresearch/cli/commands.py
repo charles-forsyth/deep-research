@@ -276,6 +276,21 @@ def handle_search(args):
         )
         context += f"--- SESSION {doc['id']} (Relevance Score: {score:.2f}) ---\nPROMPT: {doc['prompt']}\nRESULT:\n{doc['result']}\n\n"
 
+    if getattr(args, "no_answer", False) is True:
+        # retrieval only: one embedding call, well under a second (the cited answer
+        # is a Flash call over the full reports and takes 15-30 s)
+        if as_json:
+            emit(
+                {
+                    "query": args.query,
+                    "matches": matches,
+                    "answer": None,
+                    "model": None,
+                    "embedded": embedded,
+                }
+            )
+        return
+
     console.print(
         "\n[bold cyan][INFO] Synthesizing final answer from past research...[/]"
     )
@@ -404,7 +419,7 @@ def handle_followup(args):
 
 def handle_list(args):
     mgr = SessionManager()
-    sessions = mgr.list_sessions(args.limit)
+    sessions = mgr.list_sessions(args.limit, status=getattr(args, "status", None))
     if _json_flag(args):
         emit([session_dict(s, result=False) for s in sessions])
         return
