@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.62.0 (package `deepresearch`) |
+| Applies to | deep-research v0.63.0 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section re-read against the source on 2026-10-03 (v0.61.2): module map, test suite table, cost model, CLI options, Lab flow, cluster access (bifrost first, SSH fallback), open items and roadmap regenerated; the retired warm node is described as history only. `tests/test_spec_sync.py` keeps routes, settings, modules, static files, commands, the header version, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md). Plans outside the repo: nexus `2026-10-02_Deep_Research_Next_Plan.md` (U1/U2, F, Nexus) and `2026-10-02_Deep_Research_Bifrost_Migration_Plan.md` (R0-R4) |
 
@@ -250,7 +250,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | ID | Requirement |
 |---|---|
 | REQ-NF-1 | Python 3.12 and 3.13 on Linux and macOS. Runtime dependencies are limited to those in `pyproject.toml`; the dashboard uses only the standard library on the server and vanilla JavaScript on the client. |
-| REQ-NF-2 | The test suite shall make no network calls and finish in about two minutes (763 tests at v0.62.0: about 150 s). |
+| REQ-NF-2 | The test suite shall make no network calls and finish in about two minutes (775 tests at v0.63.0: about 150 s). |
 | REQ-NF-3 | All SQLite access shall tolerate concurrent writers (worker processes, the dashboard, the CLI) through WAL mode and a 10 s busy timeout. Session writes on the research path shall also retry on `OperationalError`. **Partly met:** several writes have no retry (K1). |
 | REQ-NF-4 | The dashboard shall make no Gemini calls on its own schedule; every paid model call is the direct result of a user action (the Lab referee and refine rounds follow a plan the user asked for). Unprompted outbound calls: the free key check at page load, the Lab watcher while runs are active, and, only when a target sets `warm.always_on`, the warm-node keeper every 5 minutes (it keeps a cluster node running, which costs cluster money; 20.16). |
 | REQ-NF-5 | The dashboard shall stay responsive with thousands of sessions: session lists are capped (500 default, 5,000 max) and the report reader renders one session at a time. |
@@ -269,6 +269,7 @@ exists; "manual" means covered by the release checklist in section 16.4.
 | `cli/base.py` | 48 | `ResearchRequest` (prompt, stores, uploads, format, output, depth, breadth, `agent` (`max` or none), `previous_interaction_id` (an approved plan)) and `FollowUpRequest` (Pydantic): final prompt assembly and File Search tool config. |
 | `cli/commands.py` | 997 | One handler per research CLI command; `detach_process` for `start` (passes `--max` and `--plan-id` to the child); `estimate` through `core/estimate.py`; `--source` handling; `repair`. |
 | `cli/status.py` | 228 | `deep-research status` (9.2, v0.62.0): running research with age and log, recent finished/failed/crashed reports, Lab runs active, waiting for review and recently finished (with outcome), dashboard health; one or all workspaces; no model or cluster calls. |
+| `cli/lab.py` | 552 | `deep-research lab ...` (20.30, v0.63.0): list, suggestions, plan, show, submit, cancel, log through the running dashboard's local API (X-DR-Workspace header), `status` straight from the workspace DB; `brief()` (a run without script or diffs); confirmation for submit and cancel. |
 | `cli/jsonout.py` | 89 | `--json` output and exit codes for every command (9.6). |
 | `cli/sources.py` | 396 | `deep-research sources ...` (section 21); `guess_kind`, `local_uri` validation. |
 | `cli/projects.py` | 313 | `deep-research projects ...` (22.10): list, show, create, add, remove, export; reuses the dashboard API in-process. |
@@ -735,6 +736,7 @@ codes: see REQ-DASH-1.
 | Command | Section |
 |---|---|
 | `projects list|show|create|add|remove|export` | 22.10 |
+| `lab list|suggestions|plan|show|submit|cancel|log|status` | 20.30 |
 | `workspace list|create|duplicate|rename|archive|unarchive|delete|copy|export|import` | 23 |
 | `sources add|list|show|test|browse|preview|rm|index|discover` | 21 (options in 21.4) |
 
@@ -1267,7 +1269,7 @@ mode the umask gives it (K15).
 
 ### 16.1 Suite
 
-763 tests in 53 files (v0.62.0), about 150 s, no network and no API key. Gemini,
+775 tests in 54 files (v0.63.0), about 150 s, no network and no API key. Gemini,
 the cluster and bucket tools are faked; the dashboard tests run a real HTTP server on an
 ephemeral port against a temporary database. Two autouse fixtures in `tests/conftest.py`
 turn off the automatic Lab referee and refine rounds (`DR_LAB_REVIEW=0`,
@@ -1285,6 +1287,7 @@ the real `lab.js` in `node`.
 | `tests/cli/test_help.py` | 13 | Help text and option consistency |
 | `tests/cli/test_json_output.py` | 31 | `--json` on every command: one JSON document on stdout, exit codes |
 | `tests/cli/test_status.py` | 7 | `status` (groups, window, all workspaces, text, no model call), `list --status` with the liveness sweep, `search --no-answer` skips the model call |
+| `tests/cli/test_lab_cli.py` | 12 | `lab` against a real dashboard API on a local port with the fake cluster: plan --wait (plan_busy), suggestion choice, list/show/submit/log/cancel/status, submit confirmation and --yes, workspace header, no dashboard = exit 3, known command |
 | `tests/cli/test_projects_cli.py` | 5 | `deep-research projects` against the dashboard API in-process |
 | `tests/core/test_agent.py` | 21 | Stream and poll modes, recursion, Max agent for every node, running an approved plan |
 | `tests/core/test_config.py` | 12 | Key loading, `service_env` precedence |
@@ -1700,7 +1703,7 @@ login node through IAP, `remote_root ~/deep-research-lab`, `default_partition st
 | `GET /api/sessions/{id}/lab` | Runs and cached suggestions for a report. Starts the watcher if runs are active. |
 | `POST /api/sessions/{id}/lab/suggestions` | Generate suggestions (paid; `{"refresh": true}` to regenerate). |
 | `POST /api/sessions/{id}/lab` | Create a run: `{scope, selection?, request?}`, scope `selection`, `document` or `suggestion`. Planning runs in the background. |
-| `GET /api/lab/{rid}` | One run. |
+| `GET /api/lab/{rid}` | One run. `plan_busy` (v0.63.0) is true while planning, the referee or its fixer rounds still run in this process. |
 | `PUT /api/lab/{rid}/plan` | Edit a draft plan; rebuilds script, estimate and pre-flight warnings (client-sent warnings are discarded). |
 | `POST /api/lab/{rid}/submit` | Submit a draft. |
 | `POST /api/lab/{rid}/cancel` | `scancel` (or stop planning). |
@@ -2572,6 +2575,30 @@ the NSF CC* grant, "baer" Boris Baer's lab (18 members). Tests:
 `tests/dashboard/test_nexus_links.py` with real reply shapes; every allow-list was
 sabotage-checked.
 
+### 20.30 Lab from the command line (v0.63.0)
+
+`deep-research lab` drives the same Lab runs as the dashboard, for a terminal or an agent
+harness. Every subcommand takes `--json` (9.6); bare `lab` is `lab status`.
+
+| Command | Behaviour |
+|---|---|
+| `lab list [--status S] [--report ID] [--limit 20]` | Runs newest first (`GET /api/lab/runs`). `--status` is a run status or a group: `active` (on the cluster), `waiting` (planning, draft, plan_failed), `finished`. |
+| `lab suggestions REPORT [--refresh]` | The cached suggestions, generated first if there are none (paid, a few cents). |
+| `lab plan REPORT [--request T] [--suggestion N \| --selection T] [--source NAME] [--target T] [--wait] [--timeout 900]` | Creates a run (scope `document`, `suggestion` or `selection`) and lets the dashboard plan it. Never submits. `--wait` polls `GET /api/lab/{rid}` until the run is out of `planning` and `plan_busy` is false, so the referee and its fixer rounds are done. |
+| `lab show RUN [--full]` | `brief()`: plan summary, resources, estimate, warnings, referee verdict and findings, AI fix changes and concerns, last pilot round (log tail cut to 1,500 chars), job, outcome, write-up, file list. No script, no diffs. `--full` gives the raw run. |
+| `lab submit RUN [--yes]` | Refuses anything but a draft before asking; then asks (`[y/N]` on stderr) unless `--yes`. `--json` or no terminal without `--yes` exits 2 and changes nothing. Waits up to 15 minutes, since submit blocks while the pilot is queued. |
+| `lab cancel RUN [--yes]` | Same confirmation rule. |
+| `lab log RUN [--tail N]` | Pilot, live (bifrost or SSH) or fetched log. |
+| `lab status [--since 24]` | The Lab part of `deep-research status` (9.2) for the current workspace. |
+
+Everything except `status` goes through the running dashboard over
+`http://127.0.0.1:<port>` (port from the dashboard pid file), with the workspace in
+`X-DR-Workspace`, the way the page calls it. The dashboard owns the Lab: planning runs in its
+background thread, its watcher follows submitted jobs, and it holds the bifrost sign-in. A
+CLI process that did this work itself would lose all three on exit. If the dashboard is not
+running, these commands exit 3 with a hint to start it. Writes are JSON with no Origin header,
+so they pass the same-origin and content-type checks (14.1) unchanged.
+
 ## 21. Data sources
 
 A data source is a named reference to data that lives somewhere else: an open dataset
@@ -3332,3 +3359,4 @@ before v0.39.0).
 | 2026-10-03 | v0.61.2 | Nexus picker matches names in the lab, grant and GCP lists instead of nexus_search's semantic hits (20.29). |
 | 2026-10-03 | v0.61.2 (docs) | Full re-read against the code: glossary (Max, Plan first, bifrost, check partition, pilot, Nexus), system context and actors, module map and line counts, process model, REQ-RUN-9/10 and REQ-COST-5, request model (agent, plan), CLI and API rows, client views, settings, state dir, model calls, agent profiles and the estimate table (13.3), test suite (756 tests in 52 files), Lab flow (20.1) and targets (20.3) rewritten for bifrost first with SSH as the fallback, pilot and matching (20.11), the warm node kept as history (20.16), sign-in and server facts (20.20), build tables for 20.28 and 20.29, K12/K20 updated, K22/K23, open items D1-D4, G5-G8, roadmap F1-F13. |
 | 2026-10-09 | v0.62.0 | `status` command, `list --status`, `search --no-answer` for checking back on long work from a terminal or an agent harness (9.2, 9.6, 6.8). |
+| 2026-10-09 | v0.63.0 | `deep-research lab` (20.30): list, suggestions, plan, show, submit, cancel, log, status; `plan_busy` on `GET /api/lab/{rid}` (20.4). |

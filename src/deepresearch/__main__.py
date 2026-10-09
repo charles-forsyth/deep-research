@@ -423,6 +423,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_projects_parser(subparsers, _add_json)
 
+    from deepresearch.cli.lab import add_parser as add_lab_parser
+
+    add_lab_parser(subparsers, _add_json)
+
     parser_ws = subparsers.add_parser(
         "workspace",
         help="List, create, rename, archive or delete workspaces",
@@ -641,6 +645,7 @@ def main():
         "repair",
         "list",
         "status",
+        "lab",
         "show",
         "delete",
         "cleanup",
@@ -730,6 +735,10 @@ def _dispatch(parser: argparse.ArgumentParser, args, as_json: bool) -> None:
             from deepresearch.cli.status import handle as handle_status
 
             sys.exit(handle_status(args))
+        elif args.command == "lab":
+            from deepresearch.cli.lab import handle as handle_lab
+
+            sys.exit(handle_lab(args))
         elif args.command == "show":
             handle_show(args)
         elif args.command == "delete":
