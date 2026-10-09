@@ -526,6 +526,12 @@ This only works while Google still holds the original interaction. The dashboard
 returns 502 when nothing was appended and 409 when the session has no real interaction
 id yet.
 
+Every follow-up chains to the session's **original** interaction, never to the previous
+follow-up, so follow-ups do not see each other's answers even though all of them are
+appended to `result` (K24). A "combine the corrections above" follow-up rewrites from the
+first report and can bring back errors earlier follow-ups fixed; to merge, paste the
+earlier answers and the verified facts into the one follow-up.
+
 ### 6.6 File Search
 
 `FileManager.create_store_from_paths` creates one store per run, uploads each file
@@ -1380,7 +1386,7 @@ Before tagging a release that touches the affected area:
 Real current behaviour, first recorded against v0.17.5 by reading the source and, where
 noted, confirmed by test; items fixed since are marked with the version. Each is a candidate
 issue. Re-checked against the source on 2026-10-01 (v0.50.1): K1, K6, K7, K9, K10, K11, K15,
-K17, K18 and K19 still hold; K4 is mostly fixed. (v0.50.3 then fixed K4, K7 and K15 and most of K10.) Re-checked on 2026-10-03 (v0.61.2): K12 partly fixed, K20 updated, K22 and K23 added. Feature-area gaps are listed in their own
+K17, K18 and K19 still hold; K4 is mostly fixed. (v0.50.3 then fixed K4, K7 and K15 and most of K10.) Re-checked on 2026-10-03 (v0.61.2): K12 partly fixed, K20 updated, K22 and K23 added. 2026-10-09 (v0.63.0): K24 and K25 added from real use. Feature-area gaps are listed in their own
 sections (20.8, 21.10, 22.8).
 
 | ID | Area | Gap | Effect |
@@ -1407,6 +1413,8 @@ sections (20.8, 21.10, 22.8).
 | K20 | Lab | **Mostly fixed in v0.52.0.** Cluster access is its own module: `dashboard/cluster.py` (SSH, 686 lines since the warm worker left in v0.58.0) and `dashboard/bifrost.py` (MCP, 803 lines), each with its own tests. `lab.py` is still 5,353 lines (planning, prompts, install ladder, pilot loop, bifrost submit, watcher) and keeps both an SSH and a bifrost path for submit, status, logs, fetch and cancel until R4b. | Planning and the watcher are still large; every cluster change is made twice until the SSH path goes. |
 | K22 | Lab | Two cluster paths. With bifrost configured and signed in, all Lab cluster work goes through bifrost; signed out, full runs fall back to SSH with no pilot, and planning checks answer with a sign-in hint instead of running (neither has an SSH path since v0.58.0). Removing the SSH path (R4b) waits for a week of bifrost-only use and the user's go-ahead (decided 2026-10-03: keep SSH as the fallback). | Signed out, a run gets no pilot and no planning checks, so mistakes surface in the full run. |
 | K23 | Nexus | The Nexus picker searches the full lab, grant and GCP project lists (about 520 rows, cached 10 min), because `nexus_search` ranks loose semantic matches above real name matches. Research projects are found only by `nexus_search` name matches; people's names find nothing. | A brand-new Nexus entry can take up to 10 minutes to appear; projects with unusual names may need their exact name. |
+| K24 | Research | Follow-ups chain to the original interaction (6.5), not to each other, and nothing in the CLI or dashboard says so. Found 2026-10-09: a fourth "write the corrected final version" follow-up on session 319 re-introduced titles and PIs that three earlier follow-ups had corrected. | Merging corrections through follow-ups silently loses them unless the earlier answers are pasted into the prompt. |
+| K25 | Research | The agent treats a paper that acknowledges a grant as evidence the author is on that grant. On session 319 (a funding verification) it listed a PI as "co-investigator" on four awards where NIH RePORTER does not list him, and invented a title and PIs for one. | Person- and funding-verification reports need checking against NIH RePORTER (`api.reporter.nih.gov`) and the NSF award API before use. |
 | K21 | Lab | **Mostly fixed in v0.51.0.** Any open dashboard tab announces a finished Lab run (toast, browser notification when hidden; 20.19). Still needs a tab open: no phone push. | Results seen late when no tab is open. |
 
 ---
@@ -3240,6 +3248,7 @@ items) keep the detail; this section is the to-do list.
 | G7 | The research estimate's token profile (250k input per standard run) is below our own long runs (about 1.5M); recalibrate from `session_usage` once there are Max runs to compare. | K12 |
 | G8 | Google agent test: give the ursa-agent's Gemini access to bifrost's public tools only. Needs a bifrost client limited to the public catalog before any token leaves this machine. | migration plan |
 | G6 | Finish notifications need an open dashboard tab; no phone push (would need an opt-in service such as ntfy, owner's call). | K21, L4 |
+| G10 | Say in `followup` help and on the dashboard's Ask box that each follow-up sees the original report only (or chain follow-ups to the previous answer behind an option). | K24 |
 | G9 | **Planned, not built** (nexus `2026-10-04_MCP_Family_Plan.md`, P2). bifrost renames every tool to `ursa_*` with no aliases (v0.10.0); the Lab's 13 tool names (`cluster.py`, `lab.py`, tests) change in the same window, and the Lab is paused for it. Run only when the owner says go. | 20.20-20.23 |
 
 Left alone on purpose for now: K1 (retry gaps, no failures seen), K12/K14 (estimates
@@ -3265,6 +3274,8 @@ before v0.39.0).
 | F11 | Lab: more cluster types and a target picker | L1. |
 | F12 | Nexus writes (log a Lab result or report against a lab or grant) | Only after the read-only links have been used for a while (20.29). |
 | F13 | Max-aware Lab suggestions: pick the agent per suggestion by how much reading it needs | Idea; no design yet. |
+| F14 | Export a report as a native Google Doc (`export ID --gdoc`, a Share-menu entry): built with the Google Docs API (real headings, native tables sized so words do not break, pinned header rows, in-place rebuild keeps the link), not a .docx upload. A working builder exists outside the repo (Hermes `google-api-python` skill, `scripts/md_to_gdoc.py`, used 2026-10-09). Needs a Drive/Docs sign-in for deep-research. | Owner asked for it 2026-10-09, then deferred; next release candidate. |
+| F15 | A local MCP server for deep-research | Considered 2026-10-09 and set aside: the CLI with `--json` (v0.62.0 `status`, `search --no-answer`; v0.63.0 `lab`) covers agent use. Revisit if several agents or people need it. |
 
 ## Document history
 
@@ -3360,3 +3371,4 @@ before v0.39.0).
 | 2026-10-03 | v0.61.2 (docs) | Full re-read against the code: glossary (Max, Plan first, bifrost, check partition, pilot, Nexus), system context and actors, module map and line counts, process model, REQ-RUN-9/10 and REQ-COST-5, request model (agent, plan), CLI and API rows, client views, settings, state dir, model calls, agent profiles and the estimate table (13.3), test suite (756 tests in 52 files), Lab flow (20.1) and targets (20.3) rewritten for bifrost first with SSH as the fallback, pilot and matching (20.11), the warm node kept as history (20.16), sign-in and server facts (20.20), build tables for 20.28 and 20.29, K12/K20 updated, K22/K23, open items D1-D4, G5-G8, roadmap F1-F13. |
 | 2026-10-09 | v0.62.0 | `status` command, `list --status`, `search --no-answer` for checking back on long work from a terminal or an agent harness (9.2, 9.6, 6.8). |
 | 2026-10-09 | v0.63.0 | `deep-research lab` (20.30): list, suggestions, plan, show, submit, cancel, log, status; `plan_busy` on `GET /api/lab/{rid}` (20.4). |
+| 2026-10-09 | v0.63.0 (docs) | Follow-ups chain to the original interaction (6.5, K24, G10); grant-acknowledgment overreach in research reports (K25); F14 native Google Doc export (deferred), F15 local MCP server (set aside). |
