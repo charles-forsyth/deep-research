@@ -17,7 +17,10 @@ The full open list (decisions, demo items, gaps, prospects) is section 24 of doc
 - [x] Honest cancel, CLI depth limits, full delete, safe `auth login` (0.50.3).
 - [x] Best refine round kept; refusals at run time offered as a fix; Lab finish notifications (0.51).
 - [x] Cluster layer out of `lab.py` into `dashboard/cluster.py`, with its own tests; step 1 of the hpc-agent plan (0.52).
-- [ ] **Read-only hpc-agent MCP server** on top of `cluster.py` (queue, job status, logs, catalog), after the design questions are answered.
+- [x] Agent-friendly CLI: `status`, `list --status`, `search --no-answer` (0.62) and `deep-research lab` (0.63).
+- [ ] **Google Doc export** (`export ID --gdoc`, Share menu) through the Google Docs API; builder proven outside the repo (SPEC F14).
+- [ ] **Follow-up chaining**: say that follow-ups see only the original report, or chain them (SPEC K24, G10).
+- [x] ~~Read-only hpc-agent MCP server~~: became ursa-bifrost.
 - [ ] **Live collaboration** on a shared workspace (sync), building on the zip export.
 - [ ] **Browse from the CLI**: `deep-research sources browse-place drive:gd` to pick Drive files without the dashboard.
 - [ ] **AWS S3 with credentials** in the file browser (needs an AWS profile or rclone S3 remote on this machine).
@@ -25,9 +28,9 @@ The full open list (decisions, demo items, gaps, prospects) is section 24 of doc
 - [x] Lab adversarial review (referee) before submit (0.46).
 - [x] `deep-research projects` CLI (0.47).
 - [ ] **Optional dashboard login** (shared token) for use beyond a trusted network.
-- [ ] **Deep Research Max** toggle in the dashboard launcher.
+- [x] Deep Research Max toggle in the dashboard launcher (0.61).
 - [ ] **Scheduled re-runs** of saved questions, with the compare view as a change digest.
-- [ ] **Collaborative planning** (review the agent's research plan before it runs).
+- [x] Collaborative planning, "Plan first" (0.61).
 
 ## Longer term: academic research edition
 
