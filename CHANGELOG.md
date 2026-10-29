@@ -7,6 +7,11 @@ releases.
 
 ## [Unreleased]
 
+## [0.63.1] - 2026-10-29
+
+### Added
+- `CITATION.cff` so Zenodo archives each release with a DOI and GitHub shows "Cite this repository". No code changes.
+
 ## [0.63.0] - 2026-10-09
 
 ### Added
