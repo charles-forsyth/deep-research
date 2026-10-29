@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "deep-research: a CLI and web workstation for cited AI research reports"
+type: software
+authors:
+  - family-names: "Forsyth III"
+    given-names: "Charles E."
+    orcid: "https://orcid.org/0000-0003-4872-0296"
+    affiliation: "University of California, Riverside"
+repository-code: "https://github.com/charles-forsyth/deep-research"
+license: MIT
+keywords:
+  - "AI research"
+  - "Gemini Deep Research"
+  - "reproducibility"
+  - "HPC"
