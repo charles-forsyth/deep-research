@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Document | Complete functional and technical specification |
-| Applies to | deep-research v0.63.0 (package `deepresearch`) |
+| Applies to | deep-research v0.63.1 (package `deepresearch`) |
 | Status | Living document. Describes the system as built. Every section re-read against the source on 2026-10-03 (v0.61.2): module map, test suite table, cost model, CLI options, Lab flow, cluster access (bifrost first, SSH fallback), open items and roadmap regenerated; the retired warm node is described as history only. `tests/test_spec_sync.py` keeps routes, settings, modules, static files, commands, the header version, section order and history order in sync. |
 | Companion docs | [ARCHITECTURE.md](../ARCHITECTURE.md) (overview), [DASHBOARD_DESIGN.md](DASHBOARD_DESIGN.md) (design intent), [CHANGELOG.md](../CHANGELOG.md). Plans outside the repo: nexus `2026-10-02_Deep_Research_Next_Plan.md` (U1/U2, F, Nexus) and `2026-10-02_Deep_Research_Bifrost_Migration_Plan.md` (R0-R4) |
 
